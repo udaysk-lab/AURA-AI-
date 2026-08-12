@@ -56,8 +56,14 @@ def test_hash_is_salted_and_not_reversible():
         # particular an empty password must not match an empty hash.
         (GOOD, ""),
         ("", ""),
-        # A truncated or corrupted hash must fail closed, not raise.
+        # Corrupted hashes must fail closed, not raise. The truncated case is
+        # the dangerous one: bcrypt's Rust extension panics on it, and a panic
+        # derives from BaseException, so a naive `except Exception` lets it
+        # through and turns a failed login into a 500.
         (GOOD, "$2b$12$notarealhash"),
+        (GOOD, "$2b$12$"),
+        (GOOD, "not-a-hash-at-all"),
+        (GOOD, "$2b$12$" + "x" * 200),
     ],
 )
 def test_verify_rejects(password, stored):

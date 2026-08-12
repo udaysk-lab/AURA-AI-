@@ -51,14 +51,36 @@ def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
+def _looks_like_bcrypt(value: str) -> bool:
+    """Cheap shape check before handing anything to the native library.
+
+    This is not politeness. bcrypt's Rust extension *panics* on a truncated
+    hash — `$2b$12$short` raises pyo3_runtime.PanicException, which derives from
+    BaseException and so slips through `except Exception`. An unhandled panic
+    means a corrupted row turns a 401 into a 500. Validating the shape first
+    means checkpw only ever sees something well formed.
+    """
+    return (
+        len(value) == 60
+        and value.startswith("$2")
+        and value[3] == "$"
+        and value[6] == "$"
+    )
+
+
 def verify_password(password: str, password_hash: str) -> bool:
-    """Constant-time check. False for any account without a usable hash."""
+    """False for any account without a usable hash. Never raises."""
     if not password or not password_hash:
+        return False
+    if not _looks_like_bcrypt(password_hash):
         return False
     try:
         return bcrypt.checkpw(password.encode(), password_hash.encode())
     except (ValueError, TypeError):
-        # A malformed or truncated hash in the database must fail closed.
+        return False
+    except BaseException:  # noqa: BLE001 - see _looks_like_bcrypt
+        # Belt and braces. A native panic must never become a 500 on a login
+        # route, and must never be mistaken for a successful comparison.
         return False
 
 
