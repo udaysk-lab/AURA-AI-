@@ -8,6 +8,7 @@ import {
   CheckSquare,
   FileText,
   LayoutDashboard,
+  type LucideIcon,
   Mail,
   MessageSquare,
   Puzzle,
@@ -27,7 +28,7 @@ interface Command {
   label: string;
   hint?: string;
   group: string;
-  icon: React.ComponentType<{ size?: number; className?: string }>;
+  icon: LucideIcon;
   run: () => void | Promise<void>;
   keywords?: string;
 }

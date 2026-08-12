@@ -7,6 +7,7 @@ import {
   Globe,
   Hash,
   Link2,
+  type LucideIcon,
   Mail,
   MessageCircle,
   Phone,
@@ -26,7 +27,7 @@ import {
   fmtRelative,
 } from "@/components/ui";
 
-const ICONS: Record<string, React.ComponentType<{ size?: number; className?: string }>> = {
+const ICONS: Record<string, LucideIcon> = {
   web: Globe,
   email: Mail,
   telegram: MessageCircle,
