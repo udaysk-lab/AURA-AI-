@@ -5,6 +5,16 @@
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+/**
+ * True when NEXT_PUBLIC_API_URL wasn't set and we fell back to localhost.
+ *
+ * Worth distinguishing: on a deployed site this means the browser is trying to
+ * reach the *visitor's own* machine, which no amount of backend debugging will
+ * fix. The variable is inlined at build time, so it's also the one class of
+ * misconfiguration that needs a redeploy rather than a restart.
+ */
+export const API_BASE_IS_FALLBACK = !process.env.NEXT_PUBLIC_API_URL;
+
 const TOKEN_KEY = "aura_token";
 
 export function getToken(): string | null {

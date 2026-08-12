@@ -1,0 +1,134 @@
+# Render blueprint — https://render.com/docs/blueprint-spec
+#
+# Deploys the FastAPI backend, its Postgres, and a cron job for background work.
+# The Next.js frontend stays on Vercel; the only things joining the two halves
+# are NEXT_PUBLIC_API_URL on Vercel (pointing here) and CORS_ORIGINS here
+# (pointing back at Vercel).
+#
+# Values marked `sync: false` are not stored in this file — Render prompts for
+# them on first apply, and they never enter git.
+
+databases:
+  - name: aura-db
+    databaseName: aura
+    plan: free
+    # Free Postgres on Render expires after 30 days. Diarise it: when it goes,
+    # /health/ready starts returning 503 and every request fails.
+
+services:
+  # --- API ------------------------------------------------------------------
+  - type: web
+    name: aura-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: aura-db
+          property: connectionString
+        # Render supplies this as postgresql://… ; config.py rewrites it to
+        # postgresql+psycopg:// because only psycopg 3 is installed and
+        # SQLAlchemy would otherwise reach for psycopg2 and fail at import.
+
+      # `staging`, not `production`, and deliberately so. main.py refuses to
+      # boot in production while any preflight check fails, and production also
+      # forbids demo login — which is the only way in until Google OAuth is
+      # configured. Staging logs the identical warnings and still serves.
+      # Move to production once you have a model key and real auth.
+      - key: ENVIRONMENT
+        value: staging
+      - key: DEBUG
+        value: "false"
+
+      # --- Secrets ---------------------------------------------------------
+      - key: SECRET_KEY
+        generateValue: true
+      # Fernet wants a 32-byte urlsafe-base64 key, which generateValue won't
+      # produce, so this one is manual:
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+
+      # --- Origins ---------------------------------------------------------
+      # CORS_ORIGINS: your Vercel URL, exactly — scheme and host, no trailing
+      # slash. Outside local this allowlist is the entire CORS policy.
+      # Note Vercel gives every deployment its own preview URL; only the
+      # production domain listed here will be able to call the API.
+      - key: CORS_ORIGINS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      # This service's own public URL. The Google OAuth redirect is derived
+      # from it, so a wrong value breaks sign-in in a way that's hard to spot.
+      - key: BACKEND_URL
+        sync: false
+
+      # --- Sign-in ---------------------------------------------------------
+      # Password-free: anyone who knows an email address can sign in as that
+      # user. Fine for a portfolio demo, unacceptable for real data.
+      - key: ALLOW_DEMO_LOGIN
+        value: "true"
+
+      # --- Model provider --------------------------------------------------
+      # Without one of these AURA runs its offline keyword router: every screen
+      # works, but there is no real reasoning behind any of it.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+
+      # --- Safety rails ----------------------------------------------------
+      - key: RATE_LIMIT_ENABLED
+        value: "true"
+      - key: SPEND_CAP_ENABLED
+        value: "true"
+      - key: DAILY_SPEND_CAP_USD
+        value: "2.0"
+
+  # --- Background work ------------------------------------------------------
+  # The API process runs no timers of its own — worker.py is the only thing that
+  # fires automations, schedules, heartbeats and memory compaction. Running it
+  # as cron rather than a long-lived worker suits the free tier, where an idle
+  # service is suspended and an in-process loop would stop firing.
+  #
+  # Every 30 minutes is a deliberate floor: each pass can call the model for
+  # every active user, so a tighter schedule multiplies spend. DAILY_SPEND_CAP_USD
+  # above is the backstop if this still runs hotter than you expected.
+  - type: cron
+    name: aura-worker
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    schedule: "*/30 * * * *"
+    dockerCommand: python worker.py --once
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: aura-db
+          property: connectionString
+      - key: ENVIRONMENT
+        value: staging
+      - key: DEBUG
+        value: "false"
+      # Must match the API, or tokens signed by one are rejected by the other.
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: aura-api
+          envVarKey: SECRET_KEY
+      # Same again: a different key here means the worker cannot decrypt the
+      # OAuth tokens the API stored.
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: SPEND_CAP_ENABLED
+        value: "true"
+      - key: DAILY_SPEND_CAP_USD
+        value: "2.0"

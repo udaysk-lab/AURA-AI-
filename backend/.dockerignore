@@ -1,0 +1,24 @@
+# Keep the build context small and the image free of local state.
+# Most of this is gitignored too, so it only matters for local `docker build`.
+
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Local SQLite database — baking it into the image would ship whatever test
+# data happened to be on the machine that built it.
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets. Render supplies configuration through the environment; a stray .env
+# inside the image would silently win over it.
+.env
+.env.*
+!.env.example
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.git/

@@ -7,6 +7,7 @@ Adding real credentials upgrades AURA from demo mode to live mode.
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -134,6 +135,24 @@ class Settings(BaseSettings):
     rate_limit_anon_per_minute: int = 20      # unauthenticated, per IP
     rate_limit_inbound_per_minute: int = 15   # per channel token
     redis_url: str = ""                       # blank = in-memory buckets
+
+    @field_validator("database_url")
+    @classmethod
+    def _normalise_database_url(cls, value: str) -> str:
+        """Force the psycopg 3 dialect on Postgres URLs.
+
+        Managed hosts inject a bare `postgresql://` (Render, Fly) or the legacy
+        `postgres://` (Heroku, some Railway templates). SQLAlchemy maps the bare
+        form to psycopg2, which isn't installed — the app would die at import
+        with `ModuleNotFoundError: psycopg2`. It rejects `postgres://` outright.
+        Rewriting here means the URL the host hands us just works, and nothing
+        downstream has to care.
+        """
+        if value.startswith("postgres://"):
+            return "postgresql+psycopg://" + value[len("postgres://") :]
+        if value.startswith("postgresql://"):
+            return "postgresql+psycopg://" + value[len("postgresql://") :]
+        return value
 
     @property
     def smtp_configured(self) -> bool:

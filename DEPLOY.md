@@ -1,273 +1,166 @@
 # Deploying AURA
 
-Written for the case where a real person other than you will use this. If that's
-not true yet, `README.md` is enough.
+Two halves, deployed separately:
+
+| Half | Host | Directory |
+| --- | --- | --- |
+| Next.js frontend | Vercel | `frontend/` |
+| FastAPI backend + Postgres + cron worker | Render | `backend/` |
+
+They're joined by exactly two settings. Get these wrong and nothing works:
+
+- **`NEXT_PUBLIC_API_URL`** on Vercel → the backend's public URL
+- **`CORS_ORIGINS`** on Render → the frontend's public origin
 
 ---
 
-## 0. Get a Claude API key
+## Why the deployed site currently fails
 
-AURA runs Claude by default. You need your own key — nobody can create one for you.
+`lib/api.ts` falls back to `http://localhost:8000` when `NEXT_PUBLIC_API_URL`
+isn't set. On a deployed page that means the visitor's browser tries to reach
+*their own machine* on port 8000. No backend change can fix it — the request
+never leaves the laptop it was made from.
 
-1. Sign in at **<https://console.anthropic.com>**
-2. **Settings → Billing** and add a payment method (a key without credit returns
-   `credit_balance_too_low` on every call)
-3. **API Keys → Create Key**, name it something you'll recognise later
-   (`aura-prod`), copy it immediately — it's shown once
-4. Put it in your environment, never in a file you commit:
+`NEXT_PUBLIC_*` variables are inlined into the JavaScript bundle at **build**
+time. Adding one in Vercel changes nothing until you redeploy.
 
-```bash
-ANTHROPIC_API_KEY=sk-ant-...
-ANTHROPIC_MODEL=claude-sonnet-5
+---
+
+## 1. Deploy the backend
+
+### Option A — the blueprint (recommended)
+
+`render.yaml` at the repo root describes the whole backend: web service,
+Postgres, and the cron worker.
+
+1. Push this repo to GitHub.
+2. Render → **New** → **Blueprint** → pick the repo.
+3. Render reads `render.yaml` and prompts for the values marked `sync: false`.
+   Fill them in as below.
+4. Apply. First build takes a few minutes.
+
+### Values Render will ask for
+
+| Variable | What to put |
+| --- | --- |
+| `TOKEN_ENCRYPTION_KEY` | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+| `CORS_ORIGINS` | `https://aura-ai-psi-self.vercel.app` — exact, no trailing slash |
+| `FRONTEND_URL` | same as above |
+| `BACKEND_URL` | the Render URL, e.g. `https://aura-api.onrender.com` |
+| `ANTHROPIC_API_KEY` | optional, but without it there's no real reasoning |
+| `OPENAI_API_KEY` | optional; also unlocks semantic memory/document search |
+
+`BACKEND_URL` is a chicken-and-egg: you won't know the URL until the service
+exists. Put a placeholder, deploy, then edit it and redeploy. It only matters
+for the Google OAuth redirect.
+
+Set `TOKEN_ENCRYPTION_KEY` to **the same value** on both the web service and
+the cron worker. Different keys mean the worker can't decrypt what the API
+stored.
+
+### Option B — by hand
+
+New → Web Service → Docker → root directory `backend`. Add a Postgres instance,
+then set every variable from `backend/.env.example` in the Environment tab.
+
+### Verify
+
+```
+curl https://aura-api.onrender.com/health
+curl https://aura-api.onrender.com/health/ready
+curl https://aura-api.onrender.com/api/health/preflight
 ```
 
-**Why the environment and not the vault?** The vault (`services/vault.py`) is for a
-*user's* third-party secrets — it's encrypted per-row and decrypted on demand
-precisely because the model must never read it. Your Claude key is *infrastructure*:
-it's needed before any user exists, on every request, at process start. Putting it in
-the database would mean a database leak also leaks your billing credential, and would
-add a decrypt to every call for no security gain. Environment variables, injected by
-your platform's secret manager, are the right home.
-
-**Rotating it:** create the new key first, deploy, confirm `/api/health/preflight`
-reports the model as ok, *then* revoke the old one. Revoking first means downtime.
-
-Optionally set `OPENAI_API_KEY` too — it's used **only for embeddings**, which make
-memory and document search match meaning instead of keywords. Claude still does all
-the reasoning. Without it everything works, just less well, and preflight says so.
+`/health` should return `{"status":"ok"}`. `/health/ready` proves the database
+connection works. `/api/health/preflight` names any setting still missing — it
+returns variable *names*, never values, so it's safe to leave reachable.
 
 ---
 
-## 1. Generate secrets
+## 2. Point the frontend at it
 
-```bash
-python -c "import secrets; print('SECRET_KEY=' + secrets.token_urlsafe(48))"
-python -c "from cryptography.fernet import Fernet; print('TOKEN_ENCRYPTION_KEY=' + Fernet.generate_key().decode())"
+Vercel → your project → **Settings** → **Environment Variables**:
+
+```
+NEXT_PUBLIC_API_URL = https://aura-api.onrender.com
 ```
 
-`SECRET_KEY` signs login tokens — with the default value anyone who has read this
-repository can forge a session. `TOKEN_ENCRYPTION_KEY` encrypts stored OAuth tokens
-and vault secrets; set it explicitly, because if it's derived from `SECRET_KEY` then
-rotating `SECRET_KEY` silently makes every stored credential unreadable.
+Apply it to Production, Preview and Development. Then **Deployments → Redeploy**.
+Nothing changes until you rebuild.
 
-Neither is recoverable. Store both in your platform's secret manager.
+### Verify
 
----
+Open the site. The line under the sign-in card should read
+`Model provider: anthropic` (or `mock` if you skipped the key). If it still says
+"Connecting to API…", open DevTools → Network and look at the failing request:
 
-## 2. Environment
-
-Copy `.env.production.example` and fill it in. The settings that actually change
-behaviour in production:
-
-| Variable | Why it matters |
-|---|---|
-| `ENVIRONMENT=production` | Makes preflight failures fatal, disables `/docs`, enables HSTS |
-| `DEBUG=false` | Stops internal error text reaching clients |
-| `ALLOW_DEMO_LOGIN=false` | Otherwise anyone who knows an email can sign in as them |
-| `DATABASE_URL` | Postgres. SQLite will corrupt under concurrent writes |
-| `AUTO_CREATE_SCHEMA=false` | Hands schema control to Alembic |
-| `CORS_ORIGINS` | Your exact frontend origin. Never `*` with credentials on |
-| `REDIS_URL` | Shared rate-limit counters; without it each worker counts separately |
-| `DAILY_SPEND_CAP_USD` | The backstop against a runaway loop |
-
-With `ENVIRONMENT=production`, **the app refuses to start** while any blocking
-preflight check fails. That's deliberate: a container that won't boot gets noticed,
-an insecure one that boots fine does not.
+- Request URL is `localhost:8000` → the variable didn't reach the build. Confirm
+  it's set for the Production environment and that you redeployed.
+- Status **CORS error** → `CORS_ORIGINS` doesn't match. It must be the exact
+  origin, scheme included, no trailing slash.
+- Status **503** or a long hang → the free instance is asleep. First request
+  takes 30–60s.
 
 ---
 
-## 3. Database
+## Things that will bite you
+
+**Free instances sleep after 15 minutes idle.** The first request after that
+takes 30–60 seconds. The sign-in screen looks broken during the wait. Upgrade to
+a paid instance if that matters.
+
+**Free Postgres expires after 30 days.** Render deletes it. Diarise a migration
+to the paid tier before then.
+
+**Vercel preview deployments get their own URLs.** Only the origins in
+`CORS_ORIGINS` can call the API, so previews fail unless you add them too.
+
+**Demo login is password-free.** Anyone who knows an email address can sign in
+as that user. `render.yaml` leaves it on so the deployed demo is usable at all —
+set `ALLOW_DEMO_LOGIN=false` and configure Google OAuth before anyone puts real
+data in.
+
+**`ENVIRONMENT` is `staging`, not `production`, on purpose.** In production
+`main.py` refuses to boot while any preflight check fails, and production also
+forbids demo login — so with no model key and no OAuth, a production deploy
+would crash-loop. Staging logs the identical warnings and still serves. Move to
+production once you have a model key and real authentication.
+
+---
+
+## Google OAuth (optional)
+
+1. Google Cloud Console → APIs & Services → Credentials → OAuth client ID → Web.
+2. Authorised redirect URI: `https://aura-api.onrender.com/api/auth/google/callback`
+   — must match `BACKEND_URL` exactly.
+3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on Render, redeploy.
+4. Enable the Gmail and Calendar APIs for the project.
+
+The "Continue with Google" button appears on the sign-in screen once the backend
+reports the client as configured.
+
+---
+
+## Local development
 
 ```bash
+# Terminal 1
 cd backend
-export DATABASE_URL=postgresql+psycopg://user:pass@host:5432/aura
-alembic revision --autogenerate -m "initial schema"   # first time only
-alembic upgrade head
-```
+python -m venv .venv && .venv\Scripts\activate     # Windows
+pip install -r requirements.txt
+copy .env.example .env                              # optional; defaults work
+uvicorn app.main:app --reload
 
-Then set `AUTO_CREATE_SCHEMA=false` so `create_all` and Alembic aren't both trying to
-own the schema.
+# Terminal 2
+cd frontend
+copy .env.example .env.local
+npm install
+npm run dev
 
-Every deploy after that:
-
-```bash
-alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-**pgvector (optional).** Memory and document embeddings live in JSON columns and are
-compared in Python — fine to roughly ten thousand chunks per user. Past that:
-
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-```
-
-then migrate the `embedding` columns to `vector(1536)` and replace the ranking loops
-in `services/memory.py` and `services/documents.py` with
-`ORDER BY embedding <=> :query_vec`. Nothing else changes.
-
----
-
-## 4. Processes
-
-Two, not one:
-
-```bash
-# API
-alembic upgrade head
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
-
-# Worker — automations, schedules, heartbeat, nightly memory compaction
+# Terminal 3 (optional — automations, schedules, heartbeat)
+cd backend
 python worker.py
 ```
 
-Without the worker, AURA is reactive only: nothing fires on a schedule, the
-heartbeat never runs, and memory never gets compacted. Run **exactly one** worker.
-Two will double-fire schedules, because the 90-second guard against duplicate
-execution is per-process.
-
-Health endpoints for your platform:
-
-- `GET /health` — liveness. Cheap, no database call.
-- `GET /health/ready` — readiness. Touches the database; returns 503 when degraded so
-  a load balancer drains the instance instead of sending it traffic.
-- `GET /api/health/preflight` — configuration diagnostics, also rendered at `/setup`.
-
----
-
-## 5. Frontend
-
-```bash
-cd frontend
-NEXT_PUBLIC_API_URL=https://api.yourdomain.com npm run build
-npm start
-```
-
-`NEXT_PUBLIC_*` values are **baked in at build time**, not read at runtime. Changing
-the API URL means rebuilding, not restarting.
-
----
-
-## 6. Google Workspace (optional)
-
-Google Cloud Console → **APIs & Services**:
-
-1. Enable the **Gmail API** and **Google Calendar API**
-2. Create an **OAuth 2.0 Client ID** (Web application)
-3. Authorised redirect URI: `https://api.yourdomain.com/api/auth/google/callback`
-4. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
-
-The scopes requested are `gmail.modify` and `calendar` — enough to read, label,
-archive and send, and to create and delete events. Google requires verification
-before more than 100 external users can grant them; until then, add testers on the
-OAuth consent screen.
-
-Refresh tokens are Fernet-encrypted before they touch the database and are never
-returned by any endpoint.
-
-**Two flows share one endpoint.** `GET /api/auth/google/start` behaves differently
-depending on whether the request carries a session:
-
-| Arriving with | Mode | Result |
-|---|---|---|
-| no token | `signin` | The Google account identifies you — find or create a user by that email |
-| a bearer token | `connect` | Google is attached to the account you're **already** signed in as |
-
-The mode and the user id are bound to the CSRF state at start, not inferred at
-callback. That matters: without it, the callback's only clue about who the tokens
-belong to is the Google email, so connecting a personal Gmail while signed in as
-someone else silently switches you to a different account. Connecting a Google
-address already linked to another AURA user is refused rather than moved.
-
-**Partial consent is normal and must be handled.** Google lets users untick
-individual scopes, so "connected" is not the same as "can do the thing".
-`/api/auth/integrations` returns a per-capability breakdown; the Settings card
-shows which permissions actually came back and offers Reconnect when any are
-missing.
-
-**Refresh tokens arrive once.** Google returns one on first consent only, which is
-why `authorization_url` sets `prompt=consent` and why the callback never overwrites
-a stored refresh token with an empty one. A connection holding only an access token
-stops working after an hour — `needs_reconnect` flags that case explicitly.
-
-Disconnecting calls Google's revoke endpoint as well as deleting the local row, so
-the grant doesn't linger in the user's Google security settings.
-
----
-
-## 7. Pre-launch checklist
-
-Security:
-
-- [ ] `SECRET_KEY` and `TOKEN_ENCRYPTION_KEY` are random, unique, in a secret manager
-- [ ] `ALLOW_DEMO_LOGIN=false`
-- [ ] `DEBUG=false`, `ENVIRONMENT=production`
-- [ ] `CORS_ORIGINS` lists exact HTTPS origins, no wildcard
-- [ ] TLS terminated in front of the API; HTTP redirects to HTTPS
-- [ ] `/api/health/preflight` returns `ready: true`
-
-Cost and abuse — this is the part people skip:
-
-- [ ] `DAILY_SPEND_CAP_USD` set to a number you'd be relaxed about losing
-- [ ] `RATE_LIMIT_ENABLED=true` with `REDIS_URL` set
-- [ ] A billing alert configured in the Anthropic console, independent of AURA
-- [ ] Inbound channels connected only for channels you actually use — each live
-      token is a way to spend your money
-- [ ] `HEARTBEAT_DEFAULT_INTERVAL_MINUTES` sane (30+; every 5 minutes across many
-      users adds up fast)
-
-Operations:
-
-- [ ] Automated Postgres backups, and a restore you have actually tested
-- [ ] Exactly one worker process
-- [ ] Logs collected somewhere searchable — every response carries `X-Request-ID`
-- [ ] Uptime check on `/health/ready`
-
----
-
-## 8. What is deliberately not production-grade
-
-Being explicit so you don't discover these the hard way:
-
-**Never load-tested.** The code has been reviewed but not benchmarked. Assume the
-first bottleneck is Python-side similarity search over embeddings.
-
-**Similarity search is O(n) in Python.** See the pgvector note above.
-
-**One worker only.** Schedule de-duplication is per-process. Multiple workers need a
-distributed lock — Redis `SETNX` around `run_due` is the small version of that fix.
-
-**Inbound channel tokens don't expire.** They're rotatable but have no TTL. Rotate
-them on a schedule you decide.
-
-**No per-user cost attribution to a payment method.** The spend cap protects *you*,
-the operator. If you intend to charge users, you need metered billing on top of
-`UsageRecord`.
-
-**Costs in the spend guard are estimates.** `PRICES` in `services/usage.py` is a
-hardcoded table used to enforce the cap, not to bill. Verify it against current
-provider pricing; an unrecognised model is priced pessimistically on purpose.
-
-**The vault protects against the model, not against you.** Anyone holding both the
-database and `TOKEN_ENCRYPTION_KEY` can decrypt everything in it. For a multi-tenant
-deployment, use a real KMS with per-tenant keys.
-
-**No email deliverability setup.** If you send via SMTP from your own domain,
-configure SPF, DKIM and DMARC or your assistant's mail will land in spam.
-
----
-
-## 9. First-run smoke test
-
-After deploying, in order:
-
-1. `curl https://api.yourdomain.com/health` → `{"status":"ok"}`
-2. `curl https://api.yourdomain.com/api/health/preflight` → `ready: true`
-3. Open `/setup` in a browser — every check green or an understood warning
-4. Sign in, complete onboarding, name the assistant
-5. Ask it *"what does my day look like"* — confirm skill lines appear in the reply
-6. Ask it to *"email someone"* — confirm it **queues for approval** rather than sending
-7. Settings → confirm today's spend is non-zero (proves usage accounting works)
-8. Wait one heartbeat interval → confirm a background report appears on the dashboard
-
-Step 6 is the one that matters. If an email sends without asking, stop and check
-`DESTRUCTIVE_TOOLS` and the account's autonomy tier before letting anyone else near it.
+Locally, CORS trusts any localhost port, so Next.js quietly moving to `:3001`
+when `:3000` is taken won't break anything.

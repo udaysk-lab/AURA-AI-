@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { API_BASE, api, setToken } from "@/lib/api";
+import { API_BASE, API_BASE_IS_FALLBACK, api, setToken } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import Mascot from "@/components/Mascot";
 import { Spinner } from "@/components/ui";
@@ -53,18 +53,51 @@ export default function LoginPage() {
 
   /**
    * "Failed to fetch" is what the browser says for *any* request that never got
-   * a response — backend down, wrong port, CORS refusal. All three look
-   * identical from here, and the raw string tells the user nothing, so name the
-   * three candidates instead of repeating it.
+   * a response — backend down, wrong port, CORS refusal, wrong host. They look
+   * identical from here, and the raw string tells the user nothing.
+   *
+   * The one case we can identify precisely is worth separating out: a deployed
+   * page still pointing at localhost. That means NEXT_PUBLIC_API_URL was missing
+   * when the bundle was built, so the browser is dialling the visitor's own
+   * machine. Sending someone to go and check uvicorn logs for that is a wild
+   * goose chase — no backend change can fix it.
    */
   const describeFailure = (e: unknown): string => {
     const raw = e instanceof Error ? e.message : String(e);
     if (!/failed to fetch|networkerror|load failed/i.test(raw)) return raw;
+
+    const origin = typeof window !== "undefined" ? window.location.origin : "?";
+    const host = typeof window !== "undefined" ? window.location.hostname : "";
+    const isLocalPage =
+      host === "localhost" || host === "127.0.0.1" || host === "";
+
+    if (!isLocalPage && API_BASE_IS_FALLBACK) {
+      return (
+        `This page is deployed at ${origin}, but it has no API address ` +
+        `configured, so it fell back to ${API_BASE} — your own computer. ` +
+        "That will never work for a visitor.\n\n" +
+        "Fix: set NEXT_PUBLIC_API_URL to the public URL of the backend in your " +
+        "host's environment variables, then redeploy.\n\n" +
+        "NEXT_PUBLIC_ values are baked into the JavaScript at build time, so " +
+        "adding the variable alone changes nothing until you rebuild."
+      );
+    }
+
+    if (!isLocalPage) {
+      return (
+        `Couldn't reach the API at ${API_BASE}. Two likely causes:\n` +
+        "1. The backend is down or still waking up. Free hosting tiers sleep " +
+        "when idle — open it directly and wait for it to respond, then retry.\n" +
+        `2. CORS. This page is on ${origin}; the backend's CORS_ORIGINS must ` +
+        "contain that exact origin — scheme and host, no trailing slash."
+      );
+    }
+
     return (
       `Couldn't reach the API at ${API_BASE}. Three things to check:\n` +
       "1. Is the backend running?  cd backend && uvicorn app.main:app --reload\n" +
-      `2. This page is on ${typeof window !== "undefined" ? window.location.origin : "?"}` +
-      " — the backend must allow that exact origin in CORS_ORIGINS.\n" +
+      `2. This page is on ${origin} — the backend must allow that exact origin ` +
+      "in CORS_ORIGINS.\n" +
       "3. Restart the backend after any .env change — it only reads it at startup."
     );
   };
@@ -126,33 +159,47 @@ export default function LoginPage() {
             </>
           )}
 
-          <div className="space-y-3">
-            <div>
-              <label className="label mb-1.5 block">Email</label>
-              <input
-                className="input"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@company.com"
-              />
+          {/* Only offered when the backend actually accepts it. Showing the form
+              when ALLOW_DEMO_LOGIN=false just hands people a 403. While config
+              is still loading we show it optimistically — it's the common case,
+              and a form that appears late feels broken. */}
+          {(config === null || config.demo_login_enabled) && (
+            <div className="space-y-3">
+              <div>
+                <label className="label mb-1.5 block">Email</label>
+                <input
+                  className="input"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@company.com"
+                />
+              </div>
+              <div>
+                <label className="label mb-1.5 block">Name</label>
+                <input
+                  className="input"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Your name"
+                />
+              </div>
+              <button
+                onClick={signInDemo}
+                disabled={busy || !email}
+                className="btn-primary w-full"
+              >
+                {busy ? <Spinner /> : "Continue"}
+              </button>
             </div>
-            <div>
-              <label className="label mb-1.5 block">Name</label>
-              <input
-                className="input"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Your name"
-              />
-            </div>
-            <button
-              onClick={signInDemo}
-              disabled={busy || !email}
-              className="btn-primary w-full"
-            >
-              {busy ? <Spinner /> : "Continue"}
-            </button>
-          </div>
+          )}
+
+          {config && !config.demo_login_enabled && !config.google_enabled && (
+            <p className="rounded-lg border border-amber/35 bg-amber/12 px-3 py-2.5 text-[12px] leading-relaxed text-amber">
+              No sign-in method is enabled. Set GOOGLE_CLIENT_ID and
+              GOOGLE_CLIENT_SECRET on the backend, or re-enable demo login with
+              ALLOW_DEMO_LOGIN=true.
+            </p>
+          )}
 
           {error && (
             <p className="whitespace-pre-line rounded-lg border border-rose/30 bg-rose/10 px-3 py-2.5 text-[12px] leading-relaxed text-rose">

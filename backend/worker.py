@@ -48,37 +48,64 @@ def compact_all(db) -> None:
             db.rollback()
 
 
+def tick(compact: bool = False) -> None:
+    """One pass over all four loops. Never raises — a bad tick must not kill the
+    process, and on a cron platform a non-zero exit reads as a failed job."""
+    db = SessionLocal()
+    try:
+        fired = engine.run_due_schedules(db)
+        if fired:
+            log.info("Fired %d automation rule(s)", len(fired))
+
+        ran = schedule_service.run_due(db)
+        if ran:
+            log.info("Ran %d schedule(s): %s", len(ran), ", ".join(r["schedule"] for r in ran))
+
+        reports = heartbeat_service.run_all_due(db)
+        if reports:
+            log.info("Ran %d heartbeat(s)", len(reports))
+
+        if compact:
+            compact_all(db)
+    except Exception:
+        log.exception("Worker tick failed")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def run_once() -> None:
+    """A single pass, for platform cron.
+
+    Free-tier hosts sleep idle services, so a `while True` timer inside the web
+    process fires unpredictably or not at all. Running the same work from cron
+    makes the schedule real. Compaction is cheap and idempotent, so it just runs
+    on every invocation rather than needing state to track the last run.
+    """
+    init_db()
+    log.info("Worker: single pass")
+    tick(compact=True)
+    log.info("Worker: done")
+
+
 def main() -> None:
     init_db()
     log.info("Worker started — schedules + heartbeat every %ss, compaction daily", TICK_SECONDS)
     last_compaction = datetime.now(timezone.utc) - COMPACTION_INTERVAL
 
     while True:
-        db = SessionLocal()
-        try:
-            fired = engine.run_due_schedules(db)
-            if fired:
-                log.info("Fired %d automation rule(s)", len(fired))
-
-            ran = schedule_service.run_due(db)
-            if ran:
-                log.info("Ran %d schedule(s): %s", len(ran), ", ".join(r["schedule"] for r in ran))
-
-            reports = heartbeat_service.run_all_due(db)
-            if reports:
-                log.info("Ran %d heartbeat(s)", len(reports))
-
-            now = datetime.now(timezone.utc)
-            if now - last_compaction >= COMPACTION_INTERVAL:
-                compact_all(db)
-                last_compaction = now
-        except Exception:
-            log.exception("Worker tick failed")
-            db.rollback()
-        finally:
-            db.close()
+        now = datetime.now(timezone.utc)
+        due_for_compaction = now - last_compaction >= COMPACTION_INTERVAL
+        tick(compact=due_for_compaction)
+        if due_for_compaction:
+            last_compaction = now
         time.sleep(TICK_SECONDS)
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if "--once" in sys.argv:
+        run_once()
+    else:
+        main()
