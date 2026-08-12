@@ -33,6 +33,10 @@ yarn-error.log*
 # Design reference screenshots — kept locally, not published
 samples for aura ai ui/
 
+# Local throwaway helper scripts and their logs
+_git-*.bat
+_git-*.txt
+
 # Editors / OS
 .vscode/
 .idea/
