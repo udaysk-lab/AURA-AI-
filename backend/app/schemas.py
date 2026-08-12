@@ -37,6 +37,19 @@ class DemoLoginIn(BaseModel):
     name: str = "Demo User"
 
 
+class RegisterIn(BaseModel):
+    email: EmailStr
+    # 72 is bcrypt's hard ceiling — see security.MAX_PASSWORD_BYTES. Enforced
+    # here too so the error is a 422 about the field rather than a 500.
+    password: str = Field(min_length=8, max_length=72)
+    name: str = Field(default="", max_length=200)
+
+
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=72)
+
+
 class SettingsOut(ORMModel):
     briefing_time: str
     briefing_enabled: bool

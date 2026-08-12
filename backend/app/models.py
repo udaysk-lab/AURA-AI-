@@ -53,6 +53,9 @@ class User(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(200), default="")
     avatar_url: Mapped[str] = mapped_column(String(1000), default="")
     timezone: Mapped[str] = mapped_column(String(64), default="UTC")
+    # bcrypt hash. Empty for accounts that only ever signed in through Google —
+    # those have no password to verify, and must not be loginable with one.
+    password_hash: Mapped[str] = mapped_column(String(255), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

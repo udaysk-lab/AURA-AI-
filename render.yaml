@@ -67,10 +67,11 @@ services:
         sync: false
 
       # --- Sign-in ---------------------------------------------------------
-      # Password-free: anyone who knows an email address can sign in as that
-      # user. Fine for a portfolio demo, unacceptable for real data.
+      # Off. Email + password registration is the way in — see /api/auth/register.
+      # Setting this true would re-enable password-free login, where anyone who
+      # knows an email address can sign in as that user.
       - key: ALLOW_DEMO_LOGIN
-        value: "true"
+        value: "false"
 
       # --- Model provider --------------------------------------------------
       # Without one of these AURA runs its offline keyword router: every screen

@@ -6,6 +6,7 @@ import base64
 import hashlib
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
 from cryptography.fernet import Fernet, InvalidToken
 from jose import JWTError, jwt
 
@@ -33,6 +34,32 @@ def decode_access_token(token: str) -> dict | None:
         return jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
     except JWTError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Passwords
+# ---------------------------------------------------------------------------
+
+# bcrypt silently truncates at 72 bytes, so a longer password would make every
+# suffix beyond it irrelevant. Reject rather than truncate, so nobody believes
+# they have a 200-character password when they effectively have 72.
+MAX_PASSWORD_BYTES = 72
+MIN_PASSWORD_LENGTH = 8
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    """Constant-time check. False for any account without a usable hash."""
+    if not password or not password_hash:
+        return False
+    try:
+        return bcrypt.checkpw(password.encode(), password_hash.encode())
+    except (ValueError, TypeError):
+        # A malformed or truncated hash in the database must fail closed.
+        return False
 
 
 # ---------------------------------------------------------------------------

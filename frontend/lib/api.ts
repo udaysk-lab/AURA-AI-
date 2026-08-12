@@ -516,9 +516,20 @@ export interface Conflict {
 
 export const api = {
   authConfig: () =>
-    get<{ google_enabled: boolean; demo_login_enabled: boolean; llm_provider: string }>(
-      "/api/auth/config"
-    ),
+    get<{
+      google_enabled: boolean;
+      demo_login_enabled: boolean;
+      password_login_enabled: boolean;
+      llm_provider: string;
+    }>("/api/auth/config"),
+  register: (email: string, password: string, name: string) =>
+    post<{ access_token: string; user: User }>("/api/auth/register", {
+      email,
+      password,
+      name,
+    }),
+  login: (email: string, password: string) =>
+    post<{ access_token: string; user: User }>("/api/auth/login", { email, password }),
   demoLogin: (email: string, name: string) =>
     post<{ access_token: string; user: User }>("/api/auth/demo", { email, name }),
   // Sends the bearer token when signed in, which is what tells the backend to

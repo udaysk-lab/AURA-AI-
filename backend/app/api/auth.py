@@ -17,11 +17,19 @@ from app.models import OAuthAccount, User, UserSettings, utcnow
 from app.schemas import (
     DemoLoginIn,
     IntegrationStatus,
+    LoginIn,
+    RegisterIn,
     SyncResultOut,
     TokenOut,
     UserOut,
 )
-from app.security import create_access_token, decode_access_token, encrypt_secret
+from app.security import (
+    create_access_token,
+    decode_access_token,
+    encrypt_secret,
+    hash_password,
+    verify_password,
+)
 from app import plugins as plugin_registry
 from app.agent import skills as skill_registry
 from app.services import channels as channel_service
@@ -63,8 +71,53 @@ def auth_config() -> dict:
     return {
         "google_enabled": settings.google_oauth_configured,
         "demo_login_enabled": settings.allow_demo_login,
+        "password_login_enabled": True,
         "llm_provider": settings.resolved_provider(),
     }
+
+
+@router.post("/register", response_model=TokenOut, status_code=201)
+def register(payload: RegisterIn, db: DbSession) -> TokenOut:
+    """Create an account with an email and password, and sign it in."""
+    email = payload.email.lower().strip()
+    existing = db.scalars(select(User).where(User.email == email)).first()
+    if existing:
+        # Deliberately explicit. Email enumeration is already possible here by
+        # design — this is a sign-up form, and a vague error would just make
+        # people retry the same address. The protection that matters is the
+        # rate limit on this route, not pretending the address is free.
+        raise HTTPException(status_code=409, detail="That email is already registered")
+
+    user = User(
+        email=email,
+        name=payload.name.strip() or email.split("@")[0],
+        timezone="UTC",
+        password_hash=hash_password(payload.password),
+        is_demo=False,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    db.add(UserSettings(user_id=user.id))
+    db.commit()
+    log.info("registered user %s", user.id)
+    return _issue(db, user)
+
+
+@router.post("/login", response_model=TokenOut)
+def login(payload: LoginIn, db: DbSession) -> TokenOut:
+    """Email and password sign-in."""
+    email = payload.email.lower().strip()
+    user = db.scalars(select(User).where(User.email == email)).first()
+
+    # One message for "no such user", "wrong password" and "Google-only
+    # account", so a failed attempt reveals nothing about which it was.
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="This account is disabled")
+
+    return _issue(db, user)
 
 
 @router.post("/demo", response_model=TokenOut)

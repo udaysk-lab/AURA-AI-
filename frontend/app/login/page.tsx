@@ -14,10 +14,13 @@ export default function LoginPage() {
   const [config, setConfig] = useState<{
     google_enabled: boolean;
     demo_login_enabled: boolean;
+    password_login_enabled: boolean;
     llm_provider: string;
   } | null>(null);
-  const [email, setEmail] = useState("demo@aura.ai");
-  const [name, setName] = useState("Demo User");
+  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   // Read ?error= without useSearchParams so the page needs no Suspense boundary.
   const [error, setError] = useState("");
@@ -102,11 +105,32 @@ export default function LoginPage() {
     );
   };
 
+  const submit = async () => {
+    if (mode === "signup" && password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const res =
+        mode === "signup"
+          ? await api.register(email, password, name)
+          : await api.login(email, password);
+      setToken(res.access_token);
+      await refresh();
+      router.push("/dashboard");
+    } catch (e) {
+      setError(describeFailure(e));
+      setBusy(false);
+    }
+  };
+
   const signInDemo = async () => {
     setBusy(true);
     setError("");
     try {
-      const res = await api.demoLogin(email, name);
+      const res = await api.demoLogin(email || "demo@aura.ai", name || "Demo User");
       setToken(res.access_token);
       await refresh();
       router.push("/dashboard");
@@ -141,7 +165,9 @@ export default function LoginPage() {
       <div className="relative w-full max-w-sm animate-fade-up">
         <div className="mb-8 flex flex-col items-center text-center">
           <Mascot colourway="violet" stage="acquaintance" size={76} className="mb-5" />
-          <h1 className="display text-shine text-[26px]">Sign in to AURA</h1>
+          <h1 className="display text-shine text-[26px]">
+            {mode === "signup" ? "Create your AURA account" : "Sign in to AURA"}
+          </h1>
           <p className="mt-2 text-[13px] leading-relaxed text-muted">
             Your email, calendar, tasks and memory — in one assistant that remembers.
           </p>
@@ -159,21 +185,18 @@ export default function LoginPage() {
             </>
           )}
 
-          {/* Only offered when the backend actually accepts it. Showing the form
-              when ALLOW_DEMO_LOGIN=false just hands people a 403. While config
-              is still loading we show it optimistically — it's the common case,
-              and a form that appears late feels broken. */}
-          {(config === null || config.demo_login_enabled) && (
-            <div className="space-y-3">
-              <div>
-                <label className="label mb-1.5 block">Email</label>
-                <input
-                  className="input"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@company.com"
-                />
-              </div>
+          {/* Email + password is always available — it needs no configuration,
+              unlike Google OAuth. Enter submits, because a login form that
+              ignores the return key is the single most irritating thing a login
+              form can do. */}
+          <form
+            className="space-y-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!busy) void submit();
+            }}
+          >
+            {mode === "signup" && (
               <div>
                 <label className="label mb-1.5 block">Name</label>
                 <input
@@ -181,24 +204,70 @@ export default function LoginPage() {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Your name"
+                  autoComplete="name"
                 />
               </div>
-              <button
-                onClick={signInDemo}
-                disabled={busy || !email}
-                className="btn-primary w-full"
-              >
-                {busy ? <Spinner /> : "Continue"}
-              </button>
+            )}
+            <div>
+              <label className="label mb-1.5 block">Email</label>
+              <input
+                className="input"
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@company.com"
+                autoComplete="email"
+              />
             </div>
-          )}
+            <div>
+              <label className="label mb-1.5 block">Password</label>
+              <input
+                className="input"
+                type="password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={mode === "signup" ? "At least 8 characters" : "••••••••"}
+                // Tells a password manager whether to offer a saved password or
+                // to generate a new one.
+                autoComplete={mode === "signup" ? "new-password" : "current-password"}
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={busy || !email || !password}
+              className="btn-primary w-full"
+            >
+              {busy ? <Spinner /> : mode === "signup" ? "Create account" : "Sign in"}
+            </button>
+          </form>
 
-          {config && !config.demo_login_enabled && !config.google_enabled && (
-            <p className="rounded-lg border border-amber/35 bg-amber/12 px-3 py-2.5 text-[12px] leading-relaxed text-amber">
-              No sign-in method is enabled. Set GOOGLE_CLIENT_ID and
-              GOOGLE_CLIENT_SECRET on the backend, or re-enable demo login with
-              ALLOW_DEMO_LOGIN=true.
-            </p>
+          <p className="text-center text-[12px] text-muted">
+            {mode === "signup" ? "Already have an account?" : "No account yet?"}{" "}
+            <button
+              onClick={() => {
+                setMode(mode === "signup" ? "signin" : "signup");
+                setError("");
+                setPassword("");
+              }}
+              className="text-accent underline-offset-2 hover:underline"
+            >
+              {mode === "signup" ? "Sign in" : "Create one"}
+            </button>
+          </p>
+
+          {/* Only when the backend still accepts it. On a deployed instance this
+              should be off — it is a password-free login. */}
+          {config?.demo_login_enabled && (
+            <>
+              <div className="flex items-center gap-3 text-[11px] uppercase tracking-widest text-faint">
+                <span className="h-px flex-1 bg-line" /> or <span className="h-px flex-1 bg-line" />
+              </div>
+              <button onClick={signInDemo} disabled={busy} className="btn-ghost w-full">
+                Explore the demo — no password
+              </button>
+            </>
           )}
 
           {error && (
