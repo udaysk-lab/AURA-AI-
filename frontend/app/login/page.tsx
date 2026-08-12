@@ -76,11 +76,17 @@ export default function LoginPage() {
 
     if (!isLocalPage && API_BASE_IS_FALLBACK) {
       return (
-        `This page is deployed at ${origin}, but it has no API address ` +
-        `configured, so it fell back to ${API_BASE} — your own computer. ` +
-        "That will never work for a visitor.\n\n" +
-        "Fix: set NEXT_PUBLIC_API_URL to the public URL of the backend in your " +
-        "host's environment variables, then redeploy.\n\n" +
+        `No API address is configured, so requests went to this same origin ` +
+        `(${origin}/api) — and nothing there answered.\n\n` +
+        "Either of these fixes it:\n" +
+        "1. Route /api to the backend from this domain. vercel.json already " +
+        "declares that rewrite, so if it isn't working the backend service " +
+        "either failed to build or is crashing — check the deployment logs. A " +
+        "500 from /api/auth/config means it deployed but crashed on startup, " +
+        "and the usual cause is DATABASE_URL still pointing at SQLite, which " +
+        "cannot work on a read-only serverless filesystem.\n" +
+        "2. Host the backend separately and set NEXT_PUBLIC_API_URL to its " +
+        "public URL.\n\n" +
         "NEXT_PUBLIC_ values are baked into the JavaScript at build time, so " +
         "adding the variable alone changes nothing until you rebuild."
       );

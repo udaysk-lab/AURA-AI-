@@ -120,5 +120,30 @@ def init_db() -> None:
         log.info("AUTO_CREATE_SCHEMA=false — expecting Alembic to have run.")
         return
 
-    Base.metadata.create_all(bind=engine)
-    apply_additive_migrations()
+    try:
+        Base.metadata.create_all(bind=engine)
+        apply_additive_migrations()
+    except Exception as exc:
+        # Raising here kills the process during startup, and on a serverless
+        # host that surfaces as an opaque FUNCTION_INVOCATION_FAILED with no
+        # clue as to why. The overwhelmingly common cause is the SQLite default
+        # on a read-only filesystem: nothing about the app is broken, the
+        # database just cannot live there. Log something actionable and let the
+        # app boot, so /setup and /api/health/preflight can be reached and can
+        # say what is wrong. Requests that genuinely need the database will
+        # still fail, and loudly.
+        log.error(
+            "Could not initialise the database schema: %s\n"
+            "DATABASE_URL is %r.%s",
+            exc,
+            settings.database_url,
+            (
+                "\nThis is a file-backed SQLite database. Serverless platforms"
+                " (Vercel, Lambda) have a read-only filesystem apart from /tmp,"
+                " and /tmp is wiped between invocations — so SQLite cannot work"
+                " there even when it appears to. Set DATABASE_URL to a Postgres"
+                " connection string."
+                if settings.database_url.startswith("sqlite")
+                else "\nCheck the host is reachable and the credentials are right."
+            ),
+        )

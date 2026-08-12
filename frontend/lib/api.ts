@@ -2,18 +2,33 @@
  * Typed API client. One place that knows the backend contract.
  */
 
-export const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const CONFIGURED_API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "");
 
 /**
- * True when NEXT_PUBLIC_API_URL wasn't set and we fell back to localhost.
+ * Where the API lives.
  *
- * Worth distinguishing: on a deployed site this means the browser is trying to
- * reach the *visitor's own* machine, which no amount of backend debugging will
- * fix. The variable is inlined at build time, so it's also the one class of
- * misconfiguration that needs a redeploy rather than a restart.
+ * Set NEXT_PUBLIC_API_URL when the backend is on a different host — a Render
+ * service, say. Leave it unset and requests go to the page's own origin, which
+ * is correct whenever something in front of the app routes /api to the backend:
+ * the `rewrites` in vercel.json do exactly that, as would a reverse proxy.
+ *
+ * The old fallback was a hardcoded http://localhost:8000. That is right in
+ * development and actively wrong once deployed, where it makes every visitor's
+ * browser dial its own machine. Same-origin is the safer default because it is
+ * at least reachable; if nothing serves /api there you get an honest 404 or 500
+ * from your own domain rather than a connection refused to localhost.
  */
-export const API_BASE_IS_FALLBACK = !process.env.NEXT_PUBLIC_API_URL;
+export const API_BASE =
+  CONFIGURED_API_URL ??
+  (typeof window === "undefined" ? "http://localhost:8000" : "");
+
+/**
+ * True when NEXT_PUBLIC_API_URL wasn't set, so we're relying on same-origin
+ * routing. Not an error by itself — only worth surfacing if a request fails,
+ * since it means /api isn't being routed to a backend. Remember the variable is
+ * inlined at build time, so setting it needs a redeploy, not a restart.
+ */
+export const API_BASE_IS_FALLBACK = !CONFIGURED_API_URL;
 
 const TOKEN_KEY = "aura_token";
 
