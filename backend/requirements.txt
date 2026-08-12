@@ -1,0 +1,26 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+sqlalchemy==2.0.36
+pydantic==2.10.3
+pydantic-settings==2.6.1
+email-validator==2.2.0
+python-jose[cryptography]==3.3.0
+python-multipart==0.0.20
+httpx==0.28.1
+cryptography==44.0.0
+
+# Postgres driver - not needed if you stay on the SQLite default
+psycopg[binary]==3.2.3
+
+# Document ingestion (PDF). Other formats need nothing extra.
+pypdf==5.1.0
+
+# Shared rate-limit counters across workers. Optional — falls back to in-memory.
+redis==5.2.1
+
+# Tests
+pytest==8.3.4
+
+# Optional: only needed once you point AURA at a real model provider
+openai==1.57.4
+anthropic==0.40.0

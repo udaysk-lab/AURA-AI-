@@ -1,0 +1,44 @@
+# Env — never commit a filled-in one. Templates (.env.example,
+# .env.production.example) are tracked deliberately.
+.env
+.env.*
+!.env.example
+!.env.production.example
+!.env.local.example
+*.local
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.db
+*.db-wal
+*.db-shm
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+out/
+build/
+dist/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Design reference screenshots — kept locally, not published
+samples for aura ai ui/
+
+# Local helper scripts / logs (not part of the project)
+_git-*.txt
+_git-*.bat
+push-to-github.ps1
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

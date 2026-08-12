@@ -1,0 +1,428 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+   Palette
+
+   Dark aurora is the default: a near-black canvas lit by violet and azure
+   gradient fields, with translucent glass surfaces stacked on top. The warm
+   parchment palette is still available — add `.warm` to <html> for it.
+
+   Values are raw RGB channels so Tailwind's /opacity modifiers keep working.
+--------------------------------------------------------------------------- */
+
+:root {
+  --font-sans: ui-sans-serif, -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+
+  /* Surfaces */
+  --canvas: 7 7 11;
+  --panel: 18 18 26;
+  --raised: 28 28 39;
+  --ink: 240 240 249;
+  --muted: 154 154 176;
+  --faint: 107 107 131;
+
+  /* Accent — electric violet */
+  --accent: 139 108 255;
+  --accent-soft: 178 154 255;
+
+  /* Category / mascot colourways */
+  --c-teal: 60 209 205;
+  --c-amber: 246 187 96;
+  --c-rose: 245 118 163;
+  --c-violet: 151 121 255;
+  --c-sage: 110 216 158;
+  --c-azure: 92 141 255;
+
+  /* Ambient wash intensity — dialled down in warm mode */
+  --wash: 1;
+  --hairline: 255 255 255;
+  --hairline-a: 0.07;
+
+  /* Legacy neutral ramp.
+     Screens built against the original theme use zinc-100…zinc-700, where 100
+     was the brightest text and 700 the faintest. Redefining that ramp here
+     retints those screens in one place instead of rewriting every className.
+     New work should use ink / muted / faint. */
+  --z100: 244 244 252;
+  --z200: 226 226 238;
+  --z300: 198 198 216;
+  --z400: 166 166 190;
+  --z500: 140 140 164;
+  --z600: 116 116 140;
+  --z700: 94 94 118;
+}
+
+/* Opt-in warm parchment theme */
+.warm {
+  --canvas: 250 246 239;
+  --panel: 255 253 250;
+  --raised: 245 238 228;
+  --ink: 40 33 28;
+  --muted: 124 111 99;
+  --faint: 166 154 142;
+
+  --accent: 124 82 232;
+  --accent-soft: 160 126 245;
+
+  --c-teal: 62 143 132;
+  --c-amber: 214 160 65;
+  --c-rose: 199 97 125;
+  --c-violet: 122 106 214;
+  --c-sage: 122 154 107;
+  --c-azure: 68 108 214;
+
+  --wash: 0.42;
+  --hairline: 40 33 28;
+  --hairline-a: 0.05;
+
+  --z100: 44 37 31;
+  --z200: 55 47 40;
+  --z300: 74 64 56;
+  --z400: 104 92 82;
+  --z500: 124 111 99;
+  --z600: 152 139 127;
+  --z700: 178 166 154;
+}
+
+/* `.dark` is kept as an alias so the existing theme toggle keeps working —
+   the root palette is already dark, so this is intentionally empty. */
+.dark {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-canvas text-ink antialiased;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  overflow-x: hidden;
+}
+
+/* ---------------------------------------------------------------------------
+   Ambient aurora — two fixed layers behind everything.
+   ::before is the colour field, ::after the silky light ribbons.
+--------------------------------------------------------------------------- */
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: -10%;
+  pointer-events: none;
+  z-index: 0;
+  opacity: var(--wash);
+  background:
+    radial-gradient(900px 620px at 10% -10%, rgb(var(--accent) / 0.26), transparent 62%),
+    radial-gradient(780px 540px at 92% 0%, rgb(var(--c-azure) / 0.22), transparent 64%),
+    radial-gradient(720px 560px at 52% 108%, rgb(var(--c-teal) / 0.1), transparent 66%);
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  top: -32vh;
+  left: -12%;
+  right: -12%;
+  height: 110vh;
+  pointer-events: none;
+  z-index: 0;
+  opacity: calc(var(--wash) * 0.7);
+  background:
+    conic-gradient(
+      from 205deg at 28% 26%,
+      transparent 0deg,
+      rgb(var(--c-violet) / 0.62) 34deg,
+      rgb(var(--c-azure) / 0.34) 62deg,
+      transparent 96deg
+    ),
+    conic-gradient(
+      from 12deg at 74% 14%,
+      transparent 0deg,
+      rgb(var(--c-azure) / 0.5) 46deg,
+      rgb(var(--c-teal) / 0.24) 74deg,
+      transparent 116deg
+    );
+  filter: blur(72px) saturate(140%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 38%, transparent 92%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 38%, transparent 92%);
+  animation: aurora-drift 34s ease-in-out infinite alternate;
+}
+
+@keyframes aurora-drift {
+  0% {
+    transform: translate3d(-3%, 0, 0) rotate(-2deg) scale(1.05);
+  }
+  100% {
+    transform: translate3d(4%, 3vh, 0) rotate(3deg) scale(1.16);
+  }
+}
+
+@layer components {
+  /* -------------------------------------------------------------------------
+     Surfaces
+  ------------------------------------------------------------------------- */
+  .panel {
+    @apply relative rounded-2xl border border-line bg-panel/75 backdrop-blur-xl;
+    box-shadow:
+      inset 0 1px 0 rgb(var(--hairline) / var(--hairline-a)),
+      0 1px 2px rgb(0 0 0 / 0.28),
+      0 18px 48px -28px rgb(0 0 0 / 0.7);
+  }
+  .panel-raised {
+    @apply relative rounded-xl border border-line bg-raised/70 backdrop-blur-md;
+  }
+  /* Heavier glass — hero cards, pricing, modals */
+  .glass {
+    @apply relative overflow-hidden rounded-3xl border border-line bg-panel/55 backdrop-blur-2xl;
+    box-shadow:
+      inset 0 1px 0 rgb(var(--hairline) / calc(var(--hairline-a) * 1.8)),
+      0 24px 70px -30px rgb(0 0 0 / 0.85);
+  }
+  /* A card whose border is a gradient — used to highlight one option */
+  .glow-card {
+    @apply relative rounded-3xl p-px;
+    background: linear-gradient(
+      160deg,
+      rgb(var(--accent) / 0.75),
+      rgb(var(--c-azure) / 0.35) 42%,
+      rgb(var(--hairline) / 0.08) 78%
+    );
+    box-shadow: 0 0 60px -18px rgb(var(--accent) / 0.55);
+  }
+  .glow-card > * {
+    @apply bg-panel/85 backdrop-blur-2xl;
+    /* One pixel tighter than the wrapper so the gradient reads as a hairline */
+    border-radius: calc(1.75rem - 1px);
+  }
+  /* Thin luminous rule across the top of a section */
+  .hairline-top::before {
+    content: "";
+    @apply pointer-events-none absolute inset-x-8 top-0 h-px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgb(var(--accent) / 0.55),
+      transparent
+    );
+  }
+
+  /* -------------------------------------------------------------------------
+     Buttons
+  ------------------------------------------------------------------------- */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-sm
+           font-medium transition-all duration-200 disabled:pointer-events-none
+           disabled:opacity-40;
+  }
+  .btn-primary {
+    @apply btn relative text-white;
+    background: linear-gradient(
+      135deg,
+      rgb(var(--accent-soft)),
+      rgb(var(--accent)) 55%,
+      rgb(var(--c-azure)) 130%
+    );
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.25),
+      0 8px 26px -10px rgb(var(--accent) / 0.85);
+  }
+  .btn-primary:hover {
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.32),
+      0 12px 34px -10px rgb(var(--accent) / 1);
+    transform: translateY(-1px);
+  }
+  .btn-primary:active {
+    transform: translateY(0) scale(0.985);
+  }
+  .btn-ghost {
+    @apply btn border border-line bg-panel/60 text-ink backdrop-blur-md
+           hover:border-accent/40 hover:bg-raised/80 active:scale-[0.98];
+  }
+  .btn-quiet {
+    @apply btn text-muted hover:bg-raised/70 hover:text-ink;
+  }
+
+  /* -------------------------------------------------------------------------
+     Form controls
+  ------------------------------------------------------------------------- */
+  .input {
+    @apply w-full rounded-xl border border-line bg-raised/50 px-3.5 py-2.5 text-sm
+           text-ink outline-none backdrop-blur-md transition
+           placeholder:text-faint focus:border-accent/60 focus:bg-raised/70
+           focus:ring-4 focus:ring-accent/15;
+  }
+
+  /* -------------------------------------------------------------------------
+     Text bits
+  ------------------------------------------------------------------------- */
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5
+           text-[11px] font-medium tracking-wide backdrop-blur-md;
+  }
+  /* The pill above a hero headline: "New Updates v2 Out Now!" */
+  .pill {
+    @apply inline-flex items-center gap-2 rounded-full border border-line bg-panel/70
+           px-3.5 py-1.5 text-[12px] font-medium text-muted backdrop-blur-xl;
+    box-shadow: inset 0 1px 0 rgb(var(--hairline) / var(--hairline-a));
+  }
+  .label {
+    @apply text-[11px] font-semibold uppercase tracking-[0.15em] text-faint;
+  }
+  /* Display headline — tight, large, optically balanced */
+  .display {
+    @apply font-semibold tracking-[-0.03em];
+    line-height: 1.02;
+  }
+  /* White → violet gradient headline fill */
+  .text-shine {
+    background: linear-gradient(
+      180deg,
+      rgb(var(--ink)) 0%,
+      rgb(var(--ink) / 0.82) 58%,
+      rgb(var(--accent-soft) / 0.9) 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .text-accent-gradient {
+    background: linear-gradient(
+      100deg,
+      rgb(var(--accent-soft)),
+      rgb(var(--c-azure)) 70%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* The terminal-style skill activity line */
+  .skill-line {
+    @apply font-mono text-[11.5px] leading-relaxed text-muted;
+  }
+  .skill-code {
+    @apply text-accent-soft;
+  }
+
+  /* -------------------------------------------------------------------------
+     Logo marquee
+  ------------------------------------------------------------------------- */
+  .marquee {
+    @apply relative flex overflow-hidden;
+    -webkit-mask-image: linear-gradient(
+      90deg,
+      transparent,
+      #000 12%,
+      #000 88%,
+      transparent
+    );
+    mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  }
+  .marquee > * {
+    @apply flex shrink-0 items-center;
+    animation: marquee 34s linear infinite;
+  }
+  .marquee:hover > * {
+    animation-play-state: paused;
+  }
+}
+
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-100%);
+  }
+}
+
+/* Section-local aurora — drop into a `relative` container for a hero glow */
+.aurora-spot {
+  position: absolute;
+  pointer-events: none;
+  z-index: 0;
+  border-radius: 9999px;
+  filter: blur(80px);
+  opacity: calc(var(--wash) * 0.85);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--ink) / 0.16);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--accent) / 0.5);
+  background-clip: content-box;
+}
+
+::selection {
+  background: rgb(var(--accent) / 0.35);
+  color: rgb(var(--ink));
+}
+
+/* Markdown-ish rendering inside chat bubbles */
+.prose-chat p {
+  margin: 0 0 0.7em;
+}
+.prose-chat p:last-child {
+  margin-bottom: 0;
+}
+.prose-chat ul,
+.prose-chat ol {
+  margin: 0 0 0.7em 1.15em;
+  list-style: disc;
+}
+.prose-chat ol {
+  list-style: decimal;
+}
+.prose-chat li {
+  margin: 0.2em 0;
+}
+.prose-chat code {
+  background: rgb(var(--ink) / 0.09);
+  padding: 0.12em 0.42em;
+  border-radius: 6px;
+  font-size: 0.88em;
+}
+.prose-chat pre {
+  background: rgb(var(--ink) / 0.06);
+  border: 1px solid rgb(var(--ink) / 0.1);
+  padding: 0.85em;
+  border-radius: 12px;
+  overflow-x: auto;
+  margin: 0 0 0.7em;
+}
+.prose-chat strong {
+  color: rgb(var(--ink));
+  font-weight: 650;
+}
+.prose-chat a {
+  color: rgb(var(--accent-soft));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
