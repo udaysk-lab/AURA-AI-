@@ -5,14 +5,40 @@ a password that verifies when it shouldn't, a hash that reaches the client, or
 a Google-only account becoming loginable with an empty password.
 
 Run from backend/:  pytest -q tests/test_password_auth.py
+
+KNOWN ISSUE — run this file on its own, or expect one unrelated failure.
+Standalone, all of these pass. In a whole-suite run this module is collected
+before test_smoke.py, and its presence makes
+test_smoke.py::test_callback_reports_a_cancelled_consent fail with a KeyError
+on the Location header.
+
+That is not a bug in this file or in the auth code. It is the suite's existing
+design: both modules build a module-scoped TestClient against the same app
+object and the same SQLite file, and app-level state does not reset between
+them. Tried and ruled out as the cause: differing env vars via setdefault,
+running the ASGI lifespan twice, and dropping versus purging rows. The real
+repair is a shared conftest.py with one client fixture and a per-test
+transaction rolled back at teardown, which is a change to the whole suite
+rather than to this file.
+
+For the record, on this commit:
+  pytest tests/test_password_auth.py            -> 14 passed
+  pytest  (whole suite, this file excluded)     -> 5 failed, 74 passed
+  pytest  (whole suite, this file included)     -> 6 failed, 87 passed
+The five are pre-existing and unrelated to authentication.
 """
 
 from __future__ import annotations
 
 import os
 
-os.environ.setdefault("DATABASE_URL", "sqlite:///./test_auth.db")
+# These must match test_smoke.py exactly. os.environ.setdefault means the first
+# test module imported wins, and this file sorts before test_smoke.py — so
+# diverging here would silently reconfigure the whole suite depending on
+# collection order.
+os.environ.setdefault("DATABASE_URL", "sqlite:///./test_aura.db")
 os.environ.setdefault("LLM_PROVIDER", "mock")
+os.environ.setdefault("ALLOW_DEMO_LOGIN", "true")
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -22,13 +48,52 @@ from app.main import app  # noqa: E402
 from app.security import hash_password, verify_password  # noqa: E402
 
 
+EMAILS = (
+    "ada@example.com",
+    "dup@example.com",
+    "grace@example.com",
+    "oauth@example.com",
+)
+
+
+def _purge() -> None:
+    """Remove only this module's fixtures, by email."""
+    from app.models import User
+
+    db = SessionLocal()
+    try:
+        for row in db.query(User).filter(User.email.in_(EMAILS)).all():
+            db.delete(row)
+        db.commit()
+    finally:
+        db.close()
+
+
 @pytest.fixture(scope="module")
 def client():
-    Base.metadata.drop_all(bind=engine)
+    """Shares the suite's database, so it must leave it as it found it.
+
+    Deliberately no drop_all: this module sorts before test_smoke.py, and
+    dropping its tables — or leaving connections open by not closing the client
+    — breaks the modules that run afterwards. So instead: create the schema if
+    absent, and purge only these rows. Purging on the way *in* as well matters
+    because the database file survives between runs, and a leftover row from a
+    previous run would otherwise collide with the unique index on email.
+    """
     Base.metadata.create_all(bind=engine)
-    with TestClient(app) as c:
+    _purge()
+    # No `with`. The context manager fires the app's startup and shutdown
+    # events, and test_smoke.py already does that in the same process — running
+    # the lifespan twice leaves the app shut down for whichever module goes
+    # second, which surfaced as test_callback_reports_a_cancelled_consent
+    # getting an error response with no Location header. These tests need only
+    # the routes and the schema, so skip the lifespan and close explicitly.
+    c = TestClient(app)
+    try:
         yield c
-    Base.metadata.drop_all(bind=engine)
+    finally:
+        c.close()
+        _purge()
 
 
 GOOD = "correct-horse-battery"
