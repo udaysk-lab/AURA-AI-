@@ -4,11 +4,43 @@ Every value has a safe default so the app boots with zero configuration.
 Adding real credentials upgrades AURA from demo mode to live mode.
 """
 
+import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Managed Postgres add-ons rarely agree on what to call the connection string.
+# Vercel's marketplace integrations (Neon, Supabase) inject POSTGRES_URL and
+# friends rather than DATABASE_URL, so a database can be attached and correct
+# while the app still falls back to SQLite and fails confusingly.
+#
+# Order matters: the pooled URL comes first. On serverless every invocation is
+# a new process, and opening a direct connection per invocation exhausts the
+# server's connection limit under any real traffic.
+_DATABASE_URL_ALIASES = (
+    "POSTGRES_URL",           # Vercel / Neon, pooled
+    "POSTGRES_PRISMA_URL",    # Vercel, pooled, with pgbouncer args
+    "DATABASE_URL_UNPOOLED",
+    "POSTGRES_URL_NON_POOLING",
+)
+
+
+def _discover_database_url() -> str:
+    """Fall back to a host-injected Postgres URL before defaulting to SQLite.
+
+    Only consulted when DATABASE_URL itself is unset — pydantic-settings reads
+    that from the environment and it always wins.
+    """
+    for name in _DATABASE_URL_ALIASES:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    # No infrastructure needed for `uvicorn app.main:app`. Never right for a
+    # deployed instance: on serverless the filesystem is read-only outside
+    # /tmp, and /tmp does not survive between invocations.
+    return "sqlite:///./aura.db"
 
 
 class Settings(BaseSettings):
@@ -22,8 +54,10 @@ class Settings(BaseSettings):
     debug: bool = True
 
     # SQLite default means `uvicorn app.main:app` works with no infra at all.
-    # Point at Postgres for anything real.
-    database_url: str = "sqlite:///./aura.db"
+    # Point at Postgres for anything real. See _discover_database_url: if the
+    # host injected POSTGRES_URL instead of DATABASE_URL, that is picked up
+    # automatically so attaching a database is all the setup required.
+    database_url: str = Field(default_factory=_discover_database_url)
 
     # Create tables and patch in new columns at startup. Right for local dev,
     # wrong once you have data you care about — set false and use Alembic.
