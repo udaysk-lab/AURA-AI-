@@ -8,8 +8,16 @@ import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Set this to point the app at a different database than the one the host
+# injected. Vercel's storage integrations own DATABASE_URL — the variable is
+# locked in the dashboard, and the only way to remove it is to delete the
+# database. This gives you a way out that doesn't involve destroying data:
+# attach whatever you like, set DATABASE_URL_OVERRIDE, and the injected value
+# is ignored. Leave it unset and nothing changes.
+DATABASE_URL_OVERRIDE_ENV = "DATABASE_URL_OVERRIDE"
 
 # Managed Postgres add-ons rarely agree on what to call the connection string.
 # Vercel's marketplace integrations (Neon, Supabase) inject POSTGRES_URL and
@@ -169,6 +177,19 @@ class Settings(BaseSettings):
     rate_limit_anon_per_minute: int = 20      # unauthenticated, per IP
     rate_limit_inbound_per_minute: int = 15   # per channel token
     redis_url: str = ""                       # blank = in-memory buckets
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_database_override(cls, values):
+        """Let DATABASE_URL_OVERRIDE beat a host-injected DATABASE_URL.
+
+        Runs before field validation, so the URL still goes through
+        _normalise_database_url and gets the psycopg 3 dialect like any other.
+        """
+        override = os.environ.get(DATABASE_URL_OVERRIDE_ENV, "").strip()
+        if override and isinstance(values, dict):
+            values["database_url"] = override
+        return values
 
     @field_validator("database_url")
     @classmethod
