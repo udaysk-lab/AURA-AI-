@@ -42,6 +42,7 @@ export default function OnboardingPage() {
 
   const [step, setStep] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
 
   const [name, setName] = useState("Aura");
   const [avatar, setAvatar] = useState<Colourway>("teal");
@@ -67,6 +68,7 @@ export default function OnboardingPage() {
 
   const finish = async () => {
     setBusy(true);
+    setError("");
     try {
       await api.hatch({
         name: name.trim() || "Aura",
@@ -80,7 +82,16 @@ export default function OnboardingPage() {
       });
       await refresh();
       router.push("/dashboard");
-    } catch {
+    } catch (e) {
+      // Swallowing this silently was a trap. The app layout sends you back here
+      // until the assistant is onboarded, so a failure with no message leaves
+      // you stuck on this screen forever — one step past a *successful* login,
+      // with nothing on screen to explain why. Say what went wrong instead.
+      setError(
+        e instanceof Error
+          ? e.message
+          : "Couldn't finish setting up your assistant. Please try again."
+      );
       setBusy(false);
     }
   };
@@ -281,6 +292,12 @@ export default function OnboardingPage() {
           <p className="mb-7 text-[13.5px] leading-relaxed text-muted">{current.blurb}</p>
           {current.body}
         </div>
+
+        {error && (
+          <p className="mt-6 rounded-lg border border-rose/30 bg-rose/10 px-3 py-2.5 text-[12px] leading-relaxed text-rose">
+            {error}
+          </p>
+        )}
 
         <div className="mt-8 flex items-center justify-between">
           <button
