@@ -70,7 +70,7 @@ export default function Landing() {
         <div className="relative mx-auto max-w-3xl text-center">
           <Link href="/login" className="pill mb-7 animate-fade-up hover:text-ink">
             <Sparkles size={12} className="text-accent-soft" />
-            Skills v2 — all fourteen live
+            Skills v2 — all twenty-one live
             <ArrowRight size={12} className="text-faint" />
           </Link>
 

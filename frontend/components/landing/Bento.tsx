@@ -9,6 +9,31 @@ import {
 } from "lucide-react";
 
 /**
+ * The full skill catalogue, in the order it is declared in
+ * backend/app/agent/skills.py.
+ *
+ * This list previously drifted: it advertised MM02, DR01, AU01 and PL01, none of
+ * which exist, and omitted eleven skills that do. Keep it in step with the
+ * backend catalogue — or better, when this page can afford a client fetch, read
+ * it from GET /api/skills so it cannot drift again.
+ */
+const SKILL_CODES = [
+  "EM01", "EM02", "EM03",
+  "CA01", "CA02", "CA03",
+  "MP01",
+  "TK01", "TK02",
+  "MM01",
+  "CT01",
+  "BR01",
+  "NT01",
+  "SY01",
+  "RS01", "RS02",
+  "DC01", "DC02",
+  "DL01", "DL02",
+  "FG01",
+] as const;
+
+/**
  * Asymmetric capability mosaic. Each tile carries a small piece of real product
  * UI rather than an icon on its own, so the grid reads as a product tour.
  */
@@ -255,10 +280,7 @@ export default function Bento() {
                 <span className="label">Skill registry</span>
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {[
-                  "EM01", "EM02", "CA01", "CA02", "CA03", "TK01", "TK02",
-                  "MM01", "MM02", "MP01", "DR01", "NT01", "AU01", "PL01",
-                ].map((c) => (
+                {SKILL_CODES.map((c) => (
                   <span
                     key={c}
                     className="chip border-accent/25 bg-accent-dim font-mono text-accent-soft"
