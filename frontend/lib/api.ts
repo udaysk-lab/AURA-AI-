@@ -64,7 +64,16 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     },
   });
 
-  if (res.status === 401) {
+  // A 401 from the sign-in endpoints means "those credentials are wrong", not
+  // "your session expired" — there is no session yet. Treating the two alike
+  // replaces the server's "Incorrect email or password" with "Session expired",
+  // which sends people looking for a broken session instead of retyping their
+  // password. Let these fall through to the generic branch below so the real
+  // message reaches the form.
+  const isCredentialCheck =
+    path === "/api/auth/login" || path === "/api/auth/register";
+
+  if (res.status === 401 && !isCredentialCheck) {
     clearToken();
     if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
       window.location.href = "/login";
