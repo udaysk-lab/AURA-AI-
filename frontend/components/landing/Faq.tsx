@@ -14,7 +14,7 @@ const ITEMS = [
   },
   {
     q: "What are skills, and why can I switch them off?",
-    a: "Fourteen named capabilities, each with its own code. Turning one off doesn't hide a button — the assistant genuinely loses that ability, and will tell you so when it can't help.",
+    a: "Twenty-one named capabilities, each with its own code. Turning one off doesn't hide a button — the assistant genuinely loses that ability, and will tell you so when it can't help.",
   },
   {
     q: "What does it do while I'm not there?",

@@ -37,7 +37,7 @@ const TIERS: Tier[] = [
     cta: "Get started",
     featured: true,
     features: [
-      "All 14 skills",
+      "All 21 skills",
       "Overnight heartbeat and briefings",
       "Unlimited memory with consolidation",
       "All four trust levels",

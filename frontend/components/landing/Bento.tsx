@@ -51,8 +51,8 @@ export default function Bento() {
           Skills, not features.
         </h2>
         <p className="text-[15px] leading-relaxed text-muted">
-          Fourteen named capabilities you can switch on, off, and teach. Turn one
-          off and your assistant genuinely can&apos;t use it — and it will say so.
+          Twenty-one named capabilities you can switch on, off, and teach. Turn
+          one off and your assistant genuinely can&apos;t use it — and it will say so.
         </p>
       </div>
 
