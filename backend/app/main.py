@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import OperationalError
 
 from app import preflight
 from app.api import account, assistant, auth, chat, hub, intelligence, workspace
@@ -85,6 +86,50 @@ app.include_router(account.router)
 app.include_router(assistant.router)
 
 
+def _first_line(exc: BaseException) -> str:
+    text = str(exc).strip()
+    return text.splitlines()[0] if text else type(exc).__name__
+
+
+# Shown when the database can't be reached. The sign-in form displays it as is,
+# so it has to tell someone at that form what they need to know: the password
+# isn't the problem, and trying again later is the fix.
+DATABASE_UNAVAILABLE = (
+    "AURA can't reach its database right now, so this couldn't be completed. "
+    "The problem is on the server, not with your account. "
+    "Please try again in a few minutes."
+)
+
+
+@app.exception_handler(OperationalError)
+async def database_unavailable(request: Request, exc: OperationalError) -> JSONResponse:
+    """A database that can't be reached is a 503, not a mystery 500.
+
+    Before this, an outage reached the sign-in form as "Internal error". That
+    reads like a bug in the app, or a wrong password, when the real cause was
+    that the database was down: the Supabase project had auto-paused after a
+    week without traffic. A 503 with a plain explanation points at the actual
+    problem, and Retry-After tells clients that waiting is the remedy.
+    """
+    request_id = getattr(request.state, "request_id", "-")
+    cause = exc.orig or exc
+    # One line rather than a traceback. During an outage every request lands
+    # here, and the driver's message (for example "tenant/user ... not found"
+    # or "connection refused") is the part that says what went wrong.
+    log.error(
+        "[%s] Database unavailable on %s %s: %s",
+        request_id, request.method, request.url.path, _first_line(cause),
+    )
+    detail = DATABASE_UNAVAILABLE
+    if settings.debug:
+        detail = f"{DATABASE_UNAVAILABLE} ({_first_line(cause)})"
+    return JSONResponse(
+        status_code=503,
+        content={"detail": detail, "request_id": request_id},
+        headers={"X-Request-ID": request_id, "Retry-After": "60"},
+    )
+
+
 @app.exception_handler(Exception)
 async def unhandled(request: Request, exc: Exception) -> JSONResponse:
     request_id = getattr(request.state, "request_id", "-")
@@ -128,6 +173,38 @@ def ready() -> JSONResponse:
         status_code=200 if healthy else 503,
         content={"status": "ready" if healthy else "degraded", "checks": checks},
     )
+
+
+@app.get("/api/health/keepalive")
+def keepalive() -> JSONResponse:
+    """Give the database a little real traffic every day.
+
+    Supabase pauses a Free-plan project after a week without database activity.
+    A paused project's hostnames stop resolving and its pooler answers
+    "tenant/user not found", so everything that needs the database fails, sign-in
+    first. That is how the live site went down in September 2026, a few weeks
+    after it was last used. Restoring the project brings it back with its data,
+    but only by hand.
+
+    The `crons` in vercel.json call this three times a day. It reads a real
+    table rather than running SELECT 1, so the traffic is an ordinary query
+    against user data, not a no-op. It returns nothing about that data, so it is
+    safe to leave unauthenticated, like /health/ready.
+    """
+    from sqlalchemy import text
+
+    from app.db import engine
+
+    no_store = {"Cache-Control": "no-store"}
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT id FROM users LIMIT 1"))
+    except Exception as exc:
+        log.error("Keep-alive could not reach the database: %s", _first_line(exc))
+        return JSONResponse(
+            status_code=503, content={"status": "unreachable"}, headers=no_store
+        )
+    return JSONResponse(content={"status": "ok"}, headers=no_store)
 
 
 @app.get("/api/health/preflight")

@@ -30,5 +30,19 @@
                 "service": "frontend"
             }
         }
+    ],
+    "crons": [
+        {
+            "path": "/api/health/keepalive",
+            "schedule": "0 1 * * *"
+        },
+        {
+            "path": "/api/health/keepalive",
+            "schedule": "0 9 * * *"
+        },
+        {
+            "path": "/api/health/keepalive",
+            "schedule": "0 17 * * *"
+        }
     ]
 }
