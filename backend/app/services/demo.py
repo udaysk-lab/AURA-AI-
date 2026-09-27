@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app import timeutil
@@ -17,10 +17,12 @@ from app.models import (
     AutomationRule,
     CalendarEvent,
     Contact,
+    Document,
     EmailMessage,
     HeartbeatReport,
     Memory,
     Notification,
+    SampleRow,
     Schedule,
     SkillRun,
     Task,
@@ -257,8 +259,36 @@ SKILL_HISTORY = [
 ]
 
 
+SEED_HEADLINE = "Handled 4 things while you were away · 3 need your attention"
+SEED_HEARTBEAT_LINES = [
+    "[SKILL·EM01] Processed 7 emails scanned · 4 unread · 3 flagged · 4 awaiting reply",
+    "[SKILL·TK01] Captured 2 commitment(s) from flagged email",
+    "[SKILL·MP01] Briefed: Northwind VC — partner call · agenda and context ready",
+    "[SKILL·CA03] No double-bookings found",
+]
+HEARTBEAT_MINUTES_AGO = 12
+SEED_NOTIFICATION = "Your workspace is ready"
+SEED_NOTIFICATION_BODY = (
+    "Sample data is loaded so every screen works. Connect Google in Settings to use it for real."
+)
+SEED_SCHEDULE_NAME = "Morning briefing"
+SEED_SCHEDULE_CRON = "30 7 * * 1-5"
+SEED_SCHEDULE_PROMPT = (
+    "Give me my morning briefing: today's meetings, what's due, anything "
+    "urgent in the inbox, and the three things you'd do first."
+)
+SEED_DOCUMENT_TITLE = "Series A term sheet (summary)"
+
+
+def _remember(db: Session, user_id: str, rows: list[tuple[str, object]]) -> None:
+    """Write down the id of every sample row, so removal can find exactly these."""
+    db.flush()  # assigns the ids
+    for kind, row in rows:
+        db.add(SampleRow(user_id=user_id, kind=kind, row_id=row.id))
+
+
 def seed_user(db: Session, user: User) -> dict:
-    """Populate a fresh account. Idempotent - skips if demo emails already exist."""
+    """Populate a fresh account. Idempotent - skips if the user has any email."""
     existing = db.scalars(
         select(EmailMessage).where(EmailMessage.user_id == user.id)
     ).first()
@@ -267,9 +297,16 @@ def seed_user(db: Session, user: User) -> dict:
 
     now = datetime.now(timezone.utc)
     today = now.astimezone(timeutil.user_zone(user))
+    seeded: list[tuple[str, object]] = []
+
+    def add(kind: str, row):
+        db.add(row)
+        seeded.append((kind, row))
+        return row
 
     for i, e in enumerate(EMAILS):
-        db.add(
+        add(
+            "emails",
             EmailMessage(
                 user_id=user.id,
                 external_id=f"demo-{i}",
@@ -288,12 +325,13 @@ def seed_user(db: Session, user: User) -> dict:
                 ai_summary=e["ai_summary"],
                 action_items=e["action_items"],
                 needs_reply=e["needs_reply"],
-            )
+            ),
         )
 
     for ev in EVENTS:
         start = _at(today, ev["day"], ev["hour"])
-        db.add(
+        add(
+            "events",
             CalendarEvent(
                 user_id=user.id,
                 title=ev["title"],
@@ -303,11 +341,12 @@ def seed_user(db: Session, user: User) -> dict:
                 end_at=start + timedelta(minutes=ev["minutes"]),
                 attendees=ev["attendees"],
                 source="local",
-            )
+            ),
         )
 
     for t in TASKS:
-        db.add(
+        add(
+            "tasks",
             Task(
                 user_id=user.id,
                 title=t["title"],
@@ -316,22 +355,23 @@ def seed_user(db: Session, user: User) -> dict:
                 due_at=_at(today, t["day"], 17),
                 tags=t["tags"],
                 source="manual",
-            )
+            ),
         )
 
     for kind, content, pinned in MEMORIES:
-        db.add(
+        add(
+            "memories",
             Memory(
                 user_id=user.id, kind=kind, content=content,
                 source="seed", confidence=0.9, pinned=pinned, embedding=[],
-            )
+            ),
         )
 
     for c in CONTACTS:
-        db.add(Contact(user_id=user.id, **c))
+        add("contacts", Contact(user_id=user.id, **c))
 
     for a in AUTOMATIONS:
-        db.add(AutomationRule(user_id=user.id, **a))
+        add("automations", AutomationRule(user_id=user.id, **a))
 
     for code, trigger, summary, minutes_ago in SKILL_HISTORY:
         run = SkillRun(
@@ -341,60 +381,59 @@ def seed_user(db: Session, user: User) -> dict:
         )
         run.created_at = now - timedelta(minutes=minutes_ago)
         run.updated_at = run.created_at
-        db.add(run)
+        add("skill_runs", run)
 
     report = HeartbeatReport(
         user_id=user.id,
-        headline="Handled 4 things while you were away · 3 need your attention",
-        lines=[
-            "[SKILL·EM01] Processed 7 emails scanned · 4 unread · 3 flagged · 4 awaiting reply",
-            "[SKILL·TK01] Captured 2 commitment(s) from flagged email",
-            "[SKILL·MP01] Briefed: Northwind VC — partner call · agenda and context ready",
-            "[SKILL·CA03] No double-bookings found",
-        ],
+        headline=SEED_HEADLINE,
+        lines=list(SEED_HEARTBEAT_LINES),
         skills_run=["CA03", "EM01", "MP01", "TK01"],
         needs_attention=3,
     )
-    report.created_at = now - timedelta(minutes=12)
+    report.created_at = now - timedelta(minutes=HEARTBEAT_MINUTES_AGO)
     report.updated_at = report.created_at
-    db.add(report)
+    add("heartbeats", report)
 
     # A starter schedule and a document, so those screens aren't empty either.
-    db.add(
+    # The schedule's 7:30 is the user's 7:30.
+    add(
+        "schedules",
         Schedule(
             user_id=user.id,
-            name="Morning briefing",
-            prompt=(
-                "Give me my morning briefing: today's meetings, what's due, anything "
-                "urgent in the inbox, and the three things you'd do first."
-            ),
+            name=SEED_SCHEDULE_NAME,
+            prompt=SEED_SCHEDULE_PROMPT,
             natural_language="every weekday at 7:30am",
-            cron="30 7 * * 1-5",
+            cron=SEED_SCHEDULE_CRON,
+            timezone=timeutil.zone_label(timeutil.user_zone(user)),
             deliver_to="notification",
-        )
+        ),
     )
+
+    add(
+        "notifications",
+        Notification(
+            user_id=user.id,
+            title=SEED_NOTIFICATION,
+            body=SEED_NOTIFICATION_BODY,
+            level="info",
+            link="/settings",
+        ),
+    )
+
+    _remember(db, user.id, seeded)
+    db.commit()
 
     from app.services import documents as document_service
 
-    document_service.ingest(
+    document = document_service.ingest(  # commits on its own
         db,
         user.id,
-        "Series A term sheet (summary)",
+        SEED_DOCUMENT_TITLE,
         DEMO_DOCUMENT,
         mime="text/markdown",
         source="seed",
     )
-
-    db.add(
-        Notification(
-            user_id=user.id,
-            title="Your workspace is ready",
-            body="Sample data is loaded so every screen works. Connect Google in Settings to use it for real.",
-            level="info",
-            link="/settings",
-        )
-    )
-
+    _remember(db, user.id, [("documents", document)])
     db.commit()
     return {
         "seeded": True,
@@ -409,70 +448,193 @@ def seed_user(db: Session, user: User) -> dict:
 # Removing it again
 # ---------------------------------------------------------------------------
 
-SEED_HEADLINE = "Handled 4 things while you were away · 3 need your attention"
-SEED_NOTIFICATION = "Your workspace is ready"
-SEED_SCHEDULE_CRON = "30 7 * * 1-5"
+_MODELS = {
+    "emails": EmailMessage,
+    "events": CalendarEvent,
+    "tasks": Task,
+    "memories": Memory,
+    "contacts": Contact,
+    "automations": AutomationRule,
+    "skill_runs": SkillRun,
+    "heartbeats": HeartbeatReport,
+    "schedules": Schedule,
+    "documents": Document,
+    "notifications": Notification,
+}
+
+# Sample data seeded before the ledger existed is recognised by what the seeder
+# wrote. Some markers only the seeder ever writes (demo- email ids with the demo
+# label, source="seed", the seeded flag). Titles alone are not enough — a user
+# can have their own "Standup" — so the rest must match the sample row field for
+# field AND have been created in the same few minutes as those unambiguous rows.
+_LEGACY_WINDOW = timedelta(minutes=5)
 
 
-def _seeded_rows(db: Session, user: User) -> dict[str, list]:
-    """Every row seed_user() created for this user and that still looks untouched.
+def _recorded(db: Session, user_id: str) -> dict[str, set[str]]:
+    ids: dict[str, set[str]] = {kind: set() for kind in _MODELS}
+    for kind, row_id in db.execute(
+        select(SampleRow.kind, SampleRow.row_id).where(SampleRow.user_id == user_id)
+    ):
+        if kind in ids:
+            ids[kind].add(row_id)
+    return ids
 
-    Matching is by the signatures seed_user() writes: the demo- external ids
-    and label on emails, source="seed" on memories and documents, the seeded
-    flag on skill runs, and the exact titles and names of the sample events,
-    tasks, contacts, automations, schedule, heartbeat and notification. Rows
-    the user created themselves never carry those signatures, so they stay.
+
+def _legacy(db: Session, user_id: str, recorded: dict[str, set[str]]) -> dict[str, set[str]]:
+    """Sample rows the ledger doesn't know about.
+
+    Rows the ledger already holds are skipped here, and in particular never
+    serve as anchors: otherwise, right after a new-style seeding, the user's
+    own "Draft Q3 board update" sat inside the window and was taken with it.
     """
-    from app.models import Document
-
-    uid = user.id
-    event_titles = {e["title"] for e in EVENTS}
-    task_titles = {t["title"] for t in TASKS}
-    contact_emails = {c["email"] for c in CONTACTS}
-    automation_names = {a["name"] for a in AUTOMATIONS}
-    history = {(code, summary) for code, _, summary, _ in SKILL_HISTORY}
+    found: dict[str, set[str]] = {kind: set() for kind in _MODELS}
 
     def rows(model, *where):
-        return list(db.scalars(select(model).where(model.user_id == uid, *where)).all())
+        kind = next(k for k, m in _MODELS.items() if m is model)
+        return [
+            row
+            for row in db.scalars(select(model).where(model.user_id == user_id, *where)).all()
+            if row.id not in recorded[kind]
+        ]
 
-    return {
-        "emails": [
-            e for e in rows(EmailMessage)
-            if (e.external_id or "").startswith("demo-") and DEMO_LABEL in (e.labels or [])
-        ],
-        "events": [
-            e for e in rows(CalendarEvent, CalendarEvent.source == "local")
-            if e.title in event_titles
-        ],
-        "tasks": [t for t in rows(Task, Task.source == "manual") if t.title in task_titles],
-        "memories": rows(Memory, Memory.source == "seed"),
-        "contacts": [c for c in rows(Contact) if c.email in contact_emails],
-        "automations": [a for a in rows(AutomationRule) if a.name in automation_names],
-        "skill_runs": [
-            r for r in rows(SkillRun)
-            if (r.detail or {}).get("seeded") and (r.code, r.summary) in history
-        ],
-        "heartbeats": rows(HeartbeatReport, HeartbeatReport.headline == SEED_HEADLINE),
-        "schedules": [
-            s for s in rows(Schedule, Schedule.name == "Morning briefing")
-            if s.cron == SEED_SCHEDULE_CRON
-        ],
-        "documents": rows(Document, Document.source == "seed"),
-        "notifications": rows(Notification, Notification.title == SEED_NOTIFICATION),
-    }
+    anchors: list[datetime] = []
+
+    def keep(kind: str, row) -> None:
+        found[kind].add(row.id)
+        if row.created_at is not None:
+            anchors.append(timeutil.aware(row.created_at))
+
+    for e in rows(EmailMessage, EmailMessage.external_id.like("demo-%")):
+        if DEMO_LABEL in (e.labels or []):
+            keep("emails", e)
+    for m in rows(Memory, Memory.source == "seed"):
+        keep("memories", m)
+    for d in rows(Document, Document.source == "seed"):
+        keep("documents", d)
+    for n in rows(
+        Notification,
+        Notification.title == SEED_NOTIFICATION,
+        Notification.body == SEED_NOTIFICATION_BODY,
+    ):
+        keep("notifications", n)
+
+    history = {(code, summary) for code, _, summary, _ in SKILL_HISTORY}
+    for r in rows(SkillRun, SkillRun.summary.in_({summary for _, summary in history})):
+        if (r.detail or {}).get("seeded") and (r.code, r.summary) in history:
+            found["skill_runs"].add(r.id)
+
+    if not anchors:
+        return found
+
+    def seeded_alongside(row, offset: timedelta = timedelta(0)) -> bool:
+        created = timeutil.aware(row.created_at)
+        if created is None:
+            return False
+        created += offset
+        return any(abs(created - anchor) <= _LEGACY_WINDOW for anchor in anchors)
+
+    events = {(e["title"], e["description"], e["location"]) for e in EVENTS}
+    for ev in rows(
+        CalendarEvent,
+        CalendarEvent.source == "local",
+        CalendarEvent.title.in_({title for title, _, _ in events}),
+    ):
+        if (ev.title, ev.description, ev.location) in events and seeded_alongside(ev):
+            found["events"].add(ev.id)
+
+    tasks = {(t["title"], tuple(t["tags"])) for t in TASKS}
+    for t in rows(
+        Task,
+        Task.source == "manual",
+        Task.parent_id.is_(None),
+        Task.title.in_({title for title, _ in tasks}),
+    ):
+        if (t.title, tuple(t.tags or [])) in tasks and seeded_alongside(t):
+            found["tasks"].add(t.id)
+
+    contacts = {(c["email"], c["name"]) for c in CONTACTS}
+    for c in rows(Contact, Contact.email.in_({email for email, _ in contacts})):
+        if (c.email, c.name) in contacts and seeded_alongside(c):
+            found["contacts"].add(c.id)
+
+    automations = {(a["name"], a["natural_language"]) for a in AUTOMATIONS}
+    for a in rows(AutomationRule, AutomationRule.name.in_({name for name, _ in automations})):
+        if (a.name, a.natural_language) in automations and seeded_alongside(a):
+            found["automations"].add(a.id)
+
+    for h in rows(HeartbeatReport, HeartbeatReport.headline == SEED_HEADLINE):
+        # Seeded with its clock set back, to read as "12 minutes ago".
+        if list(h.lines or []) == SEED_HEARTBEAT_LINES and seeded_alongside(
+            h, timedelta(minutes=HEARTBEAT_MINUTES_AGO)
+        ):
+            found["heartbeats"].add(h.id)
+
+    for s in rows(
+        Schedule,
+        Schedule.name == SEED_SCHEDULE_NAME,
+        Schedule.cron == SEED_SCHEDULE_CRON,
+    ):
+        if s.prompt == SEED_SCHEDULE_PROMPT and seeded_alongside(s):
+            found["schedules"].add(s.id)
+
+    return found
+
+
+def _sample_rows(db: Session, user_id: str) -> dict[str, set[str]]:
+    """Ids of the user's sample rows that still exist, by kind."""
+    recorded = _recorded(db, user_id)
+    legacy = _legacy(db, user_id, recorded)
+    present: dict[str, set[str]] = {}
+    for kind, model in _MODELS.items():
+        ids = recorded[kind] | legacy[kind]
+        present[kind] = (
+            set(
+                db.scalars(
+                    select(model.id).where(model.user_id == user_id, model.id.in_(ids))
+                ).all()
+            )
+            if ids
+            else set()
+        )
+    return present
 
 
 def sample_data_status(db: Session, user: User) -> dict:
-    counts = {kind: len(items) for kind, items in _seeded_rows(db, user).items()}
+    counts = {kind: len(ids) for kind, ids in _sample_rows(db, user.id).items()}
     return {"present": any(counts.values()), "counts": counts}
 
 
 def clear_user(db: Session, user: User) -> dict:
     """Delete the sample data, and nothing else. Safe to call repeatedly."""
+    uid = user.id
+    rows = _sample_rows(db, uid)
+
+    # A subtask the user added under a sample task is theirs: keep it, as a
+    # top-level task, rather than let the parent's delete cascade take it.
+    if rows["tasks"]:
+        db.execute(
+            update(Task)
+            .where(
+                Task.user_id == uid,
+                Task.parent_id.in_(rows["tasks"]),
+                Task.id.not_in(rows["tasks"]),
+            )
+            .values(parent_id=None)
+            .execution_options(synchronize_session=False)
+        )
+
     removed: dict[str, int] = {}
-    for kind, items in _seeded_rows(db, user).items():
-        for row in items:
-            db.delete(row)  # document chunks cascade with the document
-        removed[kind] = len(items)
+    for kind, ids in rows.items():
+        if ids:
+            model = _MODELS[kind]
+            # Document chunks go with their document (ON DELETE CASCADE).
+            db.execute(
+                delete(model)
+                .where(model.user_id == uid, model.id.in_(ids))
+                .execution_options(synchronize_session=False)
+            )
+        removed[kind] = len(ids)
+    db.execute(delete(SampleRow).where(SampleRow.user_id == uid))
     db.commit()
+    db.expire_all()  # anything loaded before now may have just been deleted
     return {"removed": removed, "total": sum(removed.values())}

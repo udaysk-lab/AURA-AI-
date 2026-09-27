@@ -344,6 +344,7 @@ def run_agent(
                         f"{call.name} is queued and waiting for the user to approve it. "
                         "Tell them what is pending, then stop."
                     ),
+                    "preview": action.preview,
                     "pending_action_id": action.id,
                 }
             else:

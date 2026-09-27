@@ -295,9 +295,15 @@ class MockProvider(LLMProvider):
     # that…", "add a task…") come before reads, otherwise "Remember that I
     # prefer afternoon meetings" matched the calendar route on "meetings" and
     # listed events instead of saving the preference.
+    #
+    # Saving needs the message to *start* like an instruction and not be a
+    # question: "Do you remember what I prefer?" used to be saved as a
+    # preference, word for word, instead of being looked up.
     ROUTES: list[tuple[str, str, dict]] = [
-        (r"\b(what do you (know|remember))\b", "search_memory", {}),
-        (r"\b(remember that|remember|note that|keep in mind|i prefer)\b", "save_memory", {}),
+        (r"\b(what do you (know|remember)|do you (know|remember)|what have you (learned|remembered))\b",
+         "search_memory", {}),
+        (r"^(?!.*\?\s*$)\s*(please\s+)?(remember|note that|keep in mind|i prefer)\b",
+         "save_memory", {}),
         (r"\b(remind me|add (a )?task|to.?do|create (a )?task)\b", "create_task", {}),
         (r"\b(schedule|book|set up|create).{0,20}\b(meeting|event|call)\b",
          "create_event", {}),
@@ -360,32 +366,52 @@ class MockProvider(LLMProvider):
             )
             priority = "urgent" if re.search(r"\b(urgent|asap)\b", text, re.I) else "medium"
             args = {"title": title[:200] or "New task", "priority": priority}
-            when = re.search(
-                r"\b(today|tomorrow|day after tomorrow|next week|"
-                r"(next )?(monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b"
-                r"(\s+(at\s+)?\d{1,2}(:\d{2})?\s*(am|pm)?)?",
-                text,
-                re.I,
-            )
+            when = MockProvider._when_phrase(text)
             if when:
-                args["due_at"] = when.group(0)
+                args["due_at"] = when
             return args
         if tool_name == "save_memory":
             content = re.sub(
-                r"^\s*(please\s+)?(remember that|remember|note that|keep in mind that)\s*",
+                r"^\s*(please\s+)?(remember that|remember|note that|keep in mind that|keep in mind)\s*",
                 "",
                 text.strip(),
                 flags=re.IGNORECASE,
             )
             return {"content": content[:500] or text[:500], "kind": "preference"}
         if tool_name == "create_event":
-            return {"title": text[:120].strip() or "New meeting"}
+            # "Schedule a call with Priya tomorrow at 3pm" -> "Call with Priya",
+            # tomorrow 15:00. The whole sentence used to become the title.
+            kind = re.search(r"\b(meeting|event|call)\b", text, re.I)
+            who = re.search(r"\bwith\s+([A-Z][\w'-]*(?:\s+[A-Z][\w'-]*)?)", text)
+            title = (kind.group(1).capitalize() if kind else "Meeting") + (
+                f" with {who.group(1)}" if who else ""
+            )
+            args = {"title": title}
+            when = MockProvider._when_phrase(text)
+            if when:
+                args["start_at"] = when
+            minutes = MockProvider._duration_minutes(text)
+            if minutes:
+                args["duration_minutes"] = minutes
+            return args
         if tool_name == "search_memory":
             return {"query": text[:200]}
         if tool_name == "find_free_time":
             minutes = MockProvider._duration_minutes(text)
             return {"duration_minutes": minutes} if minutes else {}
         return {}
+
+    @staticmethod
+    def _when_phrase(text: str) -> str | None:
+        """'tomorrow at 3pm', 'friday 10:30am', 'next week' — as written."""
+        when = re.search(
+            r"\b(today|tomorrow|day after tomorrow|next week|"
+            r"(next )?(monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b"
+            r"(\s+(at\s+)?\d{1,2}(:\d{2})?\s*(am|pm)?)?",
+            text,
+            re.I,
+        )
+        return when.group(0) if when else None
 
     @staticmethod
     def _duration_minutes(text: str) -> int | None:
@@ -465,6 +491,16 @@ class MockProvider(LLMProvider):
 
     @classmethod
     def _render(cls, name: str, data: Any, tz) -> str | None:
+        if isinstance(data, dict) and data.get("status") == "awaiting_approval":
+            # The payload's "message" is an instruction to the model ("Tell
+            # them what is pending, then stop"), and was being shown as-is.
+            lines = str(data.get("preview") or "").strip().splitlines()
+            what = lines[0].strip() if lines else ""  # "Send email to …", not the body
+            return (
+                "That needs your go-ahead first, so I've queued it"
+                + (f":\n\n- {what}" if what else ".")
+                + "\n\nAllow it or turn it down below."
+            )
         if name == "get_daily_briefing" and isinstance(data, dict):
             parts = [f"**{data.get('greeting', 'Hello')}.** {data.get('headline', '')}".strip()]
             if data.get("meetings"):

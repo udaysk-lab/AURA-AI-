@@ -592,3 +592,20 @@ class Delegation(Base, TimestampMixin):
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(20), default="open")  # open|chased|done
     chased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SampleRow(Base, TimestampMixin):
+    """One row the sample-data seeder created, so it can be removed exactly.
+
+    Removal used to find sample rows by their titles, which also caught the
+    user's own "Standup" or "Draft Q3 board update" and deleted them. The seeder
+    now writes down the id of everything it adds, and removal deletes only those.
+    """
+
+    __tablename__ = "sample_rows"
+    __table_args__ = (UniqueConstraint("user_id", "kind", "row_id", name="uq_sample_row"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(40))  # emails | events | tasks | …
+    row_id: Mapped[str] = mapped_column(String(36))

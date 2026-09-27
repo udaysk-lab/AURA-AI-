@@ -18,6 +18,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import timeutil
 from app.agent.autonomy import risk_class
 from app.agent.coordinator import execute_tool
 from app.agent.prompts import AUTOMATION_COMPILER
@@ -332,14 +333,16 @@ def run_due_schedules(db: Session, now: datetime | None = None) -> list[dict]:
 
     results = []
     for rule in rules:
-        if not due_schedules(rule, now):
+        user = db.get(User, rule.user_id)
+        if not user:
+            continue
+        # "Every weekday at 8:00 AM" is 8:00 on the owner's clock, not UTC's.
+        if not due_schedules(rule, now.astimezone(timeutil.user_zone(user))):
             continue
         last = rule.last_run_at
         if last:
             last = last if last.tzinfo else last.replace(tzinfo=timezone.utc)
             if (now - last).total_seconds() < 90:
                 continue  # already fired this minute
-        user = db.get(User, rule.user_id)
-        if user:
-            results.append(run_rule(db, user, rule, {"subject": rule.name}))
+        results.append(run_rule(db, user, rule, {"subject": rule.name}))
     return results

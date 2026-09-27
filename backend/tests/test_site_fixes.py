@@ -11,6 +11,12 @@ Each test pins a bug that was visible in the product:
   sample data — and the sample data, once there, couldn't be removed;
 * the growth bar sat at 0% for as long as any one signal was zero.
 
+The later tests pin what an independent review of those fixes turned up:
+removing sample data also deleted the user's own look-alike rows, a region
+name such as "America" was a 500, schedules fired on UTC's clock, and demo mode
+saved "Do you remember…?" as a memory and read the model's own instructions
+aloud when an action was queued for approval.
+
 Run from backend/:  pytest -q tests/test_site_fixes.py
 """
 
@@ -39,6 +45,11 @@ EMAILS = (
     "fixes-ist@example.com",
     "fixes-signup@example.com",
     "fixes-badzone@example.com",
+    "fixes-keep@example.com",
+    "fixes-legacy@example.com",
+    "fixes-sched@example.com",
+    "fixes-region@example.com",
+    "fixes-slots@example.com",
 )
 
 
@@ -327,3 +338,202 @@ def test_progress_moves_even_while_one_signal_is_zero():
         {"interactions": 99, "memories": 2, "actions": 99}, stranger
     )
     assert done["percent"] < 100  # a stage not yet reached never reads 100%
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups
+# ---------------------------------------------------------------------------
+
+
+def _user(email: str):
+    from app.models import User
+
+    db = SessionLocal()
+    try:
+        return db.query(User).filter(User.email == email).one()
+    finally:
+        db.close()
+
+
+def test_removing_sample_data_keeps_the_users_own_lookalikes(client):
+    auth = _demo(client, "fixes-keep@example.com", tz="Asia/Kolkata")
+    soon = datetime.now(timezone.utc) + timedelta(days=1)
+
+    # The user's own rows, named exactly like sample ones.
+    standup = client.post(
+        "/api/events", headers=auth,
+        json={"title": "Standup", "start_at": soon.isoformat(),
+              "end_at": (soon + timedelta(minutes=15)).isoformat()},
+    )
+    assert standup.status_code == 200, standup.text
+    board = client.post(
+        "/api/tasks", headers=auth, json={"title": "Draft Q3 board update", "tags": ["board"]}
+    ).json()
+    memory = client.post(
+        "/api/memories", headers=auth,
+        json={"content": "Wants email replies drafted short.", "kind": "preference"},
+    ).json()
+    # …and one of theirs filed under a sample task.
+    sample_parent = next(
+        t for t in client.get("/api/tasks", headers=auth).json()
+        if t["title"] == "Sign and return Series A term sheet"
+    )
+    subtask = client.post(
+        "/api/tasks", headers=auth,
+        json={"title": "Ask Priya about the option pool", "parent_id": sample_parent["id"]},
+    ).json()
+
+    cleared = client.delete("/api/settings/demo-data", headers=auth)
+    assert cleared.status_code == 200, cleared.text
+    removed = cleared.json()["removed"]
+    assert removed["events"] == 7 and removed["tasks"] == 6 and removed["emails"] == 7
+
+    events = client.get("/api/events", headers=auth, params={"days": 14}).json()
+    assert [e["id"] for e in events] == [standup.json()["id"]]
+    tasks = {t["id"]: t for t in client.get("/api/tasks", headers=auth).json()}
+    assert set(tasks) == {board["id"], subtask["id"]}
+    assert tasks[subtask["id"]]["parent_id"] is None  # kept, as a top-level task
+    contents = [m["content"] for m in client.get("/api/memories", headers=auth).json()]
+    assert contents == [memory["content"]]
+    assert client.get("/api/settings/demo-data", headers=auth).json()["present"] is False
+
+
+def test_sample_data_from_before_the_ledger_is_removed_exactly(client):
+    from app.models import CalendarEvent, SampleRow
+
+    auth = _demo(client, "fixes-legacy@example.com")
+    user = _user("fixes-legacy@example.com")
+    db = SessionLocal()
+    try:
+        # Accounts seeded before this change have no ledger rows.
+        db.query(SampleRow).filter(SampleRow.user_id == user.id).delete()
+        # A field-for-field twin of a sample event, made an hour apart from the
+        # seeding: the user's own, and it must survive.
+        start = datetime.now(timezone.utc) + timedelta(days=3)
+        twin = CalendarEvent(
+            user_id=user.id, title="Standup", description="Daily engineering sync.",
+            location="Zoom", start_at=start, end_at=start + timedelta(minutes=15),
+            attendees=[], source="local",
+        )
+        twin.created_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        db.add(twin)
+        db.commit()
+        twin_id = twin.id
+    finally:
+        db.close()
+    own_task = client.post(
+        "/api/tasks", headers=auth, json={"title": "Draft Q3 board update"}
+    ).json()
+
+    assert client.get("/api/settings/demo-data", headers=auth).json()["counts"]["events"] == 7
+    removed = client.delete("/api/settings/demo-data", headers=auth).json()["removed"]
+    assert removed["events"] == 7 and removed["tasks"] == 6
+    assert removed["schedules"] == 1 and removed["heartbeats"] == 1
+
+    assert [e["id"] for e in client.get(
+        "/api/events", headers=auth, params={"days": 14}
+    ).json()] == [twin_id]
+    assert [t["id"] for t in client.get("/api/tasks", headers=auth).json()] == [own_task["id"]]
+    assert client.get("/api/settings/demo-data", headers=auth).json()["present"] is False
+
+
+def test_a_subtask_needs_a_parent_the_user_owns(client):
+    auth = _demo(client, "fixes-keep@example.com")
+    resp = client.post(
+        "/api/tasks", headers=auth, json={"title": "Orphan", "parent_id": "no-such-task"}
+    )
+    assert resp.status_code == 404
+
+
+def test_a_region_is_not_a_time_zone(client):
+    # ZoneInfo("America") raises IsADirectoryError, which escaped as a 500.
+    assert timeutil.zone("America") == timezone.utc
+    assert not timeutil.is_valid_zone("Asia") and not timeutil.is_valid_zone("Etc")
+    auth = _demo(client, "fixes-region@example.com", tz="Europe")
+    assert client.get("/api/auth/me", headers=auth).json()["timezone"] == "UTC"
+    resp = client.patch("/api/auth/me", headers=auth, json={"timezone": "America"})
+    assert resp.status_code == 422, resp.text
+
+
+def test_schedules_and_scheduled_automations_run_on_the_owners_clock(client, monkeypatch):
+    from app.automation import engine
+    from app.services import schedules
+
+    _demo(client, "fixes-sched@example.com", tz="Asia/Kolkata")
+    uid = _user("fixes-sched@example.com").id
+    ran: list[str] = []
+    monkeypatch.setattr(
+        schedules, "run_one", lambda db, user, s: ran.append(f"{user.id}:{s.name}") or {}
+    )
+    monkeypatch.setattr(
+        engine, "run_rule", lambda db, user, rule, ctx: ran.append(f"{user.id}:{rule.name}") or {}
+    )
+
+    db = SessionLocal()
+    try:
+        # The sample schedule is 07:30 on weekdays; the sample automation 08:00.
+        ist_0730 = datetime(2026, 9, 28, 2, 0, tzinfo=timezone.utc)  # a Monday
+        schedules.run_due(db, now=ist_0730)
+        assert f"{uid}:Morning briefing" in ran
+        engine.run_due_schedules(db, now=ist_0730 + timedelta(minutes=30))
+        assert f"{uid}:Morning briefing at 08:00" in ran
+
+        ran.clear()
+        utc_0730 = datetime(2026, 9, 28, 7, 30, tzinfo=timezone.utc)  # 13:00 in India
+        schedules.run_due(db, now=utc_0730)
+        engine.run_due_schedules(db, now=utc_0730 + timedelta(minutes=30))
+        assert not [r for r in ran if r.startswith(f"{uid}:")]
+    finally:
+        db.close()
+
+
+def test_free_slots_start_on_the_hour_on_the_users_clock(client, monkeypatch):
+    from app.agent import tools
+    from app.models import User
+
+    fixed = datetime(2026, 9, 28, 4, 40, tzinfo=timezone.utc)  # Monday 10:10 in India
+
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed.astimezone(tz) if tz else fixed.replace(tzinfo=None)
+
+    monkeypatch.setattr(tools, "datetime", Frozen)
+    db = SessionLocal()
+    try:
+        user = User(email="fixes-slots@example.com", name="Slots", timezone="Asia/Kolkata")
+        db.add(user)
+        db.commit()
+        slots = tools._find_free_time(
+            tools.ToolContext(db=db, user=user), {"duration_minutes": 30, "days": 1}
+        )
+    finally:
+        db.close()
+    first = datetime.fromisoformat(slots[0]["start_at"]).astimezone(IST)
+    assert (first.hour, first.minute) == (11, 0), slots[0]  # not 10:30
+
+
+def test_a_question_about_memory_is_a_lookup_not_a_save(client):
+    auth = _demo(client, "fixes-demo@example.com")
+    before = client.get("/api/memories", headers=auth).json()
+    events, _ = _stream(client, auth, "Do you remember what I prefer?")
+    after = client.get("/api/memories", headers=auth).json()
+    assert len(after) == len(before)
+    assert not any(m["content"].lower().startswith("do you remember") for m in after)
+
+
+def test_a_queued_action_is_described_to_the_user():
+    from app.llm import MockProvider
+
+    payload = {
+        "status": "awaiting_approval",
+        "message": "send_email is queued and waiting for the user to approve it. "
+                   "Tell them what is pending, then stop.",
+        "preview": "Send email to priya@northwind.vc\nSubject: Signed\n\nAttached.",
+        "pending_action_id": "x",
+    }
+    text = MockProvider._summarise_tool_output(
+        [{"role": "tool", "name": "send_email", "content": json.dumps(payload)}]
+    )
+    assert "Tell them" not in text
+    assert "Send email to priya@northwind.vc" in text and "Subject" not in text

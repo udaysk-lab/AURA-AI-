@@ -429,6 +429,19 @@ def _list_events(ctx: ToolContext, args: dict) -> list[dict]:
     ]
 
 
+def _event_preview(a: dict) -> str:
+    """What the approval card shows. It used to read create_event(title='…')."""
+    lines = [f"Add to your calendar: {a.get('title') or 'New event'}"]
+    lines.append(f"When: {a.get('start_at') or 'tomorrow at 10:00'}")
+    if a.get("duration_minutes") and not a.get("end_at"):
+        lines.append(f"Length: {a['duration_minutes']} minutes")
+    if a.get("location"):
+        lines.append(f"Where: {a['location']}")
+    if a.get("attendees"):
+        lines.append("With: " + ", ".join(map(str, a["attendees"])))
+    return "\n".join(lines)
+
+
 @tool(
     "create_event",
     "Create a calendar event. Accepts ISO timestamps or phrases like 'tomorrow 3pm'.",
@@ -445,6 +458,7 @@ def _list_events(ctx: ToolContext, args: dict) -> list[dict]:
         },
         "required": ["title"],
     },
+    preview=_event_preview,
 )
 def _create_event(ctx: ToolContext, args: dict) -> dict:
     tz = timeutil.user_zone(ctx.user)
@@ -559,8 +573,11 @@ def _find_free_time(ctx: ToolContext, args: dict) -> list[dict]:
             else timeutil.at_local(date, latest, 0, tz)
         )
         if cursor < now:
-            # Next whole hour from now, never a slot that has already started.
-            cursor = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            # The next whole hour on the user's clock, never a slot that has
+            # already started. Rounding in UTC offered 10:30 and 11:30 to
+            # anyone half an hour off UTC, such as India.
+            local_now = now.astimezone(tz)
+            cursor = timeutil.at_local(local_now.date(), local_now.hour, 0, tz) + timedelta(hours=1)
         if cursor >= day_end:
             continue
 

@@ -23,6 +23,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 UTC = timezone.utc
 
+# What ZoneInfo raises for a name that isn't a zone. OSError matters: a region
+# like "America" or "Asia" is a directory in the zone database, so looking it up
+# raises IsADirectoryError, which used to escape as a 500 from PATCH /me.
+_BAD_ZONE = (ZoneInfoNotFoundError, ValueError, TypeError, OSError)
+
 
 def zone(name: str | None) -> tzinfo:
     """The tzinfo for an IANA name, or UTC when it's missing or unknown."""
@@ -30,7 +35,7 @@ def zone(name: str | None) -> tzinfo:
         return UTC
     try:
         return ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError, TypeError):
+    except _BAD_ZONE:
         return UTC
 
 
@@ -41,7 +46,7 @@ def is_valid_zone(name: str | None) -> bool:
         return True
     try:
         ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError, TypeError):
+    except _BAD_ZONE:
         return False
     return True
 

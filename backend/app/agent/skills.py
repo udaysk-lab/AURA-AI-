@@ -123,7 +123,8 @@ def _sum_memory_save(result: Any) -> str:
 
 
 def _sum_memory_search(result: Any) -> str:
-    return f"Recalled {_n(result)} relevant memories"
+    n = _n(result)
+    return f"Recalled {n} relevant memor{'y' if n == 1 else 'ies'}"
 
 
 def _sum_contacts(result: Any) -> str:

@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import timeutil
 from app.models import Notification, Schedule, User, utcnow
 
 log = logging.getLogger("aura.schedules")
@@ -245,7 +246,9 @@ def run_due(db: Session, now: datetime | None = None) -> list[dict]:
 
     results: list[dict] = []
     for schedule in rows:
-        if not cron_matches(schedule.cron, now):
+        # "every weekday at 7:30am" means 7:30 on the owner's clock. Matching
+        # the cron against UTC ran it at 13:00 for someone in India.
+        if not cron_matches(schedule.cron, now.astimezone(timeutil.zone(schedule.timezone))):
             continue
         last = schedule.last_run_at
         if last:
