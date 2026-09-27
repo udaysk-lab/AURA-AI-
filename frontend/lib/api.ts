@@ -53,6 +53,79 @@ export class ApiError extends Error {
   }
 }
 
+/** The browser's IANA time zone, e.g. "Asia/Kolkata". Empty if unavailable. */
+export function browserTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch {
+    return "";
+  }
+}
+
+// Pages that work without a session. A stale token on one of these must not
+// bounce the visitor to the sign-in form: the landing page's AuthProvider
+// checks the token on load, and a 401 there used to redirect everyone with an
+// expired session away from the marketing page.
+const PUBLIC_PATHS = ["/", "/login", "/setup", "/auth/callback"];
+
+function onPublicPage(): boolean {
+  if (typeof window === "undefined") return true;
+  const path = window.location.pathname.replace(/\/+$/, "") || "/";
+  return PUBLIC_PATHS.includes(path);
+}
+
+function handleExpiredSession(): never {
+  clearToken();
+  if (!onPublicPage()) window.location.href = "/login";
+  throw new ApiError(401, "Your session has expired. Please sign in again.");
+}
+
+/**
+ * Turn an error response into one sentence a person can act on.
+ *
+ * FastAPI's validation errors arrive as a list of objects; showing that list
+ * raw put `[{"type":"value_error","loc":["body","email"],...}]` on the sign-up
+ * form. A 429 gets its wait time instead of "Too Many Requests".
+ */
+async function describeError(res: Response): Promise<string> {
+  let body: any = null;
+  try {
+    body = await res.json();
+  } catch {
+    /* non-JSON error body */
+  }
+  const detail = body?.detail;
+
+  if (res.status === 429) {
+    const wait = Number(body?.retry_after_seconds || res.headers.get("Retry-After") || 0);
+    return wait > 0
+      ? `That's a lot of requests at once. Try again in ${wait} second${wait === 1 ? "" : "s"}.`
+      : "That's a lot of requests at once. Try again in a moment.";
+  }
+  // The server's catch-all answers "Internal error" in production, which reads
+  // like the user did something wrong. Say what it means instead.
+  if (typeof detail === "string" && detail && !(res.status >= 500 && detail === "Internal error")) {
+    return detail;
+  }
+  if (Array.isArray(detail) && detail.length) {
+    return detail
+      .map((d: any) => {
+        const field = Array.isArray(d?.loc) ? d.loc[d.loc.length - 1] : "";
+        const msg = String(d?.msg ?? "is invalid").replace(/^Value error, /, "");
+        return field && typeof field === "string" ? `${capitalise(field)}: ${msg}` : msg;
+      })
+      .join(" ");
+  }
+  if (res.status >= 500) {
+    return "Something went wrong on the server. Please try again in a moment.";
+  }
+  return res.statusText || `Request failed (${res.status})`;
+}
+
+function capitalise(s: string) {
+  return s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, " ");
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
   const res = await fetch(`${API_BASE}${path}`, {
@@ -73,23 +146,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const isCredentialCheck =
     path === "/api/auth/login" || path === "/api/auth/register";
 
-  if (res.status === 401 && !isCredentialCheck) {
-    clearToken();
-    if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-      window.location.href = "/login";
-    }
-    throw new ApiError(401, "Session expired");
-  }
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = await res.json();
-      detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
-    } catch {
-      /* non-JSON error body */
-    }
-    throw new ApiError(res.status, detail);
-  }
+  if (res.status === 401 && !isCredentialCheck) handleExpiredSession();
+  if (!res.ok) throw new ApiError(res.status, await describeError(res));
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
@@ -546,16 +604,24 @@ export const api = {
       password_login_enabled: boolean;
       llm_provider: string;
     }>("/api/auth/config"),
+  // The browser's zone goes along at sign-up, so "tomorrow at 5" and the
+  // working day mean the user's own rather than UTC's.
   register: (email: string, password: string, name: string) =>
     post<{ access_token: string; user: User }>("/api/auth/register", {
       email,
       password,
       name,
+      timezone: browserTimeZone(),
     }),
   login: (email: string, password: string) =>
     post<{ access_token: string; user: User }>("/api/auth/login", { email, password }),
   demoLogin: (email: string, name: string) =>
-    post<{ access_token: string; user: User }>("/api/auth/demo", { email, name }),
+    post<{ access_token: string; user: User }>("/api/auth/demo", {
+      email,
+      name,
+      timezone: browserTimeZone(),
+    }),
+  updateMe: (body: { name?: string; timezone?: string }) => patch<User>("/api/auth/me", body),
   // Sends the bearer token when signed in, which is what tells the backend to
   // *connect* Google to this account rather than sign in as the Google identity.
   googleStart: () =>
@@ -624,6 +690,14 @@ export const api = {
 
   settings: () => get<AppSettings>("/api/settings"),
   updateSettings: (body: Partial<AppSettings>) => patch<AppSettings>("/api/settings", body),
+
+  // --- Sample data --------------------------------------------------------
+  sampleData: () =>
+    get<{ present: boolean; counts: Record<string, number> }>("/api/settings/demo-data"),
+  clearSampleData: () =>
+    del<{ removed: Record<string, number>; total: number }>("/api/settings/demo-data"),
+  loadSampleData: () =>
+    post<{ seeded: boolean; reason?: string }>("/api/settings/seed-demo"),
 
   // --- Skills -------------------------------------------------------------
   skills: (category = "") =>
@@ -704,15 +778,8 @@ export const api = {
       headers: { Authorization: `Bearer ${getToken() ?? ""}` },
       body: form,
     });
-    if (!res.ok) {
-      let detail = res.statusText;
-      try {
-        detail = (await res.json()).detail ?? detail;
-      } catch {
-        /* non-JSON error body */
-      }
-      throw new ApiError(res.status, detail);
-    }
+    if (res.status === 401) handleExpiredSession();
+    if (!res.ok) throw new ApiError(res.status, await describeError(res));
     return (await res.json()) as DocumentItem;
   },
 
@@ -759,14 +826,19 @@ export const api = {
     const res = await fetch(`${API_BASE}/api/account/export`, {
       headers: { Authorization: `Bearer ${getToken() ?? ""}` },
     });
-    if (!res.ok) throw new ApiError(res.status, "Export failed");
+    if (res.status === 401) handleExpiredSession();
+    if (!res.ok) throw new ApiError(res.status, await describeError(res));
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "aura-export.json";
+    link.download = `aura-export-${new Date().toISOString().slice(0, 10)}.json`;
+    // Firefox only follows a click on a link that is in the document, and
+    // revoking the URL in the same tick can cancel the download in Safari.
+    document.body.appendChild(link);
     link.click();
-    URL.revokeObjectURL(url);
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
   },
 
   // --- Diagnostics (unauthenticated) --------------------------------------
@@ -796,6 +868,7 @@ export type StreamEvent =
       preview: string;
     }
   | { type: "delta"; value: string }
+  | { type: "capped"; value: boolean }
   | { type: "done"; conversation_id: string; message_id: string; latency_ms: number; steps: number }
   | { type: "error"; message: string };
 
@@ -815,31 +888,42 @@ export async function streamChat(
     signal,
   });
 
-  if (!res.ok || !res.body) {
-    throw new ApiError(res.status, "Chat stream failed");
-  }
+  if (res.status === 401) handleExpiredSession();
+  if (!res.ok) throw new ApiError(res.status, await describeError(res));
+  if (!res.body) throw new ApiError(res.status, "The reply didn't arrive. Please try again.");
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
 
+  // Returns true once the server says it's finished.
+  const flush = (chunks: string[]) => {
+    for (const chunk of chunks) {
+      // A frame may carry several lines (e.g. "event:" then "data:").
+      for (const raw of chunk.split("\n")) {
+        const line = raw.trim();
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (payload === "[DONE]") return true;
+        try {
+          onEvent(JSON.parse(payload) as StreamEvent);
+        } catch {
+          /* ignore malformed frame */
+        }
+      }
+    }
+    return false;
+  };
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-
     const chunks = buffer.split("\n\n");
     buffer = chunks.pop() ?? "";
-    for (const chunk of chunks) {
-      const line = chunk.trim();
-      if (!line.startsWith("data:")) continue;
-      const payload = line.slice(5).trim();
-      if (payload === "[DONE]") return;
-      try {
-        onEvent(JSON.parse(payload) as StreamEvent);
-      } catch {
-        /* ignore malformed frame */
-      }
-    }
+    if (flush(chunks)) return;
   }
+  // Whatever arrived without a trailing blank line is still a frame.
+  buffer += decoder.decode();
+  if (buffer.trim()) flush([buffer]);
 }

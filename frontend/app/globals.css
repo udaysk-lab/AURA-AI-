@@ -97,6 +97,13 @@ body {
   height: 100%;
 }
 
+/* In-page links (#skills, #pricing) glide rather than jump, and land below
+   the fixed landing nav instead of under it. */
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 88px;
+}
+
 body {
   @apply bg-canvas text-ink antialiased;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
@@ -351,6 +358,21 @@ body::after {
   opacity: calc(var(--wash) * 0.85);
 }
 
+/* Row actions (delete, brief…) that appear on hover. Only where hovering is
+   possible: on a touch screen there is no hover, and opacity-0 left those
+   buttons invisible — tappable if you knew where, which nobody does. They
+   also show while anything in the row has keyboard focus. */
+@media (hover: hover) {
+  .reveal-on-hover {
+    opacity: 0;
+    transition: opacity 150ms ease;
+  }
+  .group:hover .reveal-on-hover,
+  .group:focus-within .reveal-on-hover {
+    opacity: 1;
+  }
+}
+
 /* Scrollbars */
 ::-webkit-scrollbar {
   width: 10px;
@@ -418,6 +440,9 @@ body::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
   *,
   *::before,
   *::after {

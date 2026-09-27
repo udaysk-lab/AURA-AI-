@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { Assistant, api, getToken } from "./api";
+import { useAuth } from "./auth";
 
 interface AssistantState {
   assistant: Assistant | null;
@@ -16,6 +17,7 @@ const AssistantContext = createContext<AssistantState>({
 });
 
 export function AssistantProvider({ children }: { children: React.ReactNode }) {
+  const { user, loading: authLoading } = useAuth();
   const [assistant, setAssistant] = useState<Assistant | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -25,6 +27,7 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
       return;
     }
+    setLoading(true);
     try {
       setAssistant(await api.assistant());
     } catch {
@@ -34,9 +37,20 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Follow whoever is signed in. This used to load once, when the page first
+  // mounted — before sign-in on the login page — so after signing up the app
+  // still thought there was no assistant, skipped onboarding, and showed
+  // "Aura · Assistant" until the next full reload.
+  const userId = user?.id ?? null;
   useEffect(() => {
+    if (authLoading) return;
+    if (!userId) {
+      setAssistant(null);
+      setLoading(false);
+      return;
+    }
     void refresh();
-  }, [refresh]);
+  }, [authLoading, userId, refresh]);
 
   return (
     <AssistantContext.Provider value={{ assistant, loading, refresh }}>

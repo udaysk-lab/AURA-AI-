@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useState,
 } from "react";
 import { AlertTriangle, Check, Info, X } from "lucide-react";
@@ -37,19 +38,29 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const push = useCallback((message: string, tone: Tone = "info") => {
     const id = ++counter;
     setToasts((prev) => [...prev.slice(-3), { id, tone, message }]);
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4200);
+    // Errors stay longer: they usually say what to do next.
+    const ttl = tone === "error" ? 7000 : 4200;
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), ttl);
   }, []);
 
-  const api: ToastApi = {
-    push,
-    success: useCallback((m: string) => push(m, "success"), [push]),
-    error: useCallback((m: string) => push(m, "error"), [push]),
-  };
+  // Stable, so screens can list `toast` in effect and memo dependencies
+  // without re-running them on every render.
+  const api = useMemo<ToastApi>(
+    () => ({
+      push,
+      success: (m: string) => push(m, "success"),
+      error: (m: string) => push(m, "error"),
+    }),
+    [push]
+  );
 
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <div className="pointer-events-none fixed bottom-5 left-1/2 z-[60] flex w-full max-w-sm -translate-x-1/2 flex-col gap-2 px-4">
+      <div
+        className="pointer-events-none fixed bottom-5 left-1/2 z-[80] flex w-full max-w-sm -translate-x-1/2 flex-col gap-2 px-4"
+        aria-live="polite"
+      >
         {toasts.map((t) => (
           <ToastRow key={t.id} toast={t} onClose={() => setToasts((p) => p.filter((x) => x.id !== t.id))} />
         ))}
@@ -70,11 +81,15 @@ function ToastRow({ toast, onClose }: { toast: Toast; onClose: () => void }) {
   return (
     <div
       className={`pointer-events-auto flex animate-fade-up items-start gap-2.5 rounded-2xl border px-4 py-3 shadow-lift backdrop-blur-2xl ${tone}`}
-      role="status"
+      role={toast.tone === "error" ? "alert" : "status"}
     >
       <Icon size={15} className="mt-0.5 shrink-0" />
       <span className="min-w-0 flex-1 text-[13px] leading-relaxed">{toast.message}</span>
-      <button onClick={onClose} className="shrink-0 opacity-50 transition hover:opacity-100">
+      <button
+        onClick={onClose}
+        aria-label="Dismiss"
+        className="shrink-0 opacity-50 transition hover:opacity-100"
+      >
         <X size={13} />
       </button>
     </div>

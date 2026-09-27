@@ -1,19 +1,42 @@
 "use client";
 
-import { ReactNode } from "react";
+import { ReactNode, useEffect, useId, useRef, useState } from "react";
 
 // ---------------------------------------------------------------------------
 // Formatting
 // ---------------------------------------------------------------------------
 
+/**
+ * Parse an API timestamp. They are all UTC, but SQLite drops the offset on the
+ * way out ("2026-09-26T17:14:40"), and a bare ISO time is read as *local* by
+ * the browser — so a message sent a minute ago in India said "6h ago".
+ */
+export function toDate(iso: string) {
+  const bare = /T\d/.test(iso) && !/(?:[zZ]|[+-]\d\d:?\d\d)$/.test(iso);
+  return new Date(bare ? `${iso}Z` : iso);
+}
+
 export function fmtTime(iso: string | null | undefined) {
   if (!iso) return "";
-  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  // "numeric", not "2-digit": in a 12-hour locale 2-digit renders "02:30 PM".
+  return toDate(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+/** "Today", "Tomorrow", "Yesterday", or "Mon, 28 Sep". */
+export function fmtDayLabel(iso: string | null | undefined) {
+  if (!iso) return "";
+  const d = toDate(iso);
+  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((startOf(d) - startOf(new Date())) / 86_400_000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Tomorrow";
+  if (days === -1) return "Yesterday";
+  return fmtDay(iso);
 }
 
 export function fmtDay(iso: string | null | undefined) {
   if (!iso) return "";
-  return new Date(iso).toLocaleDateString([], {
+  return toDate(iso).toLocaleDateString([], {
     weekday: "short",
     day: "numeric",
     month: "short",
@@ -22,7 +45,7 @@ export function fmtDay(iso: string | null | undefined) {
 
 export function fmtRelative(iso: string | null | undefined) {
   if (!iso) return "";
-  const diff = Date.now() - new Date(iso).getTime();
+  const diff = Date.now() - toDate(iso).getTime();
   const mins = Math.round(diff / 60000);
   if (Math.abs(mins) < 1) return "just now";
   if (Math.abs(mins) < 60) return `${mins > 0 ? mins : -mins}m ${mins > 0 ? "ago" : "from now"}`;
@@ -37,6 +60,41 @@ export function initials(name: string, fallback = "?") {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return fallback;
   return (parts[0][0] + (parts[1]?.[0] ?? "")).toUpperCase();
+}
+
+/** What's still missing before the next relationship stage, in words. */
+export function progressHint(progress: {
+  next_label: string;
+  needs: { interactions: number; memories: number; actions: number };
+}) {
+  const { interactions, memories, actions } = progress.needs;
+  const bits = [
+    interactions > 0 && `${interactions} more conversation${interactions === 1 ? "" : "s"}`,
+    memories > 0 && `${memories} more thing${memories === 1 ? "" : "s"} to learn about you`,
+    actions > 0 && `${actions} more action${actions === 1 ? "" : "s"}`,
+  ].filter(Boolean);
+  return bits.length ? `${bits.join(" · ")} to reach ${progress.next_label}` : "";
+}
+
+/**
+ * Screens that change what the sidebar badges count (approving an action,
+ * marking notifications read) announce it with this event, so the sidebar
+ * doesn't sit on a stale "3 waiting on you" until its next poll.
+ */
+export const BADGES_EVENT = "aura:refresh-badges";
+export function refreshBadges() {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(BADGES_EVENT));
+}
+
+/** "⌘K" on a Mac, "Ctrl K" everywhere else. */
+export function useShortcutLabel(key: string) {
+  const [mac, setMac] = useState(true);
+  useEffect(() => {
+    const platform =
+      (navigator as any).userAgentData?.platform || navigator.platform || navigator.userAgent;
+    setMac(/mac|iphone|ipad/i.test(platform));
+  }, []);
+  return mac ? `⌘${key}` : `Ctrl ${key}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,19 +286,40 @@ export function Modal({
   children: ReactNode;
   width?: string;
 }) {
+  const titleId = useId();
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  // Escape closes, as every dialog should; this one used to ignore it.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeRef.current();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-canvas/75 p-4 pt-[9vh] backdrop-blur-md"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-canvas/75 p-4 pt-[9vh] backdrop-blur-md"
       onClick={onClose}
     >
       <div
-        className={`glass w-full ${width} animate-pop-in p-5 shadow-lift`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className={`glass w-full ${width} mb-8 animate-pop-in p-5 shadow-lift`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">{title}</h3>
-          <button onClick={onClose} className="btn-quiet px-2.5 py-1 text-lg leading-none">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <h3 id={titleId} className="min-w-0 truncate text-sm font-semibold">
+            {title}
+          </h3>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="btn-quiet shrink-0 px-2.5 py-1 text-lg leading-none"
+          >
             ×
           </button>
         </div>
@@ -276,18 +355,21 @@ export function Toggle({
   checked,
   onChange,
   label,
+  disabled = false,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   label?: string;
+  disabled?: boolean;
 }) {
   return (
     <button
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative h-5 w-9 shrink-0 rounded-full border border-line transition ${
+      className={`relative h-5 w-9 shrink-0 rounded-full border border-line transition disabled:opacity-50 ${
         checked ? "bg-accent shadow-glow-sm" : "bg-raised"
       }`}
     >
@@ -341,31 +423,69 @@ export function SkillBadge({ code, name }: { code: string; name?: string }) {
 // ---------------------------------------------------------------------------
 
 /**
- * Handles the subset the assistant actually emits: bold, italics, inline code,
- * fenced code, links, bullet and numbered lists. Deliberately not a full parser
- * — swap in react-markdown if you need tables and footnotes.
+ * Handles the subset the assistant actually emits: headings, bold, italics,
+ * inline code, fenced code, links, bullet and numbered lists. Deliberately not
+ * a full parser — swap in react-markdown if you need tables and footnotes.
+ *
+ * The output goes through dangerouslySetInnerHTML, and the text can carry
+ * words from an email someone else wrote, so it is escaped completely —
+ * quotes included — and links keep only http(s) and mailto targets. Before,
+ * `[x](javascript:…)` became a live script link and a quote in a URL could
+ * break out of the href into an event handler: from there, the session token
+ * in localStorage was one click away.
  */
 export function Markdown({ text }: { text: string }) {
   const escape = (s: string) =>
-    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
 
-  const inline = (s: string) =>
-    escape(s)
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
+  const link = (raw: string, label: string) => {
+    // `raw` is already escaped; undo only what a URL legitimately contains.
+    const url = raw.replace(/&amp;/g, "&").trim();
+    if (/^(https?:\/\/|mailto:)/i.test(url)) {
+      return `<a href="${escape(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    }
+    // A path inside the app ("/tasks") is safe and opens in place.
+    if (/^\/(?!\/)[\w\-./?=&#%]*$/.test(url)) return `<a href="${escape(url)}">${label}</a>`;
+    return null;
+  };
+
+  const inline = (s: string) => {
+    // Code spans first, and parked, so nothing inside them is formatted.
+    const codes: string[] = [];
+    let out = escape(s).replace(/`([^`]+)`/g, (_, code) => {
+      codes.push(`<code>${code}</code>`);
+      return `\u0000${codes.length - 1}\u0000`;
+    });
+    // Links next, parked too, so emphasis rules can't reach into a URL.
+    const links: string[] = [];
+    out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_whole, label, href) => {
+      const html = link(href, label);
+      if (!html) return label;
+      links.push(html);
+      return `\u0001${links.length - 1}\u0001`;
+    });
+    out = out
       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
-      .replace(/_([^_\n]+)_/g, "<em>$1</em>")
-      .replace(
-        /\[([^\]]+)\]\(([^)]+)\)/g,
-        '<a href="$2" target="_blank" rel="noreferrer">$1</a>'
-      );
+      // No space just inside the markers, so "2 * 3 * 4" stays arithmetic.
+      .replace(/(^|[^*\w])\*([^*\s](?:[^*\n]*[^*\s])?)\*(?!\w)/g, "$1<em>$2</em>")
+      // Underscores only at word edges, so send_email_draft stays as written.
+      .replace(/(^|[^\w])_([^_\s](?:[^_\n]*[^_\s])?)_(?!\w)/g, "$1<em>$2</em>");
+    return out
+      .replace(/\u0001(\d+)\u0001/g, (_, i) => links[Number(i)])
+      .replace(/\u0000(\d+)\u0000/g, (_, i) => codes[Number(i)]);
+  };
 
   const blocks: string[] = [];
   const segments = text.split(/```/);
 
   segments.forEach((segment, i) => {
     if (i % 2 === 1) {
-      const body = segment.replace(/^[a-z]*\n/i, "");
+      const body = segment.replace(/^[a-z0-9_+-]*\n/i, "");
       blocks.push(`<pre><code>${escape(body)}</code></pre>`);
       return;
     }
@@ -380,9 +500,13 @@ export function Markdown({ text }: { text: string }) {
 
     for (const raw of segment.split("\n")) {
       const line = raw.trimEnd();
-      const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+      const heading = line.match(/^\s*#{1,6}\s+(.*)$/);
+      const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
       const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
-      if (bullet) {
+      if (heading) {
+        flush();
+        blocks.push(`<p><strong>${inline(heading[1])}</strong></p>`);
+      } else if (bullet) {
         if (ordered) flush();
         ordered = false;
         list.push(`<li>${inline(bullet[1])}</li>`);
@@ -400,7 +524,7 @@ export function Markdown({ text }: { text: string }) {
 
   return (
     <div
-      className="prose-chat text-[13.5px] leading-relaxed text-ink/85"
+      className="prose-chat break-words text-[13.5px] leading-relaxed text-ink/85"
       dangerouslySetInnerHTML={{ __html: blocks.join("") }}
     />
   );

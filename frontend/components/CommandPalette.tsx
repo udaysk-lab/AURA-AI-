@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowRight,
+  Bell,
   Calendar,
   CheckSquare,
   FileText,
@@ -22,6 +23,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useToast } from "./Toast";
+import { Spinner, refreshBadges, useShortcutLabel } from "./ui";
 
 interface Command {
   id: string;
@@ -75,6 +77,7 @@ export default function CommandPalette({
       { id: "tasks", label: "Tasks", group: "Go", icon: CheckSquare, run: go("/tasks") },
       { id: "memory", label: "Memory", group: "Go", icon: Sparkles, run: go("/memory") },
       { id: "automations", label: "Automations", group: "Go", icon: Workflow, run: go("/automations") },
+      { id: "notifications", label: "Notifications", group: "Go", icon: Bell, run: go("/notifications"), keywords: "alerts inbox unread" },
       { id: "settings", label: "Settings", group: "Go", icon: Settings, run: go("/settings") },
       {
         id: "catchup",
@@ -88,9 +91,10 @@ export default function CommandPalette({
           try {
             const report = await api.runHeartbeat();
             toast.success(report.headline);
+            refreshBadges();
             router.push("/dashboard");
-          } catch {
-            toast.error("Couldn't run the heartbeat");
+          } catch (e) {
+            toast.error(e instanceof Error ? e.message : "Couldn't run the heartbeat");
           } finally {
             setBusy(false);
             onClose();
@@ -109,8 +113,8 @@ export default function CommandPalette({
           try {
             const r = await api.compactMemory();
             toast.success(`${r.before} → ${r.after} memories · ${r.merged} merged`);
-          } catch {
-            toast.error("Couldn't tidy memory");
+          } catch (e) {
+            toast.error(e instanceof Error ? e.message : "Couldn't tidy memory");
           } finally {
             setBusy(false);
             onClose();
@@ -130,6 +134,8 @@ export default function CommandPalette({
   }, [commands, query]);
 
   const askInstead = query.trim().length > 2 && filtered.length === 0;
+  const nothing = !askInstead && filtered.length === 0;
+  const toggleLabel = useShortcutLabel("K");
 
   const ask = useCallback(() => {
     router.push(`/chat?q=${encodeURIComponent(query.trim())}`);
@@ -156,6 +162,7 @@ export default function CommandPalette({
       setCursor((c) => Math.max(0, c - 1));
     } else if (e.key === "Enter") {
       e.preventDefault();
+      if (busy) return;
       if (askInstead) return ask();
       void filtered[cursor]?.run();
     }
@@ -171,6 +178,9 @@ export default function CommandPalette({
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search and commands"
         className="panel w-full max-w-lg animate-pop-in overflow-hidden p-0 shadow-lift"
         onClick={(e) => e.stopPropagation()}
       >
@@ -182,15 +192,24 @@ export default function CommandPalette({
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
             placeholder="Search, or ask your assistant…"
+            aria-label="Search, or ask your assistant"
             className="flex-1 bg-transparent text-[14px] placeholder:text-faint outline-none"
           />
-          <kbd className="shrink-0 rounded-md border border-line px-1.5 py-0.5 text-[10px] text-faint">
-            esc
-          </kbd>
+          {busy ? (
+            <Spinner className="shrink-0 text-faint" />
+          ) : (
+            <kbd className="shrink-0 rounded-md border border-line px-1.5 py-0.5 text-[10px] text-faint">
+              esc
+            </kbd>
+          )}
         </div>
 
         <div className="max-h-[52vh] overflow-y-auto p-2">
-          {askInstead ? (
+          {nothing ? (
+            <p className="px-3 py-6 text-center text-[13px] text-faint">
+              No matches. Keep typing to ask your assistant instead.
+            </p>
+          ) : askInstead ? (
             <button
               onClick={ask}
               className="flex w-full items-center gap-3 rounded-xl bg-accent-dim px-3 py-3 text-left"
@@ -230,7 +249,7 @@ export default function CommandPalette({
 
         <div className="flex items-center justify-between border-t border-line px-4 py-2 text-[11px] text-faint">
           <span>↑↓ to move · ⏎ to run</span>
-          <span>⌘K to toggle</span>
+          <span>{toggleLabel} to toggle</span>
         </div>
       </div>
     </div>

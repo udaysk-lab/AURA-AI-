@@ -1,5 +1,7 @@
 "use client";
 
+import { useId } from "react";
+
 /**
  * The assistant's face.
  *
@@ -44,6 +46,7 @@ export default function Mascot({
   size = 64,
   active = false,
   className = "",
+  label,
 }: {
   colourway?: Colourway;
   stage?: Stage;
@@ -51,10 +54,16 @@ export default function Mascot({
   /** Adds a working pulse — use while the heartbeat or agent is running. */
   active?: boolean;
   className?: string;
+  /** Accessible name. Without one the mascot is decorative and hidden from screen readers. */
+  label?: string;
 }) {
   const fill = FILL[colourway] ?? FILL.teal;
   const eye = EYE[stage] ?? EYE.stranger;
-  const uid = `${colourway}-${stage}`;
+  // Unique per instance. Gradient ids were `${colourway}-${stage}`, shared by
+  // every mascot of that look on the page; url(#id) resolves to the first one,
+  // and when that one was hidden (display:none on mobile) the others lost
+  // their shading.
+  const uid = useId().replace(/:/g, "");
 
   // Fixed rather than themed: the face sits on a saturated blob, so the sclera
   // needs to stay light and the pupil dark in every palette.
@@ -82,8 +91,7 @@ export default function Mascot({
         width={size}
         height={size}
         className="relative animate-breathe"
-        role="img"
-        aria-label="Assistant"
+        {...(label ? { role: "img", "aria-label": label } : { "aria-hidden": true })}
       >
         <defs>
           <radialGradient id={`m-hi-${uid}`} cx="32%" cy="22%" r="80%">
