@@ -279,10 +279,11 @@ def list_tasks(
 
 @router.post("/tasks", response_model=TaskOut)
 def create_task(payload: TaskIn, user: CurrentUser, db: DbSession) -> TaskOut:
-    if payload.parent_id:
+    parent_id = payload.parent_id or None  # "" means no parent, not a bad one
+    if parent_id:
         # Unchecked, a stale id was a foreign-key 500 and anyone else's task
         # id quietly made this a subtask of theirs.
-        parent = db.get(Task, payload.parent_id)
+        parent = db.get(Task, parent_id)
         if not parent or parent.user_id != user.id:
             raise HTTPException(status_code=404, detail="Parent task not found")
     task = Task(
@@ -294,7 +295,7 @@ def create_task(payload: TaskIn, user: CurrentUser, db: DbSession) -> TaskOut:
         due_at=payload.due_at,
         recurrence=payload.recurrence,
         tags=payload.tags,
-        parent_id=payload.parent_id,
+        parent_id=parent_id,
         source="manual",
     )
     task.ai_score = briefing_service.score_task(task)

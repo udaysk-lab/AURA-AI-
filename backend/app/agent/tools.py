@@ -8,6 +8,7 @@ adding one decorated function and nothing else.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 from collections.abc import Callable
@@ -90,10 +91,14 @@ def tool_specs() -> list[ToolSpec]:
 # two sources of truth for "is this dangerous" is how one of them ends up wrong.
 
 
-def build_preview(name: str, args: dict) -> str:
+def build_preview(name: str, args: dict, tz: tzinfo | None = None) -> str:
+    """What the approval card shows. Previews that talk about time get the
+    user's zone, so they can say when on the user's clock."""
     t = REGISTRY.get(name)
     if t and t.preview:
         try:
+            if len(inspect.signature(t.preview).parameters) > 1:
+                return t.preview(args, tz)
             return t.preview(args)
         except Exception:
             pass
@@ -167,6 +172,14 @@ def parse_when(value: Any, default_hour: int = 9, tz: tzinfo | None = None) -> d
             offset = 7
         elif "week" in lowered:
             offset = 7
+        elif time_match and (time_match.group(2) or time_match.group(3)) and hour == h:
+            # A bare time — "3pm", "at 15:30" — is the next time the clock
+            # shows it. It used to be None, which booked "3pm" for 10:00
+            # tomorrow.
+            today = timeutil.at_local(now.date(), hour, minute, tz)
+            if today > now:
+                return today
+            return timeutil.at_local(now.date() + timedelta(days=1), hour, minute, tz)
         else:
             return None
 
@@ -429,12 +442,39 @@ def _list_events(ctx: ToolContext, args: dict) -> list[dict]:
     ]
 
 
-def _event_preview(a: dict) -> str:
+def _event_times(args: dict, tz: tzinfo) -> tuple[datetime, datetime]:
+    """When an event request lands, on the user's clock, returned in UTC.
+
+    Shared by the approval card and the booking itself, so the card can't say
+    one time while the calendar gets another.
+    """
+    start = parse_when(args.get("start_at"), default_hour=10, tz=tz)
+    if not start:
+        tomorrow = timeutil.now_in(tz).date() + timedelta(days=1)
+        start = timeutil.at_local(tomorrow, 10, 0, tz)
+    length = timedelta(minutes=int(args.get("duration_minutes") or 30))
+    end = parse_when(args.get("end_at"), tz=tz)
+    if end and end <= start:
+        # "tomorrow 3pm" to "4pm": the end is on the start's day.
+        local_end = end.astimezone(tz)
+        end = timeutil.at_local(
+            start.astimezone(tz).date(), local_end.hour, local_end.minute, tz
+        )
+    if not end or end <= start:
+        end = start + length
+    return start, end
+
+
+def _event_preview(a: dict, tz: tzinfo | None = None) -> str:
     """What the approval card shows. It used to read create_event(title='…')."""
-    lines = [f"Add to your calendar: {a.get('title') or 'New event'}"]
-    lines.append(f"When: {a.get('start_at') or 'tomorrow at 10:00'}")
-    if a.get("duration_minutes") and not a.get("end_at"):
-        lines.append(f"Length: {a['duration_minutes']} minutes")
+    tz = tz or timezone.utc
+    start, end = _event_times(a, tz)
+    same_day = start.astimezone(tz).date() == end.astimezone(tz).date()
+    until = timeutil.fmt_clock(end, tz) if same_day else timeutil.fmt_when(end, tz)
+    lines = [
+        f"Add to your calendar: {a.get('title') or 'New event'}",
+        f"When: {timeutil.fmt_when(start, tz)}–{until}",
+    ]
     if a.get("location"):
         lines.append(f"Where: {a['location']}")
     if a.get("attendees"):
@@ -462,15 +502,7 @@ def _event_preview(a: dict) -> str:
 )
 def _create_event(ctx: ToolContext, args: dict) -> dict:
     tz = timeutil.user_zone(ctx.user)
-    start = parse_when(args.get("start_at"), default_hour=10, tz=tz)
-    if not start:
-        tomorrow = timeutil.now_in(tz).date() + timedelta(days=1)
-        start = timeutil.at_local(tomorrow, 10, 0, tz)
-    end = parse_when(args.get("end_at"), tz=tz) or start + timedelta(
-        minutes=int(args.get("duration_minutes") or 30)
-    )
-    if end <= start:
-        end = start + timedelta(minutes=int(args.get("duration_minutes") or 30))
+    start, end = _event_times(args, tz)
 
     event = CalendarEvent(
         user_id=ctx.user.id,

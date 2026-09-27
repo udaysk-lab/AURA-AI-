@@ -67,14 +67,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // it was done is what lets someone who later picks UTC on purpose keep it.
       if (zoneSynced.current !== me.id && !zoneSyncedBefore(me.id)) {
         zoneSynced.current = me.id;
-        markZoneSynced(me.id);
         const zone = browserTimeZone();
         if (me.timezone === "UTC" && zone && zone !== "UTC") {
           try {
             me = await api.updateMe({ timezone: zone });
+            markZoneSynced(me.id);
           } catch {
-            /* not worth interrupting anyone over */
+            /* not worth interrupting anyone over; tried again next visit */
           }
+        } else {
+          markZoneSynced(me.id);
         }
       }
       setUser(me);

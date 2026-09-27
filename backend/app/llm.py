@@ -280,6 +280,14 @@ class AnthropicProvider(LLMProvider):
 # ---------------------------------------------------------------------------
 
 
+# Words that can come before an instruction without changing it:
+# "Hey, remember…", "Can you please note that…".
+_LEAD = (
+    r"^\s*((hey|hi|ok|okay|so|also|and|oh|aura)[\s,]+)*"
+    r"((please|pls|can you|could you|would you|will you)[\s,]+)*"
+)
+
+
 class MockProvider(LLMProvider):
     """Deterministic keyword router.
 
@@ -296,14 +304,14 @@ class MockProvider(LLMProvider):
     # prefer afternoon meetings" matched the calendar route on "meetings" and
     # listed events instead of saving the preference.
     #
-    # Saving needs the message to *start* like an instruction and not be a
-    # question: "Do you remember what I prefer?" used to be saved as a
-    # preference, word for word, instead of being looked up.
+    #
+    # Saving needs the message to *start* like an instruction ("Remember…",
+    # "Can you remember…", "Hey, keep in mind…"). "Do you remember what I
+    # prefer?" used to be saved, word for word, as a preference.
     ROUTES: list[tuple[str, str, dict]] = [
-        (r"\b(what do you (know|remember)|do you (know|remember)|what have you (learned|remembered))\b",
+        (r"\b(what do you (know|remember)|what have you (learned|remembered))\b",
          "search_memory", {}),
-        (r"^(?!.*\?\s*$)\s*(please\s+)?(remember|note that|keep in mind|i prefer)\b",
-         "save_memory", {}),
+        (_LEAD + r"(remember|note that|keep in mind|i prefer)\b", "save_memory", {}),
         (r"\b(remind me|add (a )?task|to.?do|create (a )?task)\b", "create_task", {}),
         (r"\b(schedule|book|set up|create).{0,20}\b(meeting|event|call)\b",
          "create_event", {}),
@@ -316,6 +324,8 @@ class MockProvider(LLMProvider):
         (r"\b(conflict|double.?book)\b", "detect_conflicts", {}),
         (r"\b(my )?(calendar|meetings|agenda)\b", "list_events", {}),
         (r"\b(my )?tasks?\b", "list_tasks", {}),
+        # Last, so "Do you know what's on my calendar?" still reads the calendar.
+        (r"\bdo you (know|remember)\b", "search_memory", {}),
     ]
 
     def complete(
@@ -372,11 +382,12 @@ class MockProvider(LLMProvider):
             return args
         if tool_name == "save_memory":
             content = re.sub(
-                r"^\s*(please\s+)?(remember that|remember|note that|keep in mind that|keep in mind)\s*",
+                _LEAD + r"(remember that|remember|note that|keep in mind that|keep in mind)\s*",
                 "",
                 text.strip(),
                 flags=re.IGNORECASE,
-            )
+            ).rstrip(" ?")
+            content = content[:1].upper() + content[1:]
             return {"content": content[:500] or text[:500], "kind": "preference"}
         if tool_name == "create_event":
             # "Schedule a call with Priya tomorrow at 3pm" -> "Call with Priya",

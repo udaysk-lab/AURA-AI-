@@ -331,18 +331,17 @@ def run_due_schedules(db: Session, now: datetime | None = None) -> list[dict]:
         )
     ).all()
 
+    from app.services.schedules import due_since
+
     results = []
     for rule in rules:
         user = db.get(User, rule.user_id)
         if not user:
             continue
-        # "Every weekday at 8:00 AM" is 8:00 on the owner's clock, not UTC's.
-        if not due_schedules(rule, now.astimezone(timeutil.user_zone(user))):
+        cron = (rule.trigger_config or {}).get("cron") or ""
+        # "Every weekday at 8:00 AM" is 8:00 on the owner's clock, not UTC's,
+        # and a tick that lands at 8:30 still owes the 8:00 run.
+        if not due_since(cron, rule.last_run_at or rule.created_at, now, timeutil.user_zone(user)):
             continue
-        last = rule.last_run_at
-        if last:
-            last = last if last.tzinfo else last.replace(tzinfo=timezone.utc)
-            if (now - last).total_seconds() < 90:
-                continue  # already fired this minute
         results.append(run_rule(db, user, rule, {"subject": rule.name}))
     return results

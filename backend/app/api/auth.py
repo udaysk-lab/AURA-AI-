@@ -9,11 +9,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.config import settings
 from app.deps import CurrentUser, DbSession
-from app.models import OAuthAccount, User, UserSettings, utcnow
+from app.models import OAuthAccount, Schedule, User, UserSettings, utcnow
 from app.schemas import (
     DemoLoginIn,
     IntegrationStatus,
@@ -177,6 +177,7 @@ def _fail(mode: str, reason: str) -> RedirectResponse:
 def google_start(
     db: DbSession,
     authorization: Annotated[str | None, Header()] = None,
+    tz: str = Query(default="", max_length=64),
 ) -> dict:
     """Begin the OAuth round trip.
 
@@ -213,6 +214,8 @@ def google_start(
         "ts": datetime.now(timezone.utc).timestamp(),
         "user_id": user_id,
         "mode": mode,
+        # The browser's zone, for an account this sign-in creates.
+        "tz": tz if isinstance(tz, str) else "",
     }
     _prune_states()
 
@@ -279,6 +282,7 @@ def google_callback(
                 email=google_email,
                 name=profile.get("name", ""),
                 avatar_url=profile.get("picture", ""),
+                timezone=_zone_or_utc((entry or {}).get("tz")),
             )
             db.add(user)
             db.commit()
@@ -361,7 +365,18 @@ def update_me(payload: ProfilePatch, user: CurrentUser, db: DbSession) -> UserOu
                 status_code=422,
                 detail=f"'{tz_name}' isn't a time zone I recognise. Use a name like Asia/Kolkata.",
             )
-        user.timezone = "UTC" if tz_name.upper() == "UTC" else tz_name
+        new_zone = "UTC" if tz_name.upper() == "UTC" else tz_name
+        old_zone = user.timezone or "UTC"
+        if new_zone != old_zone:
+            # Schedules made on the old zone followed the account; they follow
+            # it here too, or "every weekday at 7:30am" stays 7:30 somewhere
+            # else — the sample one included, seeded before the zone was known.
+            db.execute(
+                update(Schedule)
+                .where(Schedule.user_id == user.id, Schedule.timezone == old_zone)
+                .values(timezone=new_zone)
+            )
+        user.timezone = new_zone
     db.commit()
     db.refresh(user)
     return UserOut.model_validate(user)

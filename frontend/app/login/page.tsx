@@ -47,12 +47,15 @@ export default function LoginPage() {
         no_email: "Google didn't return an email address. Check the requested scopes.",
         no_code: "Google didn't send an authorisation code. Try again.",
         missing_token: "Google sign-in didn't finish. Try again.",
-        not_started:
-          "That sign-in link didn't start in this browser tab, so it was ignored. Sign in below.",
+        cancelled: "Sign-in cancelled. Nothing changed.",
       };
       // Unknown reasons get a fixed sentence: the URL is anyone's to write,
       // and echoing it let a link put its own words on the sign-in page.
-      setError(messages[reason] ?? "Google sign-in didn't finish. Try again.");
+      setError(
+        Object.prototype.hasOwnProperty.call(messages, reason)
+          ? messages[reason]
+          : "Google sign-in didn't finish. Try again."
+      );
       window.history.replaceState({}, "", "/login");
     }
     api

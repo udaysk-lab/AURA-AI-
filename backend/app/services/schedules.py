@@ -69,6 +69,33 @@ def cron_matches(cron: str, now: datetime | None = None) -> bool:
     return all(field_matches(p, v) for p, v in zip(parts, fields))
 
 
+# How far back a tick looks for a missed firing. The hosted worker runs every
+# 30 minutes, so an exact-minute match skipped any schedule whose minute it
+# didn't land on — "07:15" never ran, and in a zone 45 minutes off UTC (Nepal)
+# no whole-hour schedule ever did.
+CATCH_UP = timedelta(minutes=31)
+
+
+def due_since(
+    cron: str, since: datetime | None, now: datetime, tz, window: timedelta = CATCH_UP
+) -> bool:
+    """Did `cron` name any minute in (since, now], read on the clock of `tz`?
+
+    `since` is when the job last ran (or was created); nothing older than
+    `window` counts, so a long outage doesn't replay a backlog.
+    """
+    start = now - window
+    if since is not None:
+        since = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+        start = max(start, since)
+    minute = start.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    while minute <= now:
+        if cron_matches(cron, minute.astimezone(tz)):
+            return True
+        minute += timedelta(minutes=1)
+    return False
+
+
 def describe(cron: str) -> str:
     """A readable rendering of a cron expression, for the UI."""
     parts = (cron or "").split()
@@ -248,13 +275,9 @@ def run_due(db: Session, now: datetime | None = None) -> list[dict]:
     for schedule in rows:
         # "every weekday at 7:30am" means 7:30 on the owner's clock. Matching
         # the cron against UTC ran it at 13:00 for someone in India.
-        if not cron_matches(schedule.cron, now.astimezone(timeutil.zone(schedule.timezone))):
+        since = schedule.last_run_at or schedule.created_at
+        if not due_since(schedule.cron, since, now, timeutil.zone(schedule.timezone)):
             continue
-        last = schedule.last_run_at
-        if last:
-            last = last if last.tzinfo else last.replace(tzinfo=timezone.utc)
-            if now - last < timedelta(seconds=90):
-                continue  # already fired inside this minute
         user = db.get(User, schedule.user_id)
         if not user or not user.is_active:
             continue
@@ -263,4 +286,8 @@ def run_due(db: Session, now: datetime | None = None) -> list[dict]:
         except Exception:
             log.exception("Schedule %s failed", schedule.name)
             db.rollback()
+            # Counted as this slot's run, so a broken schedule isn't retried
+            # (and billed) on every tick of the catch-up window.
+            schedule.last_run_at = now
+            db.commit()
     return results

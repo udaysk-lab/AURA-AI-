@@ -8,12 +8,15 @@ interface AssistantState {
   assistant: Assistant | null;
   loading: boolean;
   refresh: () => Promise<void>;
+  /** Use an assistant a request just returned, without asking again. */
+  replace: (next: Assistant) => void;
 }
 
 const AssistantContext = createContext<AssistantState>({
   assistant: null,
   loading: true,
   refresh: async () => {},
+  replace: () => {},
 });
 
 export function AssistantProvider({ children }: { children: React.ReactNode }) {
@@ -64,7 +67,7 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
   }, [authLoading, userId, refresh]);
 
   return (
-    <AssistantContext.Provider value={{ assistant, loading, refresh }}>
+    <AssistantContext.Provider value={{ assistant, loading, refresh, replace: setAssistant }}>
       {children}
     </AssistantContext.Provider>
   );

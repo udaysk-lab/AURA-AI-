@@ -455,6 +455,13 @@ def test_a_region_is_not_a_time_zone(client):
     assert resp.status_code == 422, resp.text
 
 
+def _next_monday_at(hour: int, minute: int = 0) -> datetime:
+    """A UTC time on the coming Monday, so these tests don't age out."""
+    today = datetime.now(timezone.utc).date()
+    monday = today + timedelta(days=(7 - today.weekday()) % 7 or 7)
+    return datetime(monday.year, monday.month, monday.day, hour, minute, tzinfo=timezone.utc)
+
+
 def test_schedules_and_scheduled_automations_run_on_the_owners_clock(client, monkeypatch):
     from app.automation import engine
     from app.services import schedules
@@ -472,19 +479,75 @@ def test_schedules_and_scheduled_automations_run_on_the_owners_clock(client, mon
     db = SessionLocal()
     try:
         # The sample schedule is 07:30 on weekdays; the sample automation 08:00.
-        ist_0730 = datetime(2026, 9, 28, 2, 0, tzinfo=timezone.utc)  # a Monday
+        ist_0730 = _next_monday_at(2, 0)
         schedules.run_due(db, now=ist_0730)
         assert f"{uid}:Morning briefing" in ran
         engine.run_due_schedules(db, now=ist_0730 + timedelta(minutes=30))
         assert f"{uid}:Morning briefing at 08:00" in ran
 
         ran.clear()
-        utc_0730 = datetime(2026, 9, 28, 7, 30, tzinfo=timezone.utc)  # 13:00 in India
+        utc_0730 = _next_monday_at(7, 30)  # 13:00 in India
         schedules.run_due(db, now=utc_0730)
         engine.run_due_schedules(db, now=utc_0730 + timedelta(minutes=30))
         assert not [r for r in ran if r.startswith(f"{uid}:")]
     finally:
         db.close()
+
+
+def test_a_half_hourly_worker_still_fires_every_minute_of_the_clock():
+    from app.services.schedules import due_since
+
+    kathmandu = ZoneInfo("Asia/Kathmandu")  # UTC+5:45
+    tick = _next_monday_at(2, 30)  # the worker runs on :00 and :30 UTC
+    # 08:00 in Kathmandu is 02:15 UTC: no tick lands on it, the 02:30 one owes it.
+    assert due_since("0 8 * * 1-5", None, tick, kathmandu)
+    # 07:15 in India is 01:45 UTC, owed by the 02:00 tick.
+    assert due_since("15 7 * * 1-5", None, tick - timedelta(minutes=30), IST)
+    # Already run for that slot: not again.
+    assert not due_since("0 8 * * 1-5", tick - timedelta(minutes=10), tick, kathmandu)
+    # A long outage doesn't replay the backlog.
+    assert not due_since("0 8 * * 1-5", None, tick + timedelta(hours=3), kathmandu)
+
+
+def test_a_failing_schedule_is_not_retried_every_tick(client, monkeypatch):
+    from app.models import Schedule
+    from app.services import schedules
+
+    _demo(client, "fixes-sched@example.com", tz="Asia/Kolkata")
+    uid = _user("fixes-sched@example.com").id
+    calls: list[str] = []
+
+    def boom(db, user, s):
+        calls.append(s.id)
+        raise RuntimeError("model down")
+
+    monkeypatch.setattr(schedules, "run_one", boom)
+    db = SessionLocal()
+    try:
+        mine = db.query(Schedule).filter(Schedule.user_id == uid).one()
+        mine.last_run_at = None
+        db.commit()
+        tick = _next_monday_at(2, 0)
+        schedules.run_due(db, now=tick)
+        schedules.run_due(db, now=tick + timedelta(minutes=1))
+        assert calls.count(mine.id) == 1
+    finally:
+        db.close()
+
+
+def test_schedules_follow_the_account_to_a_new_zone(client):
+    from app.models import Schedule
+
+    auth = _demo(client, "fixes-region@example.com")  # UTC, seeded on UTC
+    uid = _user("fixes-region@example.com").id
+    resp = client.patch("/api/auth/me", headers=auth, json={"timezone": "Asia/Kolkata"})
+    assert resp.status_code == 200, resp.text
+    db = SessionLocal()
+    try:
+        zones = {s.timezone for s in db.query(Schedule).filter(Schedule.user_id == uid)}
+    finally:
+        db.close()
+    assert zones == {"Asia/Kolkata"}
 
 
 def test_free_slots_start_on_the_hour_on_the_users_clock(client, monkeypatch):
@@ -537,3 +600,58 @@ def test_a_queued_action_is_described_to_the_user():
     )
     assert "Tell them" not in text
     assert "Send email to priya@northwind.vc" in text and "Subject" not in text
+
+
+def test_memory_questions_and_instructions_are_told_apart():
+    import re
+
+    from app.llm import MockProvider
+
+    def route(text: str) -> str | None:
+        return next(
+            (tool for pat, tool, _ in MockProvider.ROUTES if re.search(pat, text.lower())), None
+        )
+
+    assert route("Do you remember what I prefer?") == "search_memory"
+    assert route("Do you know what's on my calendar today?") == "list_events"
+    assert route("Do you know if I have any tasks due?") == "list_tasks"
+    assert route("Do you know when I'm free tomorrow?") == "find_free_time"
+    assert route("Can you remember that I prefer afternoon meetings") == "save_memory"
+    assert route("Hey, remember that I travel on Fridays") == "save_memory"
+    assert route("Remember that I prefer afternoon meetings") == "save_memory"
+    args = MockProvider._extract_args(
+        "save_memory", "Could you please remember that I prefer afternoon meetings?"
+    )
+    assert args["content"] == "I prefer afternoon meetings"
+
+
+def test_a_bare_time_is_the_next_time_the_clock_shows_it():
+    from app.agent.tools import parse_when
+
+    now = datetime.now(IST)
+    at = parse_when("3pm", default_hour=10, tz=IST).astimezone(IST)
+    assert (at.hour, at.minute) == (15, 0)
+    assert now < at <= now + timedelta(days=1)
+    assert parse_when("sometime", tz=IST) is None
+
+
+def test_the_event_approval_card_shows_the_time_that_will_be_booked():
+    from app.agent.tools import _event_times, build_preview
+
+    args = {"title": "Call with Priya", "start_at": "2026-10-05T09:30:00Z", "duration_minutes": 45}
+    preview = build_preview("create_event", args, IST)
+    assert "Add to your calendar: Call with Priya" in preview
+    assert "When: Mon 5 Oct, 15:00–15:45" in preview  # the user's clock, not 09:30Z
+    start, end = _event_times(args, IST)
+    assert start == datetime(2026, 10, 5, 9, 30, tzinfo=timezone.utc)
+    assert end - start == timedelta(minutes=45)
+    # "tomorrow 3pm" until "4pm" ends on the same day.
+    start, end = _event_times({"start_at": "tomorrow 3pm", "end_at": "4pm"}, IST)
+    assert end - start == timedelta(hours=1)
+
+
+def test_an_empty_parent_id_means_no_parent(client):
+    auth = _demo(client, "fixes-keep@example.com")
+    resp = client.post("/api/tasks", headers=auth, json={"title": "Loose", "parent_id": ""})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["parent_id"] is None

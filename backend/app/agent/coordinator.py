@@ -21,6 +21,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import timeutil
 from app.agent import autonomy
 from app.agent import skills as skill_registry
 from app.agent import tools as tool_registry
@@ -133,7 +134,9 @@ def _queue_action(
         conversation_id=conversation_id,
         tool_name=call.name,
         arguments=call.arguments,
-        preview=tool_registry.build_preview(call.name, call.arguments),
+        preview=tool_registry.build_preview(
+            call.name, call.arguments, timeutil.user_zone(user)
+        ),
         skill_code=skill.code if skill else "",
     )
     db.add(action)

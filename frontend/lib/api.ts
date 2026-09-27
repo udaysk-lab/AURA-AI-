@@ -651,9 +651,11 @@ export const api = {
   updateMe: (body: { name?: string; timezone?: string }) => patch<User>("/api/auth/me", body),
   // Sends the bearer token when signed in, which is what tells the backend to
   // *connect* Google to this account rather than sign in as the Google identity.
+  // The zone rides along so an account this sign-in creates starts on the
+  // person's clock rather than UTC.
   googleStart: () =>
     get<{ authorization_url: string; state: string; mode: "signin" | "connect" }>(
-      "/api/auth/google/start"
+      `/api/auth/google/start?tz=${encodeURIComponent(browserTimeZone())}`
     ),
   syncGoogle: () => post<SyncResult>("/api/auth/integrations/google/sync"),
   me: () => get<User>("/api/auth/me"),

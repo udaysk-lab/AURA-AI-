@@ -38,7 +38,7 @@ const SUGGESTED_GOALS = [
 export default function OnboardingPage() {
   const router = useRouter();
   const { user, loading } = useAuth();
-  const { assistant, refresh } = useAssistant();
+  const { assistant, replace } = useAssistant();
 
   const [step, setStep] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -70,7 +70,7 @@ export default function OnboardingPage() {
     setBusy(true);
     setError("");
     try {
-      await api.hatch({
+      const hatched = await api.hatch({
         name: name.trim() || "Aura",
         personality,
         avatar,
@@ -80,7 +80,10 @@ export default function OnboardingPage() {
         about,
         autonomy_level: tier,
       });
-      await refresh();
+      // Straight from the reply. A second request that failed used to leave
+      // the old, not-yet-onboarded copy in place — and the app sent you
+      // straight back here.
+      replace(hatched);
       router.push("/dashboard");
     } catch (e) {
       // Swallowing this silently was a trap. The app layout sends you back here
