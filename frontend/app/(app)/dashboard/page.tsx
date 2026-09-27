@@ -11,6 +11,7 @@ import {
   Radio,
   RefreshCw,
   Sparkles,
+  WifiOff,
   X,
 } from "lucide-react";
 import {
@@ -23,6 +24,7 @@ import {
 } from "@/lib/api";
 import { useAssistant } from "@/lib/assistant";
 import Mascot from "@/components/Mascot";
+import { useToast } from "@/components/Toast";
 import {
   Badge,
   Card,
@@ -34,29 +36,39 @@ import {
   Spinner,
   fmtRelative,
   fmtTime,
+  progressHint,
+  refreshBadges,
 } from "@/components/ui";
 
 export default function DashboardPage() {
   const { assistant, refresh: refreshAssistant } = useAssistant();
+  const toast = useToast();
   const [brief, setBrief] = useState<Briefing | null>(null);
   const [pending, setPending] = useState<PendingAction[]>([]);
   const [runs, setRuns] = useState<SkillRun[]>([]);
   const [beat, setBeat] = useState<Heartbeat | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
+  const [deciding, setDeciding] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
+      // The briefing is the page; the rest are extras that may fail alone.
       const [b, p, a, h] = await Promise.all([
         api.briefing(),
-        api.pendingActions(),
-        api.skillActivity(14),
+        api.pendingActions().catch(() => [] as PendingAction[]),
+        api.skillActivity(14).catch(() => [] as SkillRun[]),
         api.latestHeartbeat().catch(() => null),
       ]);
       setBrief(b);
       setPending(p);
       setRuns(a);
       setBeat(h);
+      setError("");
+    } catch (e) {
+      // Without this the page rendered an empty greeting and a row of zeros.
+      setError(e instanceof Error ? e.message : "Couldn't load today's briefing.");
     } finally {
       setLoading(false);
     }
@@ -66,26 +78,70 @@ export default function DashboardPage() {
     void load();
   }, [load]);
 
+  // "N waiting on you" in the sidebar links to #approvals, but that card only
+  // exists once the data has loaded — after the browser has given up looking.
+  useEffect(() => {
+    if (loading || !pending.length || window.location.hash !== "#approvals") return;
+    document.getElementById("approvals")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [loading, pending.length]);
+
   const runHeartbeat = async () => {
     setWorking(true);
     try {
       await api.syncEmail().catch(() => null);
-      setBeat(await api.runHeartbeat());
+      const report = await api.runHeartbeat();
+      setBeat(report);
+      toast.success(report.headline);
       await load();
       await refreshAssistant();
+      refreshBadges();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't catch up just now");
     } finally {
       setWorking(false);
     }
   };
 
   const decide = async (id: string, decision: Decision) => {
-    await api.decidePending(id, decision);
-    await load();
+    setDeciding(id);
+    try {
+      await api.decidePending(id, decision);
+      toast.success(decision === "reject" ? "Dismissed" : "Done");
+      await load();
+      refreshBadges();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't record that decision");
+    } finally {
+      setDeciding(null);
+    }
   };
+
+  if (!loading && error && !brief) {
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center p-6">
+        <div className="panel max-w-sm p-6 text-center">
+          <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-amber/12 text-amber">
+            <WifiOff size={20} />
+          </div>
+          <h1 className="mb-1.5 text-[16px] font-semibold">Today didn&apos;t load</h1>
+          <p className="mb-4 text-[13px] leading-relaxed text-muted">{error}</p>
+          <button
+            onClick={() => {
+              setLoading(true);
+              void load();
+            }}
+            className="btn-primary"
+          >
+            <RefreshCw size={14} /> Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
-      <div className="mx-auto max-w-6xl space-y-4 p-8">
+      <div className="mx-auto max-w-6xl space-y-4 p-4 sm:p-8">
         <Skeleton className="h-40 w-full" />
         <div className="grid gap-4 md:grid-cols-4">
           {[0, 1, 2, 3].map((i) => (
@@ -105,9 +161,9 @@ export default function DashboardPage() {
   ];
 
   return (
-    <div className="mx-auto max-w-6xl space-y-5 p-8">
+    <div className="mx-auto max-w-6xl space-y-5 p-4 sm:p-8">
       {/* Greeting + assistant */}
-      <div className="glass hairline-top animate-fade-up p-7">
+      <div className="glass hairline-top animate-fade-up p-5 sm:p-7">
         <div
           className="aurora-spot -top-24 right-0 h-64 w-96"
           style={{ background: "rgb(var(--accent) / 0.32)" }}
@@ -202,7 +258,7 @@ export default function DashboardPage() {
 
       {/* Approvals */}
       {pending.length > 0 && (
-        <Card id="approvals" className="border-amber/35 bg-amber/[0.06]">
+        <Card id="approvals" className="scroll-mt-4 border-amber/35 bg-amber/[0.06]">
           <SectionTitle>
             <span className="flex items-center gap-2 text-amber">
               <AlertTriangle size={13} /> Waiting on you
@@ -224,16 +280,32 @@ export default function DashboardPage() {
                   {p.preview}
                 </pre>
                 <div className="flex flex-wrap gap-2">
-                  <button onClick={() => decide(p.id, "once")} className="btn-primary py-1.5">
-                    <Check size={13} /> Allow once
+                  <button
+                    onClick={() => decide(p.id, "once")}
+                    disabled={deciding === p.id}
+                    className="btn-primary py-1.5"
+                  >
+                    {deciding === p.id ? <Spinner /> : <Check size={13} />} Allow once
                   </button>
-                  <button onClick={() => decide(p.id, "window")} className="btn-ghost py-1.5">
+                  <button
+                    onClick={() => decide(p.id, "window")}
+                    disabled={deciding === p.id}
+                    className="btn-ghost py-1.5"
+                  >
                     <Clock4 size={13} /> Allow 10 min
                   </button>
-                  <button onClick={() => decide(p.id, "always")} className="btn-ghost py-1.5">
+                  <button
+                    onClick={() => decide(p.id, "always")}
+                    disabled={deciding === p.id}
+                    className="btn-ghost py-1.5"
+                  >
                     Always allow
                   </button>
-                  <button onClick={() => decide(p.id, "reject")} className="btn-quiet py-1.5">
+                  <button
+                    onClick={() => decide(p.id, "reject")}
+                    disabled={deciding === p.id}
+                    className="btn-quiet py-1.5"
+                  >
                     <X size={13} /> Don&apos;t
                   </button>
                 </div>
@@ -261,7 +333,7 @@ export default function DashboardPage() {
                   key={m.id}
                   className="flex items-start gap-3 rounded-xl px-2 py-2.5 transition hover:bg-raised/60"
                 >
-                  <div className="w-[48px] shrink-0 pt-0.5 text-[12px] font-medium tabular-nums text-accent-soft">
+                  <div className="w-[62px] shrink-0 whitespace-nowrap pt-0.5 text-[12px] font-medium tabular-nums text-accent-soft">
                     {fmtTime(m.start_at)}
                   </div>
                   <div className="min-w-0 flex-1">
@@ -294,7 +366,9 @@ export default function DashboardPage() {
             Inbox
           </SectionTitle>
           <p className="mb-4 text-[13px] leading-relaxed text-muted">
-            {brief?.inbox?.summary}
+            {brief?.inbox?.total
+              ? brief.inbox.summary
+              : "Your inbox is empty. Connect Google in Settings to bring your mail in."}
           </p>
           {brief?.urgent_emails.length ? (
             <div className="space-y-0.5">
@@ -365,8 +439,11 @@ export default function DashboardPage() {
               <div>
                 <div className="text-[14px] font-medium">{assistant.stage_label}</div>
                 <div className="text-[11.5px] text-faint">
-                  {assistant.signals.interactions} conversations ·{" "}
-                  {assistant.signals.actions} actions
+                  {assistant.signals.interactions} conversation
+                  {assistant.signals.interactions === 1 ? "" : "s"} ·{" "}
+                  {assistant.signals.memories} thing{assistant.signals.memories === 1 ? "" : "s"}{" "}
+                  known · {assistant.signals.actions} action
+                  {assistant.signals.actions === 1 ? "" : "s"}
                 </div>
               </div>
             </div>
@@ -376,10 +453,10 @@ export default function DashboardPage() {
             {assistant.progress ? (
               <>
                 <Progress value={assistant.progress.percent} />
-                <div className="mt-2 text-[11.5px] text-faint">
+                <div className="mt-2 text-[11.5px] leading-relaxed text-faint">
                   {assistant.progress.percent}% to {assistant.progress.next_label}
-                  {assistant.progress.needs.memories > 0 &&
-                    ` · ${assistant.progress.needs.memories} more things to learn about you`}
+                  {progressHint(assistant.progress) &&
+                    ` · ${progressHint(assistant.progress).replace(/ to reach .*$/, "")}`}
                 </div>
               </>
             ) : (

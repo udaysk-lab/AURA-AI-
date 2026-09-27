@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FileText, Plus, Search, Sparkles, Trash2, Upload } from "lucide-react";
 import { DocumentDetail, DocumentItem, DocumentPassage, api } from "@/lib/api";
-import { useAction } from "@/components/Toast";
+import { useAction, useToast } from "@/components/Toast";
 import {
   Badge,
   Card,
@@ -24,6 +24,7 @@ function humanSize(bytes: number) {
 
 export default function DocumentsPage() {
   const run = useAction();
+  const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
@@ -38,15 +39,17 @@ export default function DocumentsPage() {
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteTitle, setPasteTitle] = useState("");
   const [pasteBody, setPasteBody] = useState("");
+  const [pasting, setPasting] = useState(false);
 
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       setDocuments(await api.documents());
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't load documents");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     void load();
@@ -64,8 +67,8 @@ export default function DocumentsPage() {
 
   const open = async (doc: DocumentItem) => {
     setSelected(null);
-    const detail = await api.document(doc.id);
-    setSelected(detail);
+    const detail = await run(() => api.document(doc.id));
+    if (detail) setSelected(detail);
   };
 
   const search = async () => {
@@ -89,6 +92,7 @@ export default function DocumentsPage() {
   };
 
   const remove = async (doc: DocumentItem) => {
+    if (!window.confirm(`Delete "${doc.title}"? Its passages leave the search index too.`)) return;
     await run(async () => {
       await api.deleteDocument(doc.id);
       if (selected?.id === doc.id) setSelected(null);
@@ -97,11 +101,16 @@ export default function DocumentsPage() {
   };
 
   const paste = async () => {
-    if (!pasteTitle.trim() || !pasteBody.trim()) return;
-    await run(
+    if (!pasteTitle.trim() || !pasteBody.trim() || pasting) return;
+    setPasting(true);
+    const added = await run(
       () => api.addDocumentText(pasteTitle.trim(), pasteBody.trim()),
       "Added"
     );
+    setPasting(false);
+    // Only close on success. It used to close and clear either way, so a
+    // failed save threw away whatever had been pasted.
+    if (!added) return;
     setPasteOpen(false);
     setPasteTitle("");
     setPasteBody("");
@@ -109,7 +118,7 @@ export default function DocumentsPage() {
   };
 
   return (
-    <div className="mx-auto max-w-5xl space-y-5 p-6 sm:p-8">
+    <div className="mx-auto max-w-5xl space-y-5 p-4 sm:p-8">
       <PageHeader
         title="Documents"
         glow="azure"
@@ -132,7 +141,11 @@ export default function DocumentsPage() {
               multiple
               hidden
               accept=".pdf,.docx,.txt,.md,.csv,.tsv,.json,.html,.log"
-              onChange={(e) => upload(e.target.files)}
+              onChange={(e) => {
+                void upload(e.target.files);
+                // Reset, or picking the same file again fires no change event.
+                e.target.value = "";
+              }}
             />
           </div>
         }
@@ -146,6 +159,7 @@ export default function DocumentsPage() {
             <input
               className="input py-2 pl-8"
               placeholder="Ask across your documents — e.g. what's the notice period"
+              aria-label="Search your documents"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && search()}
@@ -166,7 +180,7 @@ export default function DocumentsPage() {
                   <div className="mb-1.5 flex items-center gap-2">
                     <span className="text-[12.5px] font-medium">{p.title}</span>
                     <Badge>passage {p.ordinal + 1}</Badge>
-                    <span className="text-[11px] text-faint">score {p.score}</span>
+                    {i === 0 && <Badge tone="accent">best match</Badge>}
                   </div>
                   <p className="text-[12.5px] leading-relaxed text-muted">{p.excerpt}</p>
                 </div>
@@ -182,7 +196,11 @@ export default function DocumentsPage() {
           e.preventDefault();
           setDragging(true);
         }}
-        onDragLeave={() => setDragging(false)}
+        onDragLeave={(e) => {
+          // dragleave also fires when crossing into a child; only clear it
+          // when the pointer really leaves the drop zone.
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+        }}
         onDrop={(e) => {
           e.preventDefault();
           setDragging(false);
@@ -219,7 +237,9 @@ export default function DocumentsPage() {
                   </button>
                   <button
                     onClick={() => remove(d)}
-                    className="shrink-0 opacity-0 transition group-hover:opacity-100"
+                    aria-label={`Delete ${d.title}`}
+                    title="Delete document"
+                    className="reveal-on-hover shrink-0 rounded p-0.5"
                   >
                     <Trash2 size={13} className="text-faint hover:text-rose" />
                   </button>
@@ -284,21 +304,23 @@ export default function DocumentsPage() {
           <input
             className="input"
             placeholder="Title"
+            aria-label="Title"
             value={pasteTitle}
             onChange={(e) => setPasteTitle(e.target.value)}
           />
           <textarea
             className="input min-h-[220px]"
             placeholder="Paste notes, a transcript, a contract clause…"
+            aria-label="Text"
             value={pasteBody}
             onChange={(e) => setPasteBody(e.target.value)}
           />
           <button
             onClick={paste}
-            disabled={!pasteTitle.trim() || !pasteBody.trim()}
+            disabled={!pasteTitle.trim() || !pasteBody.trim() || pasting}
             className="btn-primary w-full"
           >
-            Add to documents
+            {pasting ? <Spinner /> : null} Add to documents
           </button>
         </div>
       </Modal>

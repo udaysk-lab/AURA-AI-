@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { GraduationCap, Radio, Sparkles, Wand2, X } from "lucide-react";
 import { SkillItem, SkillRun, SkillStats, api } from "@/lib/api";
+import { useToast } from "@/components/Toast";
 import {
   Badge,
   Card,
@@ -30,6 +31,7 @@ const CATEGORY_TONE: Record<string, string> = {
 };
 
 export default function SkillsPage() {
+  const toast = useToast();
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [runs, setRuns] = useState<SkillRun[]>([]);
   const [stats, setStats] = useState<SkillStats | null>(null);
@@ -38,9 +40,9 @@ export default function SkillsPage() {
   const [teaching, setTeaching] = useState<SkillItem | null>(null);
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
+  const [toggling, setToggling] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       const [s, a, st] = await Promise.all([
         api.skills(),
@@ -50,33 +52,59 @@ export default function SkillsPage() {
       setSkills(s);
       setRuns(a);
       setStats(st);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't load skills");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const toggle = async (skill: SkillItem) => {
-    setSkills((prev) =>
-      prev.map((s) => (s.code === skill.code ? { ...s, enabled: !s.enabled } : s))
-    );
-    await api.toggleSkill(skill.code, !skill.enabled);
-    await load();
+    const next = !skill.enabled;
+    setToggling(skill.code);
+    setSkills((prev) => prev.map((s) => (s.code === skill.code ? { ...s, enabled: next } : s)));
+    try {
+      await api.toggleSkill(skill.code, next);
+      toast.success(`${skill.name} ${next ? "turned on" : "turned off"}`);
+      await load();
+    } catch (e) {
+      // Put the switch back where the server says it is.
+      setSkills((prev) =>
+        prev.map((s) => (s.code === skill.code ? { ...s, enabled: skill.enabled } : s))
+      );
+      toast.error(e instanceof Error ? e.message : `Couldn't change ${skill.name}`);
+    } finally {
+      setToggling(null);
+    }
   };
 
   const teach = async () => {
-    if (!teaching || !note.trim()) return;
+    if (!teaching || !note.trim() || saving) return;
     setSaving(true);
     try {
       await api.teachSkill(teaching.code, note.trim());
+      toast.success(`${teaching.name} will remember that`);
       setNote("");
       setTeaching(null);
       await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't save that lesson");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const clearNotes = async (skill: SkillItem) => {
+    if (!window.confirm(`Forget everything ${skill.name} has learned?`)) return;
+    try {
+      await api.clearSkillNotes(skill.code);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't clear those lessons");
     }
   };
 
@@ -88,7 +116,7 @@ export default function SkillsPage() {
   }, {});
 
   return (
-    <div className="mx-auto max-w-5xl space-y-5 p-8">
+    <div className="mx-auto max-w-5xl space-y-5 p-4 sm:p-8">
       <PageHeader
         title="Skills"
         blurb={
@@ -176,6 +204,7 @@ export default function SkillsPage() {
                     <Toggle
                       checked={s.enabled}
                       onChange={() => toggle(s)}
+                      disabled={toggling === s.code}
                       label={`Enable ${s.name}`}
                     />
                   </div>
@@ -207,10 +236,7 @@ export default function SkillsPage() {
                         ))}
                       </ul>
                       <button
-                        onClick={async () => {
-                          await api.clearSkillNotes(s.code);
-                          await load();
-                        }}
+                        onClick={() => clearNotes(s)}
                         className="mt-2 text-[11px] text-faint transition hover:text-ink"
                       >
                         <X size={10} className="inline" /> clear
@@ -278,10 +304,13 @@ export default function SkillsPage() {
           <textarea
             className="input min-h-[90px]"
             placeholder="Never schedule anything before 10am. Keep replies under three sentences."
+            aria-label="Lesson"
             value={note}
             onChange={(e) => setNote(e.target.value)}
+            maxLength={200}
             autoFocus
           />
+          <div className="text-right text-[11px] text-faint">{note.length}/200</div>
           <button
             onClick={teach}
             disabled={saving || note.trim().length < 3}

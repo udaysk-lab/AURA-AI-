@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Check, Play, Plus, Trash2, Workflow, X, Zap } from "lucide-react";
-import { Automation, PendingAction, api } from "@/lib/api";
+import { Automation, Decision, PendingAction, api } from "@/lib/api";
+import { useAction } from "@/components/Toast";
 import {
   Badge,
   Card,
@@ -11,7 +12,9 @@ import {
   SectionTitle,
   Skeleton,
   Spinner,
+  Toggle,
   fmtRelative,
+  refreshBadges,
 } from "@/components/ui";
 
 const EXAMPLES = [
@@ -21,18 +24,22 @@ const EXAMPLES = [
 ];
 
 export default function AutomationsPage() {
+  const run = useAction();
   const [rules, setRules] = useState<Automation[]>([]);
   const [pending, setPending] = useState<PendingAction[]>([]);
   const [loading, setLoading] = useState(true);
   const [input, setInput] = useState("");
   const [creating, setCreating] = useState(false);
+  // Which rule or approval is mid-request, so its buttons can't be pressed twice.
+  const [busy, setBusy] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       const [r, p] = await Promise.all([api.automations(), api.pendingActions()]);
       setRules(r);
       setPending(p);
+    } catch {
+      /* keep what's on screen; actions report their own failures */
     } finally {
       setLoading(false);
     }
@@ -43,45 +50,76 @@ export default function AutomationsPage() {
   }, [load]);
 
   const create = async () => {
-    if (!input.trim()) return;
+    if (!input.trim() || creating) return;
     setCreating(true);
-    try {
-      await api.createAutomation(input.trim());
-      setInput("");
-      await load();
-    } finally {
-      setCreating(false);
-    }
+    const rule = await run(() => api.createAutomation(input.trim()), "Automation created");
+    setCreating(false);
+    if (!rule) return;
+    setInput("");
+    await load();
+  };
+
+  const act = async (id: string, fn: () => Promise<unknown>, success?: string) => {
+    setBusy(id);
+    await run(fn, success);
+    setBusy(null);
+    await load();
+  };
+
+  const decide = (p: PendingAction, decision: Decision) =>
+    act(
+      p.id,
+      async () => {
+        await api.decidePending(p.id, decision);
+        refreshBadges();
+      },
+      decision === "reject" ? "Dismissed" : "Approved"
+    );
+
+  const remove = (r: Automation) => {
+    if (!window.confirm(`Delete the "${r.name}" automation?`)) return;
+    void act(r.id, () => api.deleteAutomation(r.id), "Deleted");
   };
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5 p-8">
+    <div className="mx-auto max-w-4xl space-y-5 p-4 sm:p-8">
       <PageHeader
         title="Automations"
         blurb="Describe a rule in plain English. AURA compiles it into a workflow it can run unattended — and always stops for approval before anything irreversible."
       />
 
       <Card>
-        <div className="flex gap-2">
+        <form
+          className="flex flex-col gap-2 sm:flex-row"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void create();
+          }}
+        >
           <input
-            className="input flex-1"
+            className="input min-w-0 flex-1"
             placeholder="When… then…"
+            aria-label="Describe an automation"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && create()}
           />
-          <button onClick={create} disabled={creating || !input.trim()} className="btn-primary">
+          <button
+            type="submit"
+            disabled={creating || !input.trim()}
+            className="btn-primary shrink-0"
+          >
             {creating ? <Spinner /> : <Plus size={14} />} Create
           </button>
-        </div>
+        </form>
         <div className="mt-3 flex flex-wrap gap-2">
           {EXAMPLES.map((e) => (
             <button
               key={e}
               onClick={() => setInput(e)}
-              className="rounded-full border border-line bg-raised/30 px-2.5 py-1 text-[11.5px] text-muted transition hover:border-accent/40 hover:text-ink"
+              title={e}
+              className="max-w-full truncate rounded-full border border-line bg-raised/30 px-2.5 py-1 text-[11.5px] text-muted transition hover:border-accent/40 hover:text-ink"
             >
-              {e.length > 52 ? `${e.slice(0, 52)}…` : e}
+              {e}
             </button>
           ))}
         </div>
@@ -100,29 +138,25 @@ export default function AutomationsPage() {
                 </pre>
                 <div className="flex gap-2">
                   <button
-                    onClick={async () => {
-                      await api.decidePending(p.id, "once");
-                      await load();
-                    }}
+                    onClick={() => decide(p, "once")}
+                    disabled={busy === p.id}
                     className="btn-primary py-1.5"
                   >
-                    <Check size={13} /> Allow
+                    {busy === p.id ? <Spinner /> : <Check size={13} />} Allow
                   </button>
                   <button
-                    onClick={async () => {
-                      await api.decidePending(p.id, "always");
-                      await load();
-                    }}
+                    onClick={() => decide(p, "always")}
+                    disabled={busy === p.id}
                     className="btn-ghost py-1.5"
                   >
                     Always
                   </button>
                   <button
-                    onClick={async () => {
-                      await api.decidePending(p.id, "reject");
-                      await load();
-                    }}
+                    onClick={() => decide(p, "reject")}
+                    disabled={busy === p.id}
                     className="btn-quiet py-1.5"
+                    aria-label="Don't do this"
+                    title="Don't do this"
                   >
                     <X size={13} />
                   </button>
@@ -166,36 +200,37 @@ export default function AutomationsPage() {
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                   <button
-                    onClick={async () => {
-                      await api.runAutomation(r.id);
-                      await load();
-                    }}
+                    onClick={() =>
+                      act(
+                        r.id,
+                        async () => {
+                          await api.runAutomation(r.id);
+                          refreshBadges();
+                        },
+                        `Ran “${r.name}”`
+                      )
+                    }
+                    disabled={busy === r.id}
                     title="Run now"
+                    aria-label={`Run ${r.name} now`}
                     className="btn-quiet px-2 py-1"
                   >
-                    <Play size={13} />
+                    {busy === r.id ? <Spinner /> : <Play size={13} />}
                   </button>
+                  <Toggle
+                    checked={r.enabled}
+                    disabled={busy === r.id}
+                    label={`${r.enabled ? "Pause" : "Turn on"} ${r.name}`}
+                    onChange={(enabled) =>
+                      act(r.id, () => api.updateAutomation(r.id, { enabled }))
+                    }
+                  />
                   <button
-                    onClick={async () => {
-                      await api.updateAutomation(r.id, { enabled: !r.enabled });
-                      await load();
-                    }}
-                    className={`relative h-5 w-9 rounded-full transition ${
-                      r.enabled ? "bg-accent shadow-glow-sm" : "bg-raised border border-line"
-                    }`}
-                  >
-                    <span
-                      className={`absolute top-[1px] h-4 w-4 rounded-full bg-white shadow-sm transition-all ${
-                        r.enabled ? "left-[18px]" : "left-0.5"
-                      }`}
-                    />
-                  </button>
-                  <button
-                    onClick={async () => {
-                      await api.deleteAutomation(r.id);
-                      await load();
-                    }}
+                    onClick={() => remove(r)}
+                    disabled={busy === r.id}
                     className="btn-quiet px-2 py-1"
+                    aria-label={`Delete ${r.name}`}
+                    title="Delete automation"
                   >
                     <Trash2 size={13} />
                   </button>
@@ -217,9 +252,9 @@ export default function AutomationsPage() {
                 ))}
               </div>
 
-              <div className="mt-3 flex items-center gap-3 border-t border-line pt-3 text-[11px] text-faint">
+              <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-line pt-3 text-[11px] text-faint">
                 <span>ran {r.run_count}×</span>
-                {r.last_run_at && <span>last {fmtRelative(r.last_run_at)}</span>}
+                {r.last_run_at && <span>· last {fmtRelative(r.last_run_at)}</span>}
                 {r.requires_confirmation && <span>· asks before acting</span>}
               </div>
             </div>

@@ -3,7 +3,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { Columns3, List, Plus, Trash2 } from "lucide-react";
 import { Task, api } from "@/lib/api";
-import { Badge, Card, EmptyState, PageHeader, Skeleton, fmtDay } from "@/components/ui";
+import { useToast } from "@/components/Toast";
+import {
+  Badge,
+  Card,
+  EmptyState,
+  PageHeader,
+  Skeleton,
+  Spinner,
+  fmtDay,
+  toDate,
+} from "@/components/ui";
 
 const COLUMNS: Array<{ key: Task["status"]; label: string }> = [
   { key: "todo", label: "To do" },
@@ -14,47 +24,71 @@ const COLUMNS: Array<{ key: Task["status"]; label: string }> = [
 const PRIORITY_ORDER: Task["priority"][] = ["urgent", "high", "medium", "low"];
 
 export default function TasksPage() {
+  const toast = useToast();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<"board" | "list">("board");
   const [quick, setQuick] = useState("");
+  const [adding, setAdding] = useState(false);
 
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       setTasks(await api.tasks());
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't load your tasks");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const add = async () => {
-    if (!quick.trim()) return;
-    await api.quickTask(quick.trim());
+    const text = quick.trim();
+    // `adding` guards the slow round trip: Enter pressed again while the
+    // first request was in flight used to create the same task twice.
+    if (!text || adding) return;
+    setAdding(true);
     setQuick("");
-    await load();
+    try {
+      await api.quickTask(text);
+      await load();
+    } catch (e) {
+      setQuick(text); // give the words back so nothing is lost
+      toast.error(e instanceof Error ? e.message : "Couldn't add that task");
+    } finally {
+      setAdding(false);
+    }
   };
 
   const move = async (task: Task, status: Task["status"]) => {
     setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status } : t)));
-    await api.updateTask(task.id, { status });
+    try {
+      await api.updateTask(task.id, { status });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't update that task");
+    }
     await load();
   };
 
   const remove = async (task: Task) => {
+    if (!window.confirm(`Delete "${task.title}"?`)) return;
     setTasks((prev) => prev.filter((t) => t.id !== task.id));
-    await api.deleteTask(task.id);
+    try {
+      await api.deleteTask(task.id);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't delete that task");
+      await load();
+    }
   };
 
   const overdue = (t: Task) =>
-    t.due_at && t.status !== "done" && new Date(t.due_at) < new Date();
+    t.due_at && t.status !== "done" && toDate(t.due_at) < new Date();
 
   return (
-    <div className="mx-auto max-w-6xl space-y-5 p-8">
+    <div className="mx-auto max-w-6xl space-y-5 p-4 sm:p-8">
       <PageHeader
         title="Tasks"
         blurb="Everything you committed to, including the promises buried in replies."
@@ -63,6 +97,7 @@ export default function TasksPage() {
           <div className="flex gap-1 rounded-full border border-line bg-raised/40 p-1 backdrop-blur-md">
             <button
               onClick={() => setView("board")}
+              aria-pressed={view === "board"}
               className={`rounded-full px-3 py-1.5 text-[12px] transition ${
                 view === "board"
                   ? "bg-accent/15 text-ink shadow-glow-sm"
@@ -73,6 +108,7 @@ export default function TasksPage() {
             </button>
             <button
               onClick={() => setView("list")}
+              aria-pressed={view === "list"}
               className={`rounded-full px-3 py-1.5 text-[12px] transition ${
                 view === "list"
                   ? "bg-accent/15 text-ink shadow-glow-sm"
@@ -88,14 +124,15 @@ export default function TasksPage() {
       <div className="panel flex items-center gap-2 p-2 transition-colors focus-within:border-accent/40">
         <Plus size={15} className="ml-2 text-faint" />
         <input
-          className="flex-1 bg-transparent px-1 py-2 text-[13.5px] text-ink placeholder:text-faint outline-none"
+          className="min-w-0 flex-1 bg-transparent px-1 py-2 text-[13.5px] text-ink placeholder:text-faint outline-none"
           placeholder="Quick add — e.g. 'send board deck tomorrow 5pm urgent'"
+          aria-label="Quick add a task"
           value={quick}
           onChange={(e) => setQuick(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && add()}
+          onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && void add()}
         />
-        <button onClick={add} disabled={!quick.trim()} className="btn-primary py-1.5">
-          Add
+        <button onClick={add} disabled={!quick.trim() || adding} className="btn-primary shrink-0 py-1.5">
+          {adding ? <Spinner /> : null} Add
         </button>
       </div>
 
@@ -138,7 +175,9 @@ export default function TasksPage() {
                         </p>
                         <button
                           onClick={() => remove(t)}
-                          className="shrink-0 opacity-0 transition group-hover:opacity-100"
+                          aria-label={`Delete ${t.title}`}
+                          title="Delete task"
+                          className="reveal-on-hover shrink-0 rounded p-0.5"
                         >
                           <Trash2 size={12} className="text-faint transition-colors hover:text-rose" />
                         </button>
@@ -195,6 +234,7 @@ export default function TasksPage() {
                     type="checkbox"
                     checked={t.status === "done"}
                     onChange={() => move(t, t.status === "done" ? "todo" : "done")}
+                    aria-label={`Mark ${t.title} ${t.status === "done" ? "not done" : "done"}`}
                     className="h-4 w-4 shrink-0 accent-[rgb(var(--accent))]"
                   />
                   <span
@@ -204,19 +244,24 @@ export default function TasksPage() {
                   >
                     {t.title}
                   </span>
-                  <Badge tone={t.priority}>{t.priority}</Badge>
+                  <span className="hidden sm:inline-flex">
+                    <Badge tone={t.priority}>{t.priority}</Badge>
+                  </span>
                   {t.due_at && (
                     <span
                       className={`shrink-0 text-[11.5px] ${
                         overdue(t) ? "text-rose" : "text-faint"
                       }`}
                     >
+                      {overdue(t) ? "overdue · " : ""}
                       {fmtDay(t.due_at)}
                     </span>
                   )}
                   <button
                     onClick={() => remove(t)}
-                    className="shrink-0 opacity-0 transition group-hover:opacity-100"
+                    aria-label={`Delete ${t.title}`}
+                    title="Delete task"
+                    className="reveal-on-hover shrink-0 rounded p-0.5"
                   >
                     <Trash2 size={13} className="text-faint transition-colors hover:text-rose" />
                   </button>

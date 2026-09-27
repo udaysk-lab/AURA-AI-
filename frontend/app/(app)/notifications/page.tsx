@@ -14,6 +14,7 @@ import {
   SkillLine,
   Skeleton,
   fmtRelative,
+  refreshBadges,
 } from "@/components/ui";
 
 const TONE: Record<string, string> = {
@@ -31,7 +32,6 @@ export default function NotificationsPage() {
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       const [n, h, a] = await Promise.all([
         api.notifications(),
@@ -41,6 +41,8 @@ export default function NotificationsPage() {
       setNotifications(n);
       setBeats(h);
       setActivity(a);
+    } catch {
+      /* keep what's on screen */
     } finally {
       setLoading(false);
     }
@@ -53,7 +55,7 @@ export default function NotificationsPage() {
   const unread = notifications.filter((n) => !n.read).length;
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5 p-6 sm:p-8">
+    <div className="mx-auto max-w-4xl space-y-5 p-4 sm:p-8">
       <PageHeader
         title="Notifications"
         glow="amber"
@@ -65,6 +67,9 @@ export default function NotificationsPage() {
             <button
               onClick={async () => {
                 await run(() => api.markNotificationsRead(), "Marked as read");
+                // The sidebar badge would otherwise keep the old count until
+                // its next poll.
+                refreshBadges();
                 await load();
               }}
               className="btn-ghost"

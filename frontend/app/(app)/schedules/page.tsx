@@ -50,11 +50,13 @@ export default function SchedulesPage() {
 
   const [when, setWhen] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       setSchedules(await api.schedules());
+    } catch {
+      /* the list keeps what it had; run() reports failures from actions */
     } finally {
       setLoading(false);
     }
@@ -65,14 +67,24 @@ export default function SchedulesPage() {
   }, [load]);
 
   const create = async () => {
-    if (!prompt.trim()) return;
-    await run(
+    if (!prompt.trim() || creating) return;
+    setCreating(true);
+    const created = await run(
       () => api.createSchedule({ prompt: prompt.trim(), natural_language: when.trim() }),
       "Schedule created"
     );
+    setCreating(false);
+    // Keep the dialog and its text if it failed; it used to close and clear.
+    if (!created) return;
     setOpen(false);
     setWhen("");
     setPrompt("");
+    await load();
+  };
+
+  const remove = async (schedule: ScheduleItem) => {
+    if (!window.confirm(`Delete the "${schedule.name}" schedule?`)) return;
+    await run(() => api.deleteSchedule(schedule.id), "Deleted");
     await load();
   };
 
@@ -85,7 +97,7 @@ export default function SchedulesPage() {
   };
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5 p-6 sm:p-8">
+    <div className="mx-auto max-w-4xl space-y-5 p-4 sm:p-8">
       <PageHeader
         title="Schedules"
         glow="teal"
@@ -156,6 +168,7 @@ export default function SchedulesPage() {
                     disabled={busy === s.id}
                     className="btn-quiet px-2 py-1"
                     title="Run now"
+                    aria-label={`Run ${s.name} now`}
                   >
                     {busy === s.id ? <Spinner /> : <Play size={13} />}
                   </button>
@@ -168,11 +181,10 @@ export default function SchedulesPage() {
                     label={`Enable ${s.name}`}
                   />
                   <button
-                    onClick={async () => {
-                      await run(() => api.deleteSchedule(s.id), "Deleted");
-                      await load();
-                    }}
+                    onClick={() => remove(s)}
                     className="btn-quiet px-2 py-1"
+                    aria-label={`Delete ${s.name}`}
+                    title="Delete schedule"
                   >
                     <Trash2 size={13} />
                   </button>
@@ -203,19 +215,24 @@ export default function SchedulesPage() {
       <Card>
         <SectionTitle>Requires the worker</SectionTitle>
         <p className="text-[12.5px] leading-relaxed text-muted">
-          Schedules fire from the background worker. Start it alongside the API with{" "}
+          Schedules fire from AURA&apos;s background worker. Until it&apos;s running for
+          this server, &ldquo;Run now&rdquo; works but nothing fires on its own. (Whoever
+          runs the server starts it with{" "}
           <code className="rounded bg-raised px-1.5 py-0.5 font-mono text-[11.5px]">
             python worker.py
           </code>
-          . Without it, &ldquo;Run now&rdquo; still works but nothing fires on its own.
+          .)
         </p>
       </Card>
 
       <Modal open={open} onClose={() => setOpen(false)} title="New schedule" width="max-w-xl">
         <div className="space-y-3">
           <div>
-            <label className="label mb-1.5 block">When</label>
+            <label htmlFor="schedule-when" className="label mb-1.5 block">
+              When
+            </label>
             <input
+              id="schedule-when"
               className="input"
               placeholder="every weekday at 7:30am"
               value={when}
@@ -226,8 +243,11 @@ export default function SchedulesPage() {
             </p>
           </div>
           <div>
-            <label className="label mb-1.5 block">What to do</label>
+            <label htmlFor="schedule-prompt" className="label mb-1.5 block">
+              What to do
+            </label>
             <textarea
+              id="schedule-prompt"
               className="input min-h-[130px]"
               placeholder="Give me my morning briefing…"
               value={prompt}
@@ -238,8 +258,12 @@ export default function SchedulesPage() {
               can look things up and chain skills.
             </p>
           </div>
-          <button onClick={create} disabled={!prompt.trim()} className="btn-primary w-full">
-            Create schedule
+          <button
+            onClick={create}
+            disabled={!prompt.trim() || creating}
+            className="btn-primary w-full"
+          >
+            {creating ? <Spinner /> : null} Create schedule
           </button>
         </div>
       </Modal>

@@ -4,8 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
   Check,
+  Database,
   Download,
   Gauge,
+  Globe,
   KeyRound,
   Link2,
   Moon,
@@ -28,6 +30,7 @@ import {
   Secret,
   UsageReport,
   api,
+  browserTimeZone,
   clearToken,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -102,8 +105,10 @@ const TIERS: Array<{ key: AutonomyTier; title: string; body: string }> = [
   },
 ];
 
+const SECRET_KEY = /^[a-zA-Z0-9_.-]+$/;
+
 export default function SettingsPage() {
-  const { user } = useAuth();
+  const { user, refresh: refreshUser } = useAuth();
   const { assistant, refresh: refreshAssistant } = useAssistant();
 
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -129,6 +134,10 @@ export default function SettingsPage() {
     tone: "ok" | "warn" | "error";
     text: string;
   } | null>(null);
+  const [sample, setSample] = useState<{ present: boolean } | null>(null);
+  const [sampleBusy, setSampleBusy] = useState(false);
+  const [zoneBusy, setZoneBusy] = useState(false);
+  const [deviceZone, setDeviceZone] = useState("");
 
   const run = useAction();
   const toast = useToast();
@@ -136,13 +145,14 @@ export default function SettingsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, i, c, g, v, u] = await Promise.all([
+      const [s, i, c, g, v, u, d] = await Promise.all([
         api.settings(),
         api.integrations(),
         api.authConfig(),
         api.grants().catch(() => []),
         api.secrets().catch(() => []),
         api.usage().catch(() => null),
+        api.sampleData().catch(() => null),
       ]);
       setSettings(s);
       setIntegrations(i);
@@ -150,18 +160,85 @@ export default function SettingsPage() {
       setGrants(g);
       setSecrets(v);
       setUsage(u);
+      setSample(d);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't load your settings");
     } finally {
       setLoading(false);
     }
+    // toast is stable (memoised in ToastProvider).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const secretKeyError =
+    secretKey.trim() && !SECRET_KEY.test(secretKey.trim())
+      ? "Use letters, numbers, dots, dashes or underscores — no spaces."
+      : "";
+
   const saveSecret = async () => {
-    if (!secretKey.trim() || !secretValue.trim()) return;
-    await api.putSecret({ key: secretKey.trim(), value: secretValue });
+    if (!secretKey.trim() || !secretValue.trim() || secretKeyError) return;
+    const stored = await run(() => api.putSecret({ key: secretKey.trim(), value: secretValue }));
+    if (!stored) return;
     setSecretKey("");
     setSecretValue("");
     await load();
     flash();
+  };
+
+  const deleteSecret = async (secret: Secret) => {
+    if (
+      !window.confirm(
+        `Delete "${secret.key}"? Anything that uses {{vault:${secret.key}}} stops working, and the value can't be recovered.`
+      )
+    ) {
+      return;
+    }
+    await run(() => api.deleteSecret(secret.key), "Deleted");
+    await load();
+  };
+
+  const clearSample = async () => {
+    if (
+      !window.confirm(
+        "Remove the sample emails, events, tasks, contacts and the rest? Anything you added yourself stays."
+      )
+    ) {
+      return;
+    }
+    setSampleBusy(true);
+    const result = await run(() => api.clearSampleData());
+    setSampleBusy(false);
+    if (result) {
+      toast.success(
+        result.total ? `Removed ${result.total} sample item${result.total === 1 ? "" : "s"}` : "Nothing to remove"
+      );
+      await load();
+      await refreshAssistant();
+    }
+  };
+
+  const loadSample = async () => {
+    setSampleBusy(true);
+    const result = await run(() => api.loadSampleData());
+    setSampleBusy(false);
+    if (result) {
+      toast.push(
+        result.seeded
+          ? "Sample data loaded — have a look around."
+          : "Sample data only loads into an empty inbox, and yours already has mail.",
+        result.seeded ? "success" : "info"
+      );
+      await load();
+      await refreshAssistant();
+    }
+  };
+
+  const adoptDeviceZone = async () => {
+    if (!deviceZone) return;
+    setZoneBusy(true);
+    const updated = await run(() => api.updateMe({ timezone: deviceZone }), "Time zone updated");
+    setZoneBusy(false);
+    if (updated) await refreshUser();
   };
 
   // --- Google -------------------------------------------------------------
@@ -216,7 +293,13 @@ export default function SettingsPage() {
 
   useEffect(() => {
     void load();
-    const stored = (window.localStorage.getItem("aura_theme") as "warm" | "dark") || "dark";
+    setDeviceZone(browserTimeZone());
+    let stored: "warm" | "dark" = "dark";
+    try {
+      stored = (window.localStorage.getItem("aura_theme") as "warm" | "dark") || "dark";
+    } catch {
+      /* storage blocked — keep the default */
+    }
     setTheme(stored);
 
     // The OAuth callback redirects back here with ?google=… . Read it once,
@@ -248,20 +331,30 @@ export default function SettingsPage() {
     setTimeout(() => setSaved(false), 1600);
   };
 
+  // Saves used to fail silently: no toast, no "Saved", and the control looked
+  // as if the change had stuck.
   const update = async (patch: Partial<AppSettings>) => {
-    setSettings(await api.updateSettings(patch));
-    flash();
+    const next = await run(() => api.updateSettings(patch));
+    if (next) {
+      setSettings(next);
+      flash();
+    }
   };
 
   const updateAssistant = async (patch: Record<string, unknown>) => {
-    await api.updateAssistant(patch);
+    const next = await run(() => api.updateAssistant(patch));
+    if (!next) return;
     await refreshAssistant();
     flash();
   };
 
   const applyTheme = (next: "warm" | "dark") => {
     setTheme(next);
-    window.localStorage.setItem("aura_theme", next);
+    try {
+      window.localStorage.setItem("aura_theme", next);
+    } catch {
+      /* storage blocked — the theme still applies to this visit */
+    }
     // Dark aurora is the root palette, so only `warm` needs a class.
     document.documentElement.classList.toggle("warm", next === "warm");
     document.documentElement.classList.toggle("dark", next !== "warm");
@@ -270,16 +363,14 @@ export default function SettingsPage() {
 
   const compact = async () => {
     setCompacting(true);
-    try {
-      setCompaction(await api.compactMemory(false));
-    } finally {
-      setCompacting(false);
-    }
+    const result = await run(() => api.compactMemory(false));
+    if (result) setCompaction(result);
+    setCompacting(false);
   };
 
   if (loading || !settings) {
     return (
-      <div className="mx-auto max-w-3xl space-y-4 p-8">
+      <div className="mx-auto max-w-3xl space-y-4 p-4 sm:p-8">
         <Skeleton className="h-36" />
         <Skeleton className="h-52" />
       </div>
@@ -287,7 +378,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5 p-8">
+    <div className="mx-auto max-w-3xl space-y-5 p-4 sm:p-8">
       <div className="flex items-center justify-between">
         <h1 className="display text-shine text-[26px]">Settings</h1>
         {saved && (
@@ -308,8 +399,15 @@ export default function SettingsPage() {
                 <input
                   className="input mb-2 text-[15px] font-medium"
                   value={name}
+                  maxLength={40}
+                  aria-label="Assistant's name"
                   onChange={(e) => setName(e.target.value)}
-                  onBlur={() => name.trim() && name !== assistant.name && updateAssistant({ name: name.trim() })}
+                  onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                  onBlur={() => {
+                    const next = name.trim();
+                    if (!next) setName(assistant.name);
+                    else if (next !== assistant.name) void updateAssistant({ name: next });
+                  }}
                 />
                 <div className="text-[12px] text-faint">
                   {assistant.stage_label} · {assistant.signals.interactions} conversations ·{" "}
@@ -325,6 +423,8 @@ export default function SettingsPage() {
                   <button
                     key={c}
                     onClick={() => updateAssistant({ avatar: c })}
+                    aria-label={`${c} colourway`}
+                    aria-pressed={assistant.avatar === c}
                     className={`rounded-xl p-1 transition ${
                       assistant.avatar === c
                         ? "ring-2 ring-accent ring-offset-2 ring-offset-panel"
@@ -400,7 +500,7 @@ export default function SettingsPage() {
                     </Badge>
                     <button
                       onClick={async () => {
-                        await api.revokeGrant(g.tool_name);
+                        await run(() => api.revokeGrant(g.tool_name), "Permission revoked");
                         await load();
                       }}
                       className="text-[11.5px] text-faint hover:text-ink"
@@ -445,11 +545,13 @@ export default function SettingsPage() {
                 update({ heartbeat_interval_minutes: Number(e.target.value) })
               }
             >
-              {[15, 30, 60, 120, 240].map((m) => (
-                <option key={m} value={m}>
-                  {m < 60 ? `${m} minutes` : `${m / 60} hour${m > 60 ? "s" : ""}`}
-                </option>
-              ))}
+              {Array.from(new Set([15, 30, 60, 120, 240, settings.heartbeat_interval_minutes]))
+                .sort((a, b) => a - b)
+                .map((m) => (
+                  <option key={m} value={m}>
+                    {m < 60 || m % 60 ? `${m} minutes` : `${m / 60} hour${m > 60 ? "s" : ""}`}
+                  </option>
+                ))}
             </select>
           </div>
           <div className="flex items-center justify-between gap-4">
@@ -457,8 +559,17 @@ export default function SettingsPage() {
             <input
               className="input w-[140px] py-1.5 text-center"
               value={settings.quiet_hours}
+              aria-label="Quiet hours"
               onChange={(e) => setSettings({ ...settings, quiet_hours: e.target.value })}
-              onBlur={() => update({ quiet_hours: settings.quiet_hours })}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              onBlur={() => {
+                const value = settings.quiet_hours.trim().replace(/\s+/g, "");
+                if (value && !/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+                  toast.error("Quiet hours look like 22:00-07:00.");
+                  return;
+                }
+                void update({ quiet_hours: value });
+              }}
               placeholder="22:00-07:00"
             />
           </div>
@@ -482,7 +593,8 @@ export default function SettingsPage() {
             <input
               type="time"
               value={settings.briefing_time}
-              onChange={(e) => update({ briefing_time: e.target.value })}
+              onChange={(e) => setSettings({ ...settings, briefing_time: e.target.value })}
+              onBlur={(e) => e.target.value && void update({ briefing_time: e.target.value })}
               className="input w-[124px] py-1.5"
             />
           </label>
@@ -616,6 +728,8 @@ export default function SettingsPage() {
           <input
             className="input"
             placeholder="name (e.g. stripe_key)"
+            aria-label="Secret name"
+            autoComplete="off"
             value={secretKey}
             onChange={(e) => setSecretKey(e.target.value)}
           />
@@ -623,17 +737,20 @@ export default function SettingsPage() {
             className="input"
             type="password"
             placeholder="value"
+            aria-label="Secret value"
+            autoComplete="new-password"
             value={secretValue}
             onChange={(e) => setSecretValue(e.target.value)}
           />
           <button
             onClick={saveSecret}
-            disabled={!secretKey.trim() || !secretValue.trim()}
+            disabled={!secretKey.trim() || !secretValue.trim() || !!secretKeyError}
             className="btn-primary"
           >
             <Plus size={13} /> Store
           </button>
         </div>
+        {secretKeyError && <p className="-mt-1 mb-3 text-[12px] text-amber">{secretKeyError}</p>}
 
         {secrets.length === 0 ? (
           <p className="text-[12.5px] text-faint">Nothing stored.</p>
@@ -652,10 +769,7 @@ export default function SettingsPage() {
                   <Badge>{s.kind}</Badge>
                   <span className="text-[11px] text-faint">used {s.use_count}×</span>
                   <button
-                    onClick={async () => {
-                      await api.deleteSecret(s.key);
-                      await load();
-                    }}
+                    onClick={() => deleteSecret(s)}
                     className="text-[11.5px] text-faint hover:text-rose"
                   >
                     delete
@@ -675,6 +789,23 @@ export default function SettingsPage() {
             <span className="text-muted">Signed in as</span>
             <span>{user?.email}</span>
           </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5 text-muted">
+              <Globe size={12} /> Time zone
+            </span>
+            <span className="flex flex-wrap items-center justify-end gap-2">
+              <span>{user?.timezone || "UTC"}</span>
+              {deviceZone && user && deviceZone !== user.timezone && (
+                <button
+                  onClick={adoptDeviceZone}
+                  disabled={zoneBusy}
+                  className="btn-ghost px-2.5 py-1 text-[12px]"
+                >
+                  {zoneBusy ? <Spinner /> : null} Use {deviceZone}
+                </button>
+              )}
+            </span>
+          </div>
           <div className="flex justify-between">
             <span className="text-muted">Model provider</span>
             <Badge tone={provider === "mock" ? "warning" : "success"}>{provider}</Badge>
@@ -683,7 +814,7 @@ export default function SettingsPage() {
         {provider === "mock" && (
           <div className="mt-3 rounded-xl border border-amber/35 bg-amber/10 px-3.5 py-3 text-[12px] leading-relaxed text-amber">
             <p className="mb-2 font-medium">
-              Running offline — replies come from a keyword router, not a model.
+              Running in demo mode — replies come from a keyword router, not a model.
             </p>
             <ol className="ml-4 list-decimal space-y-1">
               <li>
@@ -699,10 +830,12 @@ export default function SettingsPage() {
                 → API Keys (billing must be enabled)
               </li>
               <li>
-                Put it in <code className="font-mono">.env</code> in the project root:{" "}
-                <code className="font-mono">ANTHROPIC_API_KEY=sk-ant-…</code>
+                Add it to the server&apos;s environment as{" "}
+                <code className="font-mono">ANTHROPIC_API_KEY</code>: on Vercel, Project →
+                Settings → Environment Variables; running locally,{" "}
+                <code className="font-mono">.env</code> in the project root
               </li>
-              <li>Restart the backend</li>
+              <li>Redeploy (Vercel) or restart the backend (local)</li>
             </ol>
             <p className="mt-2 opacity-90">
               <code className="font-mono">OPENAI_API_KEY</code> is optional and used only
@@ -877,9 +1010,9 @@ export default function SettingsPage() {
                 {isGoogle && !i.available && (
                   <p className="mt-2.5 text-[11.5px] leading-relaxed text-faint">
                     Set <code className="font-mono">GOOGLE_CLIENT_ID</code> and{" "}
-                    <code className="font-mono">GOOGLE_CLIENT_SECRET</code> in{" "}
-                    <code className="font-mono">.env</code>, then restart the backend.
-                    See <span className="font-mono">DEPLOY.md</span> §6.
+                    <code className="font-mono">GOOGLE_CLIENT_SECRET</code> in the
+                    server&apos;s environment, then redeploy or restart it. See{" "}
+                    <span className="font-mono">DEPLOY.md</span> §6.
                   </p>
                 )}
               </div>
@@ -887,6 +1020,39 @@ export default function SettingsPage() {
           })}
         </div>
       </Card>
+
+      {/* Sample data */}
+      {sample && (
+        <Card>
+          <SectionTitle>
+            <span className="flex items-center gap-2">
+              <Database size={12} className="text-accent-soft" /> Sample data
+            </span>
+          </SectionTitle>
+          {sample.present ? (
+            <>
+              <p className="mb-3.5 text-[12.5px] leading-relaxed text-muted">
+                Your workspace still has the sample emails, meetings, tasks and contacts it
+                started with, so every screen had something to show. Remove them before you
+                rely on AURA for real work — anything you added yourself stays.
+              </p>
+              <button onClick={clearSample} disabled={sampleBusy} className="btn-ghost">
+                {sampleBusy ? <Spinner /> : <Trash2 size={13} />} Remove sample data
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="mb-3.5 text-[12.5px] leading-relaxed text-muted">
+                No sample data. If your inbox is empty and you want to see what AURA does
+                with a busy week, load a realistic sample set — and remove it again here.
+              </p>
+              <button onClick={loadSample} disabled={sampleBusy} className="btn-ghost">
+                {sampleBusy ? <Spinner /> : <Database size={13} />} Load sample data
+              </button>
+            </>
+          )}
+        </Card>
+      )}
 
       {/* Your data */}
       <Card>
@@ -919,6 +1085,8 @@ export default function SettingsPage() {
         <div className="flex flex-wrap gap-2">
           <input
             className="input flex-1 sm:max-w-xs"
+            aria-label="Type your email to confirm"
+            autoComplete="off"
             placeholder={`Type ${user?.email ?? "your email"} to confirm`}
             value={deleteConfirm}
             onChange={(e) => setDeleteConfirm(e.target.value)}

@@ -40,7 +40,6 @@ export default function HubPage() {
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       const [p, s, c] = await Promise.all([
         api.plugins(),
@@ -50,6 +49,8 @@ export default function HubPage() {
       setPlugins(p);
       setSummary(s);
       setCategories(c);
+    } catch {
+      /* keep what's on screen; install/remove report their own failures */
     } finally {
       setLoading(false);
     }
@@ -75,7 +76,7 @@ export default function HubPage() {
   const visible = filter ? plugins.filter((p) => p.category === filter) : plugins;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-5 p-6 sm:p-8">
+    <div className="mx-auto max-w-5xl space-y-5 p-4 sm:p-8">
       <PageHeader
         title="Plugin hub"
         blurb="Plugins are bundles of skills. Installing one gives your assistant new abilities; removing it takes them away without losing what the skills already learned about you."

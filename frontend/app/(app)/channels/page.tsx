@@ -47,12 +47,15 @@ export default function ChannelsPage() {
   const [tokens, setTokens] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       setChannels(await api.channels());
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't load channels");
     } finally {
       setLoading(false);
     }
+    // toast is stable (memoised in ToastProvider).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -80,6 +83,13 @@ export default function ChannelsPage() {
   };
 
   const disconnect = async (channel: ChannelItem) => {
+    if (
+      !window.confirm(
+        `Disconnect ${channel.name}? Its token stops working immediately; connecting again issues a new one.`
+      )
+    ) {
+      return;
+    }
     setBusy(channel.kind);
     await run(async () => {
       await api.disconnectChannel(channel.kind);
@@ -103,7 +113,7 @@ export default function ChannelsPage() {
   };
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5 p-6 sm:p-8">
+    <div className="mx-auto max-w-4xl space-y-5 p-4 sm:p-8">
       <PageHeader
         title="Channels"
         glow="azure"
@@ -177,6 +187,7 @@ export default function ChannelsPage() {
                           disabled={busy === c.kind}
                           className="btn-ghost py-1.5"
                           title="Issue a new token and invalidate the old one"
+                          aria-label={`Issue a new ${c.name} token`}
                         >
                           {busy === c.kind ? <Spinner /> : <RefreshCw size={13} />}
                         </button>
