@@ -48,7 +48,7 @@ export default function SetupPage() {
     report?.checks.filter((c) => c.level === level) ?? [];
 
   return (
-    <div className="relative mx-auto min-h-screen max-w-2xl overflow-hidden px-6 py-14">
+    <div className="relative mx-auto min-h-screen max-w-2xl overflow-hidden px-4 py-10 sm:px-6 sm:py-14">
       <div
         className="aurora-spot left-1/2 top-[-12%] h-[420px] w-[680px] -translate-x-1/2"
         style={{ background: "rgb(var(--accent) / 0.24)" }}
@@ -62,7 +62,13 @@ export default function SetupPage() {
             What&apos;s configured, what isn&apos;t, and exactly how to fix it.
           </p>
         </div>
-        <button onClick={load} disabled={loading} className="btn-ghost ml-auto">
+        <button
+          onClick={load}
+          disabled={loading}
+          className="btn-ghost ml-auto shrink-0"
+          aria-label="Run the checks again"
+          title="Run the checks again"
+        >
           {loading ? <Spinner /> : <RefreshCw size={14} />}
         </button>
       </div>
@@ -156,16 +162,23 @@ export default function SetupPage() {
                           {c.fix}
                         </pre>
                       )}
-                      {c.docs && (
-                        <a
-                          href={c.docs.startsWith("http") ? c.docs : undefined}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="mt-2 inline-flex items-center gap-1.5 text-[12px] text-accent-soft hover:underline"
-                        >
-                          {c.docs} <ExternalLink size={11} />
-                        </a>
-                      )}
+                      {c.docs &&
+                        (/^https?:\/\//.test(c.docs) ? (
+                          <a
+                            href={c.docs}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-2 inline-flex items-center gap-1.5 text-[12px] text-accent-soft hover:underline"
+                          >
+                            {c.docs} <ExternalLink size={11} />
+                          </a>
+                        ) : (
+                          // A file in the repo (e.g. DEPLOY.md §4), not a URL:
+                          // it used to render as a link that went nowhere.
+                          <p className="mt-2 text-[12px] text-faint">
+                            See <span className="font-mono text-muted">{c.docs}</span>
+                          </p>
+                        ))}
                     </div>
                   ))}
                 </div>

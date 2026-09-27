@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowRight, PlayCircle, Sparkles } from "lucide-react";
+import { ArrowDown, ArrowRight, Sparkles } from "lucide-react";
 import Mascot from "@/components/Mascot";
 import LandingNav from "@/components/landing/LandingNav";
 import HeroPreview from "@/components/landing/HeroPreview";
@@ -30,24 +30,33 @@ const STATS = [
   },
 ];
 
+// Thresholds mirror backend/app/services/identity.py STAGES — all three must
+// be met. They used to be labelled "Day 1/2/3", which the product never did,
+// and the fourth stage (the one the hero's progress bar points at) was missing.
 const STAGES = [
   {
     stage: "stranger" as const,
-    day: "Day 1",
+    need: "From the first hello",
     title: "Stranger",
     body: "It just met you. Eager, clueless. Tell it your role, your style, how you like things done.",
   },
   {
     stage: "acquaintance" as const,
-    day: "Day 2",
+    need: "5 chats · 3 things learned · 2 actions",
     title: "Acquaintance",
     body: "It's picking up patterns. Gets things half-right, asks better questions. Correct it and the correction sticks.",
   },
   {
     stage: "colleague" as const,
-    day: "Day 3",
+    need: "25 chats · 12 things learned · 15 actions",
     title: "Colleague",
     body: "It finishes your thought. Acts before you ask. You stop managing it and start relying on it.",
+  },
+  {
+    stage: "chief_of_staff" as const,
+    need: "80 chats · 30 things learned · 60 actions",
+    title: "Chief of Staff",
+    body: "It runs your day without checking in, and surfaces only what genuinely needs your judgement.",
   },
 ];
 
@@ -68,11 +77,11 @@ export default function Landing() {
         />
 
         <div className="relative mx-auto max-w-3xl text-center">
-          <Link href="/login" className="pill mb-7 animate-fade-up hover:text-ink">
+          <a href="#skills" className="pill mb-7 animate-fade-up hover:text-ink">
             <Sparkles size={12} className="text-accent-soft" />
             Skills v2 — all twenty-one live
             <ArrowRight size={12} className="text-faint" />
-          </Link>
+          </a>
 
           <h1
             className="display text-shine mb-6 animate-fade-up text-[46px] sm:text-[76px]"
@@ -99,9 +108,9 @@ export default function Landing() {
             <Link href="/login" className="btn-primary !px-6 !py-2.5">
               Wake one up <ArrowRight size={15} />
             </Link>
-            <Link href="#skills" className="btn-ghost !px-6 !py-2.5">
-              <PlayCircle size={15} /> See it work
-            </Link>
+            <a href="#skills" className="btn-ghost !px-6 !py-2.5">
+              See it work <ArrowDown size={15} />
+            </a>
           </div>
 
           <p
@@ -157,11 +166,11 @@ export default function Landing() {
           <p className="text-[15px] leading-relaxed text-muted">
             The stage isn&apos;t decorative. It&apos;s computed from how much
             you&apos;ve talked, how much it knows about you, and how much it has
-            actually done.
+            actually done — and it only moves up when all three have.
           </p>
         </div>
 
-        <div className="relative grid gap-4 sm:grid-cols-3">
+        <div className="relative grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {STAGES.map((s, i) => (
             <div key={s.stage} className="glass group">
               <div className="p-7">
@@ -171,7 +180,7 @@ export default function Landing() {
                     0{i + 1}
                   </span>
                 </div>
-                <div className="label mb-2">{s.day}</div>
+                <div className="mb-2 text-[11px] font-medium tracking-wide text-faint">{s.need}</div>
                 <h3 className="mb-2 text-[17px] font-semibold tracking-tight">
                   {s.title}
                 </h3>
@@ -219,16 +228,16 @@ export default function Landing() {
               <Link href="/login" className="btn-primary !px-6 !py-2.5">
                 Get started <ArrowRight size={15} />
               </Link>
-              <Link href="#pricing" className="btn-ghost !px-6 !py-2.5">
+              <a href="#pricing" className="btn-ghost !px-6 !py-2.5">
                 Compare plans
-              </Link>
+              </a>
             </div>
           </div>
         </div>
       </section>
 
       {/* ------------------------------------------------------------- Footer */}
-      <footer className="relative border-t border-line px-6 py-10">
+      <footer className="relative border-t border-line px-6 pb-[max(2.5rem,env(safe-area-inset-bottom))] pt-10">
         <div className="mx-auto flex max-w-6xl flex-col items-center gap-5 text-center sm:flex-row sm:justify-between sm:text-left">
           <div className="flex items-center gap-2.5">
             <Mascot colourway="violet" stage="colleague" size={26} />

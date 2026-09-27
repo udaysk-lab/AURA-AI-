@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { ArrowLeft } from "lucide-react";
 import { API_BASE, API_BASE_IS_FALLBACK, api, setToken } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import Mascot from "@/components/Mascot";
@@ -168,7 +170,14 @@ export default function LoginPage() {
         style={{ background: "rgb(var(--c-azure) / 0.28)" }}
       />
 
-      <div className="relative w-full max-w-sm animate-fade-up">
+      <Link
+        href="/"
+        className="absolute left-4 top-4 z-10 inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12.5px] text-muted transition hover:bg-raised/60 hover:text-ink sm:left-6 sm:top-6"
+      >
+        <ArrowLeft size={13} /> AURA home
+      </Link>
+
+      <div className="relative w-full max-w-sm animate-fade-up py-16">
         <div className="mb-8 flex flex-col items-center text-center">
           <Mascot colourway="violet" stage="acquaintance" size={76} className="mb-5" />
           <h1 className="display text-shine text-[26px]">
@@ -204,8 +213,11 @@ export default function LoginPage() {
           >
             {mode === "signup" && (
               <div>
-                <label className="label mb-1.5 block">Name</label>
+                <label htmlFor="login-name" className="label mb-1.5 block">
+                  Name
+                </label>
                 <input
+                  id="login-name"
                   className="input"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
@@ -215,8 +227,11 @@ export default function LoginPage() {
               </div>
             )}
             <div>
-              <label className="label mb-1.5 block">Email</label>
+              <label htmlFor="login-email" className="label mb-1.5 block">
+                Email
+              </label>
               <input
+                id="login-email"
                 className="input"
                 type="email"
                 required
@@ -227,10 +242,15 @@ export default function LoginPage() {
               />
             </div>
             <div>
-              <label className="label mb-1.5 block">Password</label>
+              <label htmlFor="login-password" className="label mb-1.5 block">
+                Password
+              </label>
               <input
+                id="login-password"
                 className="input"
                 type="password"
+                minLength={mode === "signup" ? 8 : undefined}
+                maxLength={72}
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -252,12 +272,13 @@ export default function LoginPage() {
           <p className="text-center text-[12px] text-muted">
             {mode === "signup" ? "Already have an account?" : "No account yet?"}{" "}
             <button
+              type="button"
               onClick={() => {
                 setMode(mode === "signup" ? "signin" : "signup");
                 setError("");
                 setPassword("");
               }}
-              className="text-accent underline-offset-2 hover:underline"
+              className="text-accent-soft underline-offset-2 hover:underline"
             >
               {mode === "signup" ? "Sign in" : "Create one"}
             </button>
@@ -277,20 +298,24 @@ export default function LoginPage() {
           )}
 
           {error && (
-            <p className="whitespace-pre-line rounded-lg border border-rose/30 bg-rose/10 px-3 py-2.5 text-[12px] leading-relaxed text-rose">
+            <p
+              role="alert"
+              className="whitespace-pre-line rounded-lg border border-rose/30 bg-rose/10 px-3 py-2.5 text-[12px] leading-relaxed text-rose"
+            >
               {error}
             </p>
           )}
         </div>
 
+        {/* Told to every visitor, so it's written for them: this used to say
+            "add an API key in .env", which only the person running the
+            server can act on. */}
         <p className="mt-5 text-center text-[11.5px] leading-relaxed text-faint">
           {config
-            ? `Model provider: ${config.llm_provider}${
-                config.llm_provider === "mock"
-                  ? " — add an API key in .env for the full agent."
-                  : ""
-              }`
-            : "Connecting to API…"}
+            ? config.llm_provider === "mock"
+              ? "Demo mode: AI replies are simulated on this server for now. Everything else works."
+              : null
+            : "Connecting…"}
         </p>
       </div>
     </div>

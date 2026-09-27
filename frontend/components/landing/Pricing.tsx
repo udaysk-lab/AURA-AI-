@@ -89,11 +89,13 @@ export default function Pricing() {
         </p>
 
         <div className="mt-7 inline-flex items-center gap-3">
-          <span
-            className={`text-[13px] transition ${!yearly ? "text-ink" : "text-faint"}`}
+          <button
+            type="button"
+            onClick={() => setYearly(false)}
+            className={`text-[13px] transition ${!yearly ? "text-ink" : "text-faint hover:text-muted"}`}
           >
             Monthly
-          </span>
+          </button>
           <button
             role="switch"
             aria-checked={yearly}
@@ -109,9 +111,13 @@ export default function Pricing() {
               }`}
             />
           </button>
-          <span className={`text-[13px] transition ${yearly ? "text-ink" : "text-faint"}`}>
+          <button
+            type="button"
+            onClick={() => setYearly(true)}
+            className={`text-[13px] transition ${yearly ? "text-ink" : "text-faint hover:text-muted"}`}
+          >
             Yearly
-          </span>
+          </button>
           <span className="chip border-sage/35 bg-sage/12 text-sage">Save 20%</span>
         </div>
       </div>
@@ -135,7 +141,9 @@ export default function Pricing() {
               <div className="mb-1 flex items-end gap-1.5">
                 <span className="display text-[40px]">{price(t)}</span>
                 {typeof t.monthly === "number" && t.monthly > 0 && (
-                  <span className="mb-2 text-[13px] text-faint">/month</span>
+                  <span className="mb-2 text-[13px] text-faint">
+                    /month{yearly ? ", billed yearly" : ""}
+                  </span>
                 )}
               </div>
               <p className="mb-6 min-h-[42px] text-[13px] leading-relaxed text-muted">

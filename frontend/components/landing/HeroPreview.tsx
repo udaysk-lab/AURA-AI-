@@ -80,9 +80,11 @@ export default function HeroPreview() {
           {/* Main pane */}
           <div className="min-w-0 flex-1 p-4 sm:p-5">
             <div className="mb-4 flex items-center gap-2">
-              <Radio size={11} className="text-accent-soft" />
-              <span className="label">Overnight · while you slept</span>
-              <span className="chip ml-auto border-sage/35 bg-sage/12 text-sage">
+              <Radio size={11} className="shrink-0 text-accent-soft" />
+              <span className="label truncate">
+                Overnight<span className="hidden sm:inline"> · while you slept</span>
+              </span>
+              <span className="chip ml-auto shrink-0 whitespace-nowrap border-sage/35 bg-sage/12 text-sage">
                 6 skills ran
               </span>
             </div>
@@ -104,17 +106,19 @@ export default function HeroPreview() {
               ))}
             </div>
 
-            <div className="mt-4 grid gap-2.5 sm:grid-cols-3">
+            <div className="mt-4 grid grid-cols-3 gap-2 sm:gap-2.5">
               {[
                 { k: "Inbox", v: "3 left", tone: "text-accent-soft" },
                 { k: "Conflicts", v: "1 open", tone: "text-amber" },
                 { k: "Commitments", v: "4 new", tone: "text-teal" },
               ].map((s) => (
-                <div key={s.k} className="panel-raised px-3 py-2.5">
-                  <div className="text-[9.5px] uppercase tracking-[0.14em] text-faint">
+                <div key={s.k} className="panel-raised min-w-0 px-2.5 py-2 sm:px-3 sm:py-2.5">
+                  <div className="truncate text-[9px] uppercase tracking-[0.12em] text-faint sm:text-[9.5px] sm:tracking-[0.14em]">
                     {s.k}
                   </div>
-                  <div className={`text-[15px] font-semibold ${s.tone}`}>{s.v}</div>
+                  <div className={`truncate text-[13px] font-semibold sm:text-[15px] ${s.tone}`}>
+                    {s.v}
+                  </div>
                 </div>
               ))}
             </div>

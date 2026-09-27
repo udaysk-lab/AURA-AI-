@@ -106,11 +106,15 @@ export default function OnboardingPage() {
             <Mascot colourway={avatar} stage="stranger" size={104} />
           </div>
           <div>
-            <label className="label mb-1.5 block">Name</label>
+            <label htmlFor="assistant-name" className="label mb-1.5 block">
+              Name
+            </label>
             <input
+              id="assistant-name"
               className="input text-center text-lg"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && setStep(1)}
               maxLength={40}
               autoFocus
             />
@@ -122,6 +126,8 @@ export default function OnboardingPage() {
                 <button
                   key={c}
                   onClick={() => setAvatar(c)}
+                  aria-label={`${c} colourway`}
+                  aria-pressed={avatar === c}
                   className={`rounded-2xl p-1.5 transition ${
                     avatar === c ? "ring-2 ring-accent ring-offset-2 ring-offset-canvas" : ""
                   }`}
@@ -138,6 +144,7 @@ export default function OnboardingPage() {
                 <button
                   key={p}
                   onClick={() => setPronoun(p)}
+                  aria-pressed={pronoun === p}
                   className={`rounded-full border px-3.5 py-1.5 text-[13px] transition ${
                     pronoun === p
                       ? "border-accent/60 bg-accent-dim text-accent-soft shadow-glow-sm"
@@ -161,6 +168,7 @@ export default function OnboardingPage() {
             <button
               key={p.key}
               onClick={() => setPersonality(p.key)}
+              aria-pressed={personality === p.key}
               className={`w-full rounded-2xl border p-4 text-left transition ${
                 personality === p.key
                   ? "border-accent/50 bg-accent-dim shadow-glow-sm"
@@ -180,8 +188,11 @@ export default function OnboardingPage() {
       body: (
         <div className="space-y-4">
           <div>
-            <label className="label mb-1.5 block">What do you do?</label>
+            <label htmlFor="about-role" className="label mb-1.5 block">
+              What do you do?
+            </label>
             <input
+              id="about-role"
               className="input"
               placeholder="Founder at a seed-stage fintech"
               value={role}
@@ -189,8 +200,11 @@ export default function OnboardingPage() {
             />
           </div>
           <div>
-            <label className="label mb-1.5 block">Anything they should know?</label>
+            <label htmlFor="about-notes" className="label mb-1.5 block">
+              Anything they should know?
+            </label>
             <textarea
+              id="about-notes"
               className="input min-h-[110px]"
               placeholder="I'm raising a Series A. I write in British English and hate exclamation marks. Fridays are for deep work."
               value={about}
@@ -204,6 +218,7 @@ export default function OnboardingPage() {
                 <button
                   key={g}
                   onClick={() => toggleGoal(g)}
+                  aria-pressed={goals.includes(g)}
                   className={`rounded-full border px-3 py-1.5 text-[12.5px] transition ${
                     goals.includes(g)
                       ? "border-accent/60 bg-accent-dim text-accent-soft shadow-glow-sm"
@@ -228,6 +243,7 @@ export default function OnboardingPage() {
             <button
               key={t.key}
               onClick={() => setTier(t.key)}
+              aria-pressed={tier === t.key}
               className={`w-full rounded-2xl border p-4 text-left transition ${
                 tier === t.key
                   ? "border-accent/50 bg-accent-dim shadow-glow-sm"
@@ -270,7 +286,7 @@ export default function OnboardingPage() {
         style={{ background: "rgb(var(--c-azure) / 0.24)" }}
       />
 
-      <div className="glass relative w-full max-w-lg p-7 sm:p-9">
+      <div className="glass relative w-full max-w-lg p-5 sm:p-9">
         <div className="mb-7 flex items-center gap-1.5">
           {steps.map((_, i) => (
             <div
@@ -294,7 +310,10 @@ export default function OnboardingPage() {
         </div>
 
         {error && (
-          <p className="mt-6 rounded-lg border border-rose/30 bg-rose/10 px-3 py-2.5 text-[12px] leading-relaxed text-rose">
+          <p
+            role="alert"
+            className="mt-6 rounded-lg border border-rose/30 bg-rose/10 px-3 py-2.5 text-[12px] leading-relaxed text-rose"
+          >
             {error}
           </p>
         )}
