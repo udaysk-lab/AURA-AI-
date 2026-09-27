@@ -115,6 +115,20 @@ to the paid tier before then.
 **Vercel preview deployments get their own URLs.** Only the origins in
 `CORS_ORIGINS` can call the API, so previews fail unless you add them too.
 
+**The API must run in the same region as the database.** `vercel.json` pins
+functions to `hnd1` (Tokyo) because the Supabase project is in
+`ap-northeast-1` (Tokyo). Vercel's default is `iad1` (Washington). From there,
+every request opened a new connection across the Pacific: about 1.3 s before
+the first row came back, and 2–11 s per page. If the database ever moves,
+change `regions` to match: Mumbai `ap-south-1` → `bom1`, Singapore
+`ap-southeast-1` → `sin1`, US East `us-east-1` → `iad1`.
+
+**Supabase pauses Free projects after 7 days without database activity.** The
+site then fails on every request that touches the database, sign-in first. The
+`crons` in `vercel.json` call `/api/health/keepalive` three times a day to
+prevent this. If it happens anyway, restore the project from the Supabase
+dashboard. The data survives.
+
 **Demo login is password-free.** Anyone who knows an email address can sign in
 as that user. `render.yaml` leaves it on so the deployed demo is usable at all —
 set `ALLOW_DEMO_LOGIN=false` and configure Google OAuth before anyone puts real

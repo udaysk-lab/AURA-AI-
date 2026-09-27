@@ -111,30 +111,42 @@ def apply_additive_migrations() -> None:
     than blowing up with 'no such column'. Deliberately additive only — it never
     drops, renames or retypes anything. Once you have data you care about, use
     Alembic instead and delete this call.
+
+    All the inspection runs over ONE connection. An inspector bound to the
+    engine checks out a fresh connection for every call, and behind the
+    transaction pooler the engine uses NullPool, so each of those was a full
+    TCP + TLS + auth handshake: one per table, 29 in all, on every cold start.
+    From Vercel iad1 to Supabase Tokyo a handshake plus one query measured
+    about 1.3 s, so this check alone could cost half a minute of a cold start.
     """
-    inspector = inspect(engine)
-    present = set(inspector.get_table_names())
+    pending: list[tuple] = []
+    with engine.connect() as conn:
+        inspector = inspect(conn)
+        present = set(inspector.get_table_names())
 
-    for table in Base.metadata.sorted_tables:
-        if table.name not in present:
-            continue  # create_all just made it
-        existing = {c["name"] for c in inspector.get_columns(table.name)}
-        missing = [c for c in table.columns if c.name not in existing]
-        if not missing:
-            continue
+        for table in Base.metadata.sorted_tables:
+            if table.name not in present:
+                continue  # create_all just made it
+            existing = {c["name"] for c in inspector.get_columns(table.name)}
+            pending.extend(
+                (table, column) for column in table.columns if column.name not in existing
+            )
 
-        for column in missing:
-            type_sql = column.type.compile(dialect=engine.dialect)
-            literal = _default_literal(column)
-            clause = f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {type_sql}'
-            if literal is not None:
-                clause += f" DEFAULT {literal}"
-            try:
-                with engine.begin() as conn:
-                    conn.execute(text(clause))
-                log.info("Added column %s.%s", table.name, column.name)
-            except Exception as exc:
-                log.warning("Could not add %s.%s: %s", table.name, column.name, exc)
+    # Rare (only after a model change), so one transaction per column is fine:
+    # on Postgres a failed ALTER aborts its transaction, and one bad column
+    # shouldn't stop the others.
+    for table, column in pending:
+        type_sql = column.type.compile(dialect=engine.dialect)
+        literal = _default_literal(column)
+        clause = f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {type_sql}'
+        if literal is not None:
+            clause += f" DEFAULT {literal}"
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(clause))
+            log.info("Added column %s.%s", table.name, column.name)
+        except Exception as exc:
+            log.warning("Could not add %s.%s: %s", table.name, column.name, exc)
 
 
 def init_db() -> None:

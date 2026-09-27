@@ -1,5 +1,8 @@
 {
     "$schema": "https://openapi.vercel.sh/vercel.json",
+    "regions": [
+        "hnd1"
+    ],
     "services": {
         "frontend": {
             "root": "frontend",
