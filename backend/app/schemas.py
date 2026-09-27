@@ -35,6 +35,8 @@ class TokenOut(BaseModel):
 class DemoLoginIn(BaseModel):
     email: EmailStr = "demo@aura.ai"
     name: str = "Demo User"
+    # The browser's IANA zone, e.g. "Asia/Kolkata". Optional; unknown -> UTC.
+    timezone: str = Field(default="", max_length=64)
 
 
 class RegisterIn(BaseModel):
@@ -43,6 +45,12 @@ class RegisterIn(BaseModel):
     # here too so the error is a 422 about the field rather than a 500.
     password: str = Field(min_length=8, max_length=72)
     name: str = Field(default="", max_length=200)
+    timezone: str = Field(default="", max_length=64)
+
+
+class ProfilePatch(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    timezone: str | None = Field(default=None, max_length=64)
 
 
 class LoginIn(BaseModel):

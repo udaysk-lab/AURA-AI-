@@ -48,6 +48,12 @@ def build_system_prompt(
     now: datetime | None = None,
 ) -> str:
     from app.agent.autonomy import TIER_LABELS
+    from app.timeutil import zone, zone_label
+
+    # The model has to read "tomorrow at 5" on the user's clock, so it needs
+    # their local time. This used to be the server's clock (UTC on Vercel).
+    tz = zone(timezone)
+    current = now.astimezone(tz) if now and now.tzinfo else (now or datetime.now(tz))
 
     integration_note = (
         "Google Workspace is connected — email and calendar actions affect real data."
@@ -60,10 +66,10 @@ def build_system_prompt(
     return SYSTEM.format(
         persona=persona,
         autonomy=TIER_LABELS.get(autonomy, autonomy),
-        now=(now or datetime.now()).strftime("%A %d %B %Y, %H:%M"),
+        now=f"{current.strftime('%A %d %B %Y, %H:%M')} ({zone_label(tz)})",
         user_name=user_name or "Unknown",
         user_email=user_email,
-        timezone=timezone,
+        timezone=zone_label(tz),
         integration_note=integration_note,
         memory_block=("\n" + memory_block) if memory_block else "",
         learned_block=("\n" + learned_block) if learned_block else "",

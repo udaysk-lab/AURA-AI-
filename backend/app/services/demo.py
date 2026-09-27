@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import timeutil
+
 from app.models import (
     AutomationRule,
     CalendarEvent,
@@ -63,9 +65,13 @@ DEMO_LABEL = "demo"
 
 
 def _at(base: datetime, day_offset: int, hour: int, minute: int = 0) -> datetime:
-    return (base + timedelta(days=day_offset)).replace(
-        hour=hour, minute=minute, second=0, microsecond=0
-    )
+    """`hour:minute` on the user's clock, `day_offset` days from `base`, in UTC.
+
+    `base` carries the user's zone, so the sample 09:00 standup is at nine in
+    the morning wherever they are, rather than at 09:00 UTC.
+    """
+    tz = base.tzinfo or timezone.utc
+    return timeutil.at_local(base.date() + timedelta(days=day_offset), hour, minute, tz)
 
 
 EMAILS = [
@@ -261,7 +267,7 @@ def seed_user(db: Session, user: User) -> dict:
         return {"seeded": False, "reason": "user already has data"}
 
     now = datetime.now(timezone.utc)
-    today = now.replace(second=0, microsecond=0)
+    today = now.astimezone(timeutil.user_zone(user))
 
     for i, e in enumerate(EMAILS):
         db.add(
@@ -398,3 +404,4 @@ def seed_user(db: Session, user: User) -> dict:
         "tasks": len(TASKS),
         "skill_runs": len(SKILL_HISTORY),
     }
+

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import or_, select
 
+from app import timeutil
 from app.agent.tools import parse_when
 from app.automation import engine as automation_engine
 from app.deps import CurrentUser, DbSession
@@ -145,10 +146,11 @@ def list_events(
     days: int = Query(14, ge=1, le=120),
     day_offset: int = Query(0, ge=-30, le=120),
 ) -> list[EventOut]:
-    start = (datetime.now(timezone.utc) + timedelta(days=day_offset)).replace(
-        hour=0, minute=0, second=0, microsecond=0
+    # Midnight on the user's clock, not UTC's: otherwise an IST user's "today"
+    # began at 05:30 and their early-morning events fell into yesterday.
+    start, end = timeutil.day_bounds(
+        timeutil.user_zone(user), day_offset=day_offset, days=days
     )
-    end = start + timedelta(days=days)
     rows = db.scalars(
         select(CalendarEvent)
         .where(CalendarEvent.user_id == user.id)
@@ -345,7 +347,7 @@ def quick_add(
     text: str = Query(..., min_length=1, max_length=500),
 ) -> TaskOut:
     """Natural-language quick capture: 'pay invoice tomorrow 5pm urgent'."""
-    due = parse_when(text, default_hour=17)
+    due = parse_when(text, default_hour=17, tz=timeutil.user_zone(user))
     priority = "medium"
     lowered = text.lower()
     if "urgent" in lowered or "asap" in lowered:

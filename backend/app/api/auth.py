@@ -18,6 +18,7 @@ from app.schemas import (
     DemoLoginIn,
     IntegrationStatus,
     LoginIn,
+    ProfilePatch,
     RegisterIn,
     SyncResultOut,
     TokenOut,
@@ -31,6 +32,7 @@ from app.security import (
     verify_password,
 )
 from app import plugins as plugin_registry
+from app import timeutil
 from app.agent import skills as skill_registry
 from app.services import channels as channel_service
 from app.services import demo as demo_service
@@ -44,6 +46,12 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 # and whether they were signing in or connecting. In-process, so it only works
 # with one worker — move to Redis before scaling out.
 _oauth_state: dict[str, dict] = {}
+
+
+def _zone_or_utc(name: str | None) -> str:
+    """Keep the browser's zone if it's a real IANA name, otherwise UTC."""
+    name = (name or "").strip()
+    return name if name and timeutil.is_valid_zone(name) else "UTC"
 
 
 def _issue(db, user: User) -> TokenOut:
@@ -91,7 +99,7 @@ def register(payload: RegisterIn, db: DbSession) -> TokenOut:
     user = User(
         email=email,
         name=payload.name.strip() or email.split("@")[0],
-        timezone="UTC",
+        timezone=_zone_or_utc(payload.timezone),
         password_hash=hash_password(payload.password),
         is_demo=False,
     )
@@ -129,7 +137,10 @@ def demo_login(payload: DemoLoginIn, db: DbSession) -> TokenOut:
     email = payload.email.lower()
     user = db.scalars(select(User).where(User.email == email)).first()
     if not user:
-        user = User(email=email, name=payload.name, timezone="UTC", is_demo=True)
+        user = User(
+            email=email, name=payload.name,
+            timezone=_zone_or_utc(payload.timezone), is_demo=True,
+        )
         db.add(user)
         db.commit()
         db.refresh(user)
@@ -317,6 +328,31 @@ def google_callback(
 
 @router.get("/me", response_model=UserOut)
 def me(user: CurrentUser) -> UserOut:
+    return UserOut.model_validate(user)
+
+
+@router.patch("/me", response_model=UserOut)
+def update_me(payload: ProfilePatch, user: CurrentUser, db: DbSession) -> UserOut:
+    """Update the signed-in user's display name and time zone.
+
+    The web app sends the browser's zone when the account still has the UTC
+    default, so "today", "tomorrow at 5" and working hours mean the user's own.
+    """
+    if payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Name can't be empty.")
+        user.name = name
+    if payload.timezone is not None:
+        tz_name = payload.timezone.strip()
+        if not timeutil.is_valid_zone(tz_name):
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{tz_name}' isn't a time zone I recognise. Use a name like Asia/Kolkata.",
+            )
+        user.timezone = "UTC" if tz_name.upper() == "UTC" else tz_name
+    db.commit()
+    db.refresh(user)
     return UserOut.model_validate(user)
 
 

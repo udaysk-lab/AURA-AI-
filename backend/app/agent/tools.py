@@ -12,12 +12,13 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app import timeutil
 from app.llm import ToolSpec
 from app.models import (
     ActivityLog,
@@ -110,21 +111,30 @@ _RELATIVE = {
 _WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 
-def parse_when(value: Any, default_hour: int = 9) -> datetime | None:
-    """Parse ISO timestamps and common relative phrases into aware UTC datetimes."""
+def parse_when(value: Any, default_hour: int = 9, tz: tzinfo | None = None) -> datetime | None:
+    """Parse ISO timestamps and common relative phrases into aware UTC datetimes.
+
+    `tz` is the user's zone. Relative phrases ("tomorrow 5pm", "friday") and
+    timestamps without an offset are read on the user's clock; the result is
+    always UTC, which is what the database stores. Without `tz` everything is
+    read as UTC, which was the old behaviour for everyone.
+    """
+    tz = tz or timezone.utc
     if value is None or value == "":
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        dt = value if value.tzinfo else value.replace(tzinfo=tz)
+        return dt.astimezone(timezone.utc)
 
     text = str(value).strip()
     try:
         dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        dt = dt if dt.tzinfo else dt.replace(tzinfo=tz)
+        return dt.astimezone(timezone.utc)
     except ValueError:
         pass
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).astimezone(tz)
     lowered = text.lower()
 
     hour, minute = default_hour, 0
@@ -141,7 +151,8 @@ def parse_when(value: Any, default_hour: int = 9) -> datetime | None:
             hour = h
 
     offset: int | None = None
-    for phrase, days in _RELATIVE.items():
+    # Longest phrase first: "day after tomorrow" also contains "tomorrow".
+    for phrase, days in sorted(_RELATIVE.items(), key=lambda kv: -len(kv[0])):
         if days is not None and phrase in lowered:
             offset = days
             break
@@ -159,9 +170,7 @@ def parse_when(value: Any, default_hour: int = 9) -> datetime | None:
         else:
             return None
 
-    return (now + timedelta(days=offset)).replace(
-        hour=hour, minute=minute, second=0, microsecond=0
-    )
+    return timeutil.at_local(now.date() + timedelta(days=offset), hour, minute, tz)
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -406,10 +415,10 @@ def _archive_email(ctx: ToolContext, args: dict) -> dict:
 def _list_events(ctx: ToolContext, args: dict) -> list[dict]:
     days = int(args.get("days") or 7)
     offset = int(args.get("day_offset") or 0)
-    start = (datetime.now(timezone.utc) + timedelta(days=offset)).replace(
-        hour=0, minute=0, second=0, microsecond=0
+    # "Today" is the user's today, not UTC's.
+    start, end = timeutil.day_bounds(
+        timeutil.user_zone(ctx.user), day_offset=offset, days=max(1, days)
     )
-    end = start + timedelta(days=days)
     rows = ctx.db.scalars(
         select(CalendarEvent)
         .where(CalendarEvent.user_id == ctx.user.id, CalendarEvent.status != "cancelled")
@@ -438,14 +447,16 @@ def _list_events(ctx: ToolContext, args: dict) -> list[dict]:
     },
 )
 def _create_event(ctx: ToolContext, args: dict) -> dict:
-    start = parse_when(args.get("start_at"), default_hour=10)
+    tz = timeutil.user_zone(ctx.user)
+    start = parse_when(args.get("start_at"), default_hour=10, tz=tz)
     if not start:
-        start = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
-            hour=10, minute=0, second=0, microsecond=0
-        )
-    end = parse_when(args.get("end_at")) or start + timedelta(
+        tomorrow = timeutil.now_in(tz).date() + timedelta(days=1)
+        start = timeutil.at_local(tomorrow, 10, 0, tz)
+    end = parse_when(args.get("end_at"), tz=tz) or start + timedelta(
         minutes=int(args.get("duration_minutes") or 30)
     )
+    if end <= start:
+        end = start + timedelta(minutes=int(args.get("duration_minutes") or 30))
 
     event = CalendarEvent(
         user_id=ctx.user.id,
@@ -470,7 +481,7 @@ def _create_event(ctx: ToolContext, args: dict) -> dict:
         log.warning("Could not push event to Google: %s", exc)
 
     _log(ctx, "create_event", event.title, {"start_at": start.isoformat()})
-    return {"message": f"Created '{event.title}' at {start.strftime('%a %d %b %H:%M')}",
+    return {"message": f"Created '{event.title}' for {timeutil.fmt_when(start, tz)}",
             **_event_dict(event)}
 
 
@@ -515,8 +526,14 @@ def _find_free_time(ctx: ToolContext, args: dict) -> list[dict]:
     days = int(args.get("days") or 5)
     earliest = int(args.get("earliest_hour") or 9)
     latest = int(args.get("latest_hour") or 18)
+    earliest = max(0, min(23, earliest))
+    latest = max(earliest + 1, min(24, latest))
 
+    # Working hours are the user's working hours. Computing them in UTC offered
+    # someone in India slots from 2:30 PM onwards and none in their morning.
+    tz = timeutil.user_zone(ctx.user)
     now = datetime.now(timezone.utc)
+    today = now.astimezone(tz).date()
     events = sorted(
         [
             e for e in ctx.db.scalars(
@@ -525,27 +542,36 @@ def _find_free_time(ctx: ToolContext, args: dict) -> list[dict]:
                     CalendarEvent.status != "cancelled",
                 )
             ).all()
+            if _aware(e.start_at) and _aware(e.end_at)
         ],
-        key=lambda e: _aware(e.start_at) or now,
+        key=lambda e: _aware(e.start_at),
     )
 
     slots: list[dict] = []
     for day in range(days):
-        date = (now + timedelta(days=day)).date()
+        date = today + timedelta(days=day)
         if date.weekday() >= 5:  # skip weekends
             continue
-        cursor = datetime.combine(date, datetime.min.time(), tzinfo=timezone.utc).replace(
-            hour=earliest
+        cursor = timeutil.at_local(date, earliest, 0, tz)
+        day_end = (
+            timeutil.local_midnight(date + timedelta(days=1), tz).astimezone(timezone.utc)
+            if latest >= 24
+            else timeutil.at_local(date, latest, 0, tz)
         )
-        day_end = cursor.replace(hour=latest - 1, minute=59)
         if cursor < now:
+            # Next whole hour from now, never a slot that has already started.
             cursor = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        if cursor >= day_end:
+            continue
 
-        busy = [
-            (_aware(e.start_at), _aware(e.end_at))
-            for e in events
-            if _aware(e.start_at) and _aware(e.start_at).date() == date
-        ]
+        busy = sorted(
+            (
+                (_aware(e.start_at), _aware(e.end_at))
+                for e in events
+                if _aware(e.start_at) < day_end and _aware(e.end_at) > cursor
+            ),
+            key=lambda pair: pair[0],
+        )
         for b_start, b_end in busy:
             if b_start - cursor >= duration:
                 slots.append({"start_at": cursor.isoformat(),
@@ -708,7 +734,9 @@ def _create_task(ctx: ToolContext, args: dict) -> dict:
         title=args["title"][:500],
         notes=args.get("notes", ""),
         priority=args.get("priority") or "medium",
-        due_at=parse_when(args.get("due_at"), default_hour=17),
+        due_at=parse_when(
+            args.get("due_at"), default_hour=17, tz=timeutil.user_zone(ctx.user)
+        ),
         recurrence=args.get("recurrence") or "",
         tags=args.get("tags") or [],
         source="agent",
@@ -1115,7 +1143,9 @@ def _delegate_task(ctx: ToolContext, args: dict) -> dict:
         assignee_email=contact.email if contact else (assignee if "@" in assignee else ""),
         title=args["title"][:500],
         context=args.get("context", ""),
-        due_at=parse_when(args.get("due_at"), default_hour=17),
+        due_at=parse_when(
+            args.get("due_at"), default_hour=17, tz=timeutil.user_zone(ctx.user)
+        ),
     )
     ctx.db.add(row)
     ctx.db.commit()
@@ -1231,6 +1261,7 @@ def _check_focus_blocks(ctx: ToolContext, args: dict) -> dict:
     days = int(args.get("days") or 7)
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(days=days)
+    tz = timeutil.user_zone(ctx.user)
 
     intrusions = []
     for event in ctx.db.scalars(
@@ -1241,7 +1272,9 @@ def _check_focus_blocks(ctx: ToolContext, args: dict) -> dict:
         start = _aware(event.start_at)
         if not start or not (now <= start <= horizon):
             continue
-        if protected_start <= start.hour < protected_end:
+        # The protected window comes from the user's own words ("mornings
+        # before 10"), so compare against their clock, not UTC.
+        if protected_start <= timeutil.local_hour(start, tz) < protected_end:
             intrusions.append(_event_dict(event))
 
     alternatives = []

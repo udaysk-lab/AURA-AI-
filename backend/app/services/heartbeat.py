@@ -20,6 +20,8 @@ from datetime import datetime, time, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import timeutil
+
 from app.agent import autonomy
 from app.agent import skills as skill_registry
 from app.models import (
@@ -237,7 +239,10 @@ def run_all_due(db: Session) -> list[HeartbeatReport]:
         ).first()
         if not row:
             continue
-        if not due(row, latest(db, user.id)):
+        # Quiet hours are wall-clock hours ("22:00-07:00"), so they are checked
+        # on the user's clock.
+        local_now = datetime.now(timezone.utc).astimezone(timeutil.user_zone(user))
+        if not due(row, latest(db, user.id), local_now):
             continue
         try:
             reports.append(run(db, user, row.autonomy_level))

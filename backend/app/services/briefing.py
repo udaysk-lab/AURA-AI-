@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import timeutil
 from app.llm import get_provider
 from app.models import CalendarEvent, EmailMessage, Task, User
 
 PRIORITY_WEIGHT = {"urgent": 4.0, "high": 3.0, "medium": 2.0, "low": 1.0}
 
 
-def day_bounds(reference: datetime | None = None) -> tuple[datetime, datetime]:
-    now = reference or datetime.now(timezone.utc)
-    start = datetime.combine(now.date(), time.min, tzinfo=timezone.utc)
-    return start, start + timedelta(days=1)
+def day_bounds(
+    reference: datetime | None = None, tz: tzinfo = timezone.utc
+) -> tuple[datetime, datetime]:
+    """The user's local day, as a UTC [start, end)."""
+    return timeutil.day_bounds(tz, reference)
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -26,8 +28,10 @@ def _aware(dt: datetime | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def todays_events(db: Session, user_id: str) -> list[CalendarEvent]:
-    start, end = day_bounds()
+def todays_events(
+    db: Session, user_id: str, tz: tzinfo = timezone.utc
+) -> list[CalendarEvent]:
+    start, end = day_bounds(tz=tz)
     rows = db.scalars(
         select(CalendarEvent)
         .where(CalendarEvent.user_id == user_id, CalendarEvent.status != "cancelled")
@@ -148,8 +152,9 @@ def _greeting(now: datetime) -> str:
 
 
 def build_briefing(db: Session, user: User) -> dict:
+    tz = timeutil.user_zone(user)
     now = datetime.now(timezone.utc)
-    events = todays_events(db, user.id)
+    events = todays_events(db, user.id, tz)
     ranked = rank_tasks(db, user.id, limit=5)
     due = tasks_due(db, user.id)
     urgent = urgent_emails(db, user.id)
@@ -162,7 +167,7 @@ def build_briefing(db: Session, user: User) -> dict:
         first = _aware(events[0].start_at)
         headline_bits.append(
             f"{len(events)} meeting{'s' if len(events) != 1 else ''}, first at "
-            f"{first.strftime('%H:%M') if first else '—'}"
+            f"{timeutil.fmt_clock(first, tz)}"
         )
     else:
         headline_bits.append("no meetings scheduled")
@@ -178,7 +183,7 @@ def build_briefing(db: Session, user: User) -> dict:
 
     return {
         "generated_at": now,
-        "greeting": f"{_greeting(now)}, {first_name}",
+        "greeting": f"{_greeting(now.astimezone(tz))}, {first_name}",
         "headline": "Today: " + ", ".join(headline_bits) + ".",
         "meetings": events,
         "tasks_due": due,
