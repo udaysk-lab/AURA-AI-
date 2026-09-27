@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useToast } from "./Toast";
-import { Spinner, refreshBadges, useShortcutLabel } from "./ui";
+import { Spinner, handOffQuestion, refreshBadges, useShortcutLabel } from "./ui";
 
 interface Command {
   id: string;
@@ -138,7 +138,10 @@ export default function CommandPalette({
   const toggleLabel = useShortcutLabel("K");
 
   const ask = useCallback(() => {
-    router.push(`/chat?q=${encodeURIComponent(query.trim())}`);
+    // Chat picks this up on arrival, or at once if it's already open — the
+    // old ?q= push did nothing at all when you were already on Chat.
+    handOffQuestion(query.trim());
+    router.push("/chat");
     onClose();
   }, [router, query, onClose]);
 

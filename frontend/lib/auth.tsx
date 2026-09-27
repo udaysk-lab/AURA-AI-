@@ -17,6 +17,25 @@ interface AuthState {
   logout: () => void;
 }
 
+const ZONE_SYNC_KEY = "aura_zone_synced";
+
+function zoneSyncedBefore(userId: string): boolean {
+  try {
+    return (localStorage.getItem(ZONE_SYNC_KEY) ?? "").split(",").includes(userId);
+  } catch {
+    return false;
+  }
+}
+
+function markZoneSynced(userId: string) {
+  try {
+    const ids = (localStorage.getItem(ZONE_SYNC_KEY) ?? "").split(",").filter(Boolean);
+    localStorage.setItem(ZONE_SYNC_KEY, [...ids.filter((id) => id !== userId), userId].slice(-20).join(","));
+  } catch {
+    /* then it may run again next visit, which is harmless */
+  }
+}
+
 const AuthContext = createContext<AuthState>({
   user: null,
   loading: true,
@@ -30,7 +49,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const router = useRouter();
-  const zoneSynced = useRef(false);
+  const zoneSynced = useRef<string | null>(null); // who was checked this session
 
   const refresh = useCallback(async () => {
     if (!getToken()) {
@@ -44,14 +63,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setError("");
       // Accounts made before the browser's zone was sent at sign-up are still
       // on the UTC default, which puts their "today" and "5pm" hours off.
-      // Fill it in once, quietly; an explicit choice is never overwritten.
-      const zone = browserTimeZone();
-      if (!zoneSynced.current && me.timezone === "UTC" && zone && zone !== "UTC") {
-        zoneSynced.current = true;
-        try {
-          me = await api.updateMe({ timezone: zone });
-        } catch {
-          /* not worth interrupting anyone over */
+      // Fill it in once per account in this browser, quietly. Remembering that
+      // it was done is what lets someone who later picks UTC on purpose keep it.
+      if (zoneSynced.current !== me.id && !zoneSyncedBefore(me.id)) {
+        zoneSynced.current = me.id;
+        markZoneSynced(me.id);
+        const zone = browserTimeZone();
+        if (me.timezone === "UTC" && zone && zone !== "UTC") {
+          try {
+            me = await api.updateMe({ timezone: zone });
+          } catch {
+            /* not worth interrupting anyone over */
+          }
         }
       }
       setUser(me);

@@ -1,7 +1,7 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { Assistant, api, getToken } from "./api";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { ApiError, Assistant, api, getToken } from "./api";
 import { useAuth } from "./auth";
 
 interface AssistantState {
@@ -20,18 +20,22 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
   const { user, loading: authLoading } = useAuth();
   const [assistant, setAssistant] = useState<Assistant | null>(null);
   const [loading, setLoading] = useState(true);
+  const loadedFor = useRef<string | null>(null);
 
+  // Chat calls this after every reply. It used to flip `loading` on each call
+  // and drop the assistant on any failed request, so one slow or rate-limited
+  // refresh reset the sidebar to "Aura" and the default avatar.
   const refresh = useCallback(async () => {
     if (!getToken()) {
       setAssistant(null);
       setLoading(false);
       return;
     }
-    setLoading(true);
     try {
       setAssistant(await api.assistant());
-    } catch {
-      setAssistant(null);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) setAssistant(null);
+      // Anything else: keep what's on screen and try again next time.
     } finally {
       setLoading(false);
     }
@@ -45,9 +49,16 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (authLoading) return;
     if (!userId) {
+      loadedFor.current = null;
       setAssistant(null);
       setLoading(false);
       return;
+    }
+    if (loadedFor.current !== userId) {
+      // Someone else signed in: never show the previous person's assistant.
+      loadedFor.current = userId;
+      setAssistant(null);
+      setLoading(true);
     }
     void refresh();
   }, [authLoading, userId, refresh]);

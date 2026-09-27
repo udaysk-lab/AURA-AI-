@@ -32,9 +32,11 @@ import {
   Markdown,
   SkillBadge,
   SkillLine,
+  ASK_EVENT,
   Spinner,
   fmtRelative,
   refreshBadges,
+  takeHandedOffQuestion,
 } from "@/components/ui";
 
 const SUGGESTIONS = [
@@ -51,6 +53,12 @@ interface LiveSkill {
   summary: string;
   ok: boolean;
 }
+
+const recallLine = (n: number) => `Recalled ${n} relevant memor${n === 1 ? "y" : "ies"}`;
+
+/** The automatic recall line, unless a memory search already said the same. */
+const showRecall = (n: number, skills: LiveSkill[]) =>
+  n > 0 && !skills.some((s) => s.code === "MM01" && s.summary === recallLine(n));
 
 export default function ChatPage() {
   const { assistant, refresh: refreshAssistant } = useAssistant();
@@ -72,6 +80,10 @@ export default function ChatPage() {
   const [failure, setFailure] = useState<{ message: string; retry: string } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Mirrors `streaming` for code that runs outside a render (event handlers
+  // registered once, a quick double Enter before React re-renders).
+  const streamingRef = useRef(false);
+  const sendRef = useRef<(text?: string) => Promise<void>>(async () => {});
 
   const loadConversations = useCallback(async () => {
     try {
@@ -94,21 +106,31 @@ export default function ChatPage() {
     void loadPending();
   }, [loadConversations, loadPending]);
 
-  // The command palette hands off here with ?q=… ; consume it once and clear
-  // it from the URL so a refresh doesn't re-send the same question.
+  // ?c= opens a conversation (notification links use it). ?q= only fills in
+  // the composer: a question that arrives in a link is never sent until the
+  // person presses Enter, because anyone can write a link. Questions typed
+  // into the command palette arrive through this tab's storage instead.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const handoff = params.get("q");
     const convo = params.get("c");
+    const prefill = params.get("q");
+    if (convo || prefill !== null) window.history.replaceState({}, "", "/chat");
     if (convo) {
-      window.history.replaceState({}, "", "/chat");
       void openConversation(convo);
-      return;
+    } else if (prefill) {
+      setInput(prefill);
+      textareaRef.current?.focus();
     }
-    if (handoff) {
-      window.history.replaceState({}, "", "/chat");
-      void send(handoff);
-    }
+
+    const take = () => {
+      const question = takeHandedOffQuestion();
+      if (!question) return;
+      if (streamingRef.current) setInput(question);
+      else void sendRef.current(question);
+    };
+    if (!convo) take();
+    window.addEventListener(ASK_EVENT, take);
+    return () => window.removeEventListener(ASK_EVENT, take);
     // Intentionally runs once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -125,7 +147,10 @@ export default function ChatPage() {
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, [input]);
 
+  // Switching thread mid-reply would pour the live reply into the other
+  // thread and then overwrite it with this one, so the rail waits.
   const openConversation = async (id: string) => {
+    if (streamingRef.current) return;
     setActiveId(id);
     setFailure(null);
     try {
@@ -141,6 +166,7 @@ export default function ChatPage() {
   };
 
   const newChat = () => {
+    if (streamingRef.current) return;
     setActiveId(null);
     setMessages([]);
     setDraft("");
@@ -163,9 +189,10 @@ export default function ChatPage() {
 
   const send = async (text?: string) => {
     const content = (text ?? input).trim();
-    if (!content || streaming) return;
+    if (!content || streamingRef.current) return;
 
     setInput("");
+    streamingRef.current = true;
     setStreaming(true);
     setDraft("");
     setLiveSkills([]);
@@ -260,9 +287,11 @@ export default function ChatPage() {
     setDraft("");
     setLiveSkills([]);
     setLearned("");
+    streamingRef.current = false;
     setStreaming(false);
     await Promise.all([loadConversations(), loadPending(), refreshAssistant()]);
   };
+  sendRef.current = send;
 
   const decide = async (id: string, decision: Decision) => {
     setDeciding(id);
@@ -270,7 +299,8 @@ export default function ChatPage() {
       await api.decidePending(id, decision);
       await loadPending();
       refreshBadges();
-      if (activeId) await openConversation(activeId);
+      // Mid-reply, the thread reloads itself when the reply lands.
+      if (activeId && !streamingRef.current) await openConversation(activeId);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't record that decision");
     } finally {
@@ -284,7 +314,12 @@ export default function ChatPage() {
     <div className="flex h-full min-h-0">
       {/* Conversation rail */}
       <div className="hidden w-[218px] shrink-0 flex-col border-r border-line bg-panel/30 p-3 backdrop-blur-xl lg:flex">
-        <button onClick={newChat} className="btn-ghost mb-3 w-full justify-start">
+        <button
+          onClick={newChat}
+          disabled={streaming}
+          title={streaming ? "Wait for the reply to finish" : undefined}
+          className="btn-ghost mb-3 w-full justify-start"
+        >
           <Plus size={14} /> New chat
         </button>
         <div className="flex-1 space-y-0.5 overflow-y-auto">
@@ -302,14 +337,16 @@ export default function ChatPage() {
             >
               <button
                 onClick={() => openConversation(c.id)}
-                className="min-w-0 flex-1 truncate text-left"
-                title={c.title}
+                disabled={streaming}
+                className="min-w-0 flex-1 truncate text-left disabled:cursor-not-allowed"
+                title={streaming ? "Wait for the reply to finish" : c.title}
               >
                 {c.pinned && <Pin size={10} className="mr-1 inline text-accent-soft" />}
                 {c.title}
               </button>
               <button
                 onClick={() => removeConversation(c)}
+                disabled={streaming}
                 aria-label={`Delete conversation ${c.title}`}
                 title="Delete conversation"
                 className="rounded p-0.5 opacity-0 transition focus-visible:opacity-100 group-hover:opacity-100"
@@ -332,6 +369,7 @@ export default function ChatPage() {
             className="min-w-0 flex-1 truncate bg-transparent py-1 text-[13px] text-muted outline-none"
             value={activeId ?? ""}
             onChange={(e) => (e.target.value ? void openConversation(e.target.value) : newChat())}
+            disabled={streaming}
             aria-label="Conversation"
           >
             <option value="" className="bg-panel">
@@ -343,7 +381,11 @@ export default function ChatPage() {
               </option>
             ))}
           </select>
-          <button onClick={newChat} className="btn-ghost shrink-0 px-3 py-1.5 text-[12.5px]">
+          <button
+            onClick={newChat}
+            disabled={streaming}
+            className="btn-ghost shrink-0 px-3 py-1.5 text-[12.5px]"
+          >
             <Plus size={13} /> New
           </button>
         </div>
@@ -399,11 +441,8 @@ export default function ChatPage() {
                 )}
                 {(liveSkills.length > 0 || memoryHits > 0) && (
                   <div className="rounded-xl border border-line bg-raised/50 px-3 py-2">
-                    {memoryHits > 0 && (
-                      <SkillLine
-                        code="MM01"
-                        summary={`Recalled ${memoryHits} relevant memor${memoryHits === 1 ? "y" : "ies"}`}
-                      />
+                    {showRecall(memoryHits, liveSkills) && (
+                      <SkillLine code="MM01" summary={recallLine(memoryHits)} />
                     )}
                     {liveSkills.map((s, i) => (
                       <SkillLine key={i} code={s.code} summary={s.summary} ok={s.ok} />
@@ -563,11 +602,8 @@ function MessageBubble({ message }: { message: Message }) {
       )}
       {(skillRuns.length > 0 || memoriesUsed.length > 0) && (
         <div className="rounded-xl border border-line bg-raised/50 px-3 py-2">
-          {memoriesUsed.length > 0 && (
-            <SkillLine
-              code="MM01"
-              summary={`Recalled ${memoriesUsed.length} relevant memor${memoriesUsed.length === 1 ? "y" : "ies"}`}
-            />
+          {showRecall(memoriesUsed.length, skillRuns) && (
+            <SkillLine code="MM01" summary={recallLine(memoriesUsed.length)} />
           )}
           {skillRuns.map((s, i) => (
             <SkillLine key={i} code={s.code} summary={s.summary} ok={s.ok} />

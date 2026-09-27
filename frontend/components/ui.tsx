@@ -86,6 +86,38 @@ export function refreshBadges() {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(BADGES_EVENT));
 }
 
+/**
+ * How the command palette hands a question to Chat: through this tab's
+ * sessionStorage, never the URL. Chat used to send whatever arrived in
+ * /chat?q=…, so anyone could send a link that made AURA act on a message the
+ * person never typed. Chat now only pre-fills ?q= and waits for Enter.
+ */
+export const ASK_EVENT = "aura:ask";
+const ASK_KEY = "aura:ask";
+
+export function handOffQuestion(text: string) {
+  try {
+    sessionStorage.setItem(ASK_KEY, JSON.stringify({ text, at: Date.now() }));
+  } catch {
+    return; // no storage: Chat just opens empty
+  }
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(ASK_EVENT));
+}
+
+export function takeHandedOffQuestion(): string {
+  try {
+    const raw = sessionStorage.getItem(ASK_KEY);
+    sessionStorage.removeItem(ASK_KEY);
+    if (!raw) return "";
+    const { text, at } = JSON.parse(raw) as { text?: string; at?: number };
+    // Only a question asked moments ago. One stranded by a detour through
+    // the sign-in page must not be sent the next time Chat opens.
+    return typeof text === "string" && Date.now() - (at ?? 0) < 60_000 ? text : "";
+  } catch {
+    return "";
+  }
+}
+
 /** "⌘K" on a Mac, "Ctrl K" everywhere else. */
 export function useShortcutLabel(key: string) {
   const [mac, setMac] = useState(true);
@@ -429,11 +461,15 @@ export function SkillBadge({ code, name }: { code: string; name?: string }) {
  *
  * The output goes through dangerouslySetInnerHTML, and the text can carry
  * words from an email someone else wrote, so it is escaped completely —
- * quotes included — and links keep only http(s) and mailto targets. Before,
+ * quotes included — and links keep only http(s), mailto and bare app-screen
+ * targets. Before,
  * `[x](javascript:…)` became a live script link and a quote in a URL could
  * break out of the href into an event handler: from there, the session token
  * in localStorage was one click away.
  */
+const APP_SCREEN =
+  /^\/(dashboard|chat|skills|hub|channels|documents|schedules|emails|calendar|tasks|memory|automations|notifications|settings)\/?$/;
+
 export function Markdown({ text }: { text: string }) {
   const escape = (s: string) =>
     s
@@ -449,8 +485,11 @@ export function Markdown({ text }: { text: string }) {
     if (/^(https?:\/\/|mailto:)/i.test(url)) {
       return `<a href="${escape(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
     }
-    // A path inside the app ("/tasks") is safe and opens in place.
-    if (/^\/(?!\/)[\w\-./?=&#%]*$/.test(url)) return `<a href="${escape(url)}">${label}</a>`;
+    // A screen of the app ("/tasks") opens in place. Only the screens
+    // themselves: no query or fragment, because the text can come from an
+    // email, and /auth/callback#token=… or /chat?q=… would let its sender
+    // sign the reader into another account or speak for them.
+    if (APP_SCREEN.test(url)) return `<a href="${escape(url)}">${label}</a>`;
     return null;
   };
 

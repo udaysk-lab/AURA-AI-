@@ -45,6 +45,33 @@ export function clearToken() {
   window.localStorage.removeItem(TOKEN_KEY);
 }
 
+/**
+ * Proof that a Google sign-in began in this tab. /auth/callback stores
+ * whatever token its URL carries, so without this a link to
+ * /auth/callback#token=<someone else's> silently signed the visitor into that
+ * other account — and whatever they connected next went to its owner.
+ */
+const OAUTH_KEY = "aura_oauth_started";
+const OAUTH_MAX_AGE_MS = 15 * 60 * 1000;
+
+export function markGoogleSignInStarted() {
+  try {
+    sessionStorage.setItem(OAUTH_KEY, String(Date.now()));
+  } catch {
+    /* the callback will refuse, and say so */
+  }
+}
+
+export function takeGoogleSignInStarted(): boolean {
+  try {
+    const started = Number(sessionStorage.getItem(OAUTH_KEY) || 0);
+    sessionStorage.removeItem(OAUTH_KEY);
+    return started > 0 && Date.now() - started < OAUTH_MAX_AGE_MS;
+  } catch {
+    return false;
+  }
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {

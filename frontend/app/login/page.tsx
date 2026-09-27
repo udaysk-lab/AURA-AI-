@@ -4,7 +4,13 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import { API_BASE, API_BASE_IS_FALLBACK, api, setToken } from "@/lib/api";
+import {
+  API_BASE,
+  API_BASE_IS_FALLBACK,
+  api,
+  markGoogleSignInStarted,
+  setToken,
+} from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import Mascot from "@/components/Mascot";
 import { Spinner } from "@/components/ui";
@@ -40,8 +46,13 @@ export default function LoginPage() {
           "Google accepted the sign-in but the token exchange failed. Check GOOGLE_CLIENT_SECRET and that the redirect URI matches exactly.",
         no_email: "Google didn't return an email address. Check the requested scopes.",
         no_code: "Google didn't send an authorisation code. Try again.",
+        missing_token: "Google sign-in didn't finish. Try again.",
+        not_started:
+          "That sign-in link didn't start in this browser tab, so it was ignored. Sign in below.",
       };
-      setError(messages[reason] ?? `Sign-in failed: ${reason}`);
+      // Unknown reasons get a fixed sentence: the URL is anyone's to write,
+      // and echoing it let a link put its own words on the sign-in page.
+      setError(messages[reason] ?? "Google sign-in didn't finish. Try again.");
       window.history.replaceState({}, "", "/login");
     }
     api
@@ -152,6 +163,7 @@ export default function LoginPage() {
     setBusy(true);
     try {
       const { authorization_url } = await api.googleStart();
+      markGoogleSignInStarted();
       window.location.href = authorization_url;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Google sign-in unavailable");

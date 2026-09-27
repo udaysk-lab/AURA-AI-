@@ -193,6 +193,9 @@ export default function EmailsPage() {
               <button
                 key={f.key}
                 onClick={() => {
+                  // Re-clicking the open folder changes nothing, so no reload
+                  // follows — setting loading here left a skeleton for good.
+                  if (f.key === folder) return;
                   setFolder(f.key);
                   setLoading(true);
                 }}
