@@ -6,8 +6,10 @@ Each test pins a bug that was visible in the product:
 * a streamed chat never got a title ("New conversation" forever);
 * demo-mode replies were raw JSON, and one of the chat's own suggestion chips
   listed calendar events instead of saving the preference it asked to save;
-* the growth bar sat at 0% for as long as any one signal was zero;
-* "today", "tomorrow 5pm", greetings and free slots were all computed in UTC.
+* "today", "tomorrow 5pm", greetings and free slots were all computed in UTC;
+* password sign-ups landed in an empty app although the landing page promises
+  sample data — and the sample data, once there, couldn't be removed;
+* the growth bar sat at 0% for as long as any one signal was zero.
 
 Run from backend/:  pytest -q tests/test_site_fixes.py
 """
@@ -265,6 +267,46 @@ def test_the_prompt_tells_the_model_the_users_local_time():
     prompt = build_system_prompt("Uday", "u@example.com", "Asia/Kolkata", now=ref)
     assert "22:30 (Asia/Kolkata)" in prompt
     assert "(timezone: Asia/Kolkata)" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Sample data
+# ---------------------------------------------------------------------------
+
+
+def test_password_sign_up_gets_sample_data_and_can_remove_it(client):
+    resp = client.post(
+        "/api/auth/register",
+        json={
+            "email": "fixes-signup@example.com",
+            "password": "long-enough-password",
+            "name": "New Person",
+            "timezone": "Asia/Kolkata",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["user"]["timezone"] == "Asia/Kolkata"
+    auth = {"Authorization": f"Bearer {resp.json()['access_token']}"}
+
+    assert len(client.get("/api/emails", headers=auth).json()) > 0
+    status = client.get("/api/settings/demo-data", headers=auth).json()
+    assert status["present"] is True
+
+    mine = client.post(
+        "/api/tasks", headers=auth, json={"title": "My own real task", "priority": "high"}
+    ).json()
+
+    cleared = client.delete("/api/settings/demo-data", headers=auth)
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["total"] > 0
+
+    assert client.get("/api/emails", headers=auth).json() == []
+    assert client.get("/api/settings/demo-data", headers=auth).json()["present"] is False
+    titles = [t["title"] for t in client.get("/api/tasks", headers=auth).json()]
+    assert titles == [mine["title"]]  # the user's own task survives
+    assert client.get("/api/documents", headers=auth).json() == []
+    # Idempotent.
+    assert client.delete("/api/settings/demo-data", headers=auth).json()["total"] == 0
 
 
 # ---------------------------------------------------------------------------

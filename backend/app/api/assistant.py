@@ -269,3 +269,19 @@ def update_settings(payload: SettingsIn, user: CurrentUser, db: DbSession) -> Se
 @router.post("/settings/seed-demo")
 def seed_demo(user: CurrentUser, db: DbSession) -> dict:
     return demo_service.seed_user(db, user)
+
+
+@router.get("/settings/demo-data")
+def demo_data_status(user: CurrentUser, db: DbSession) -> dict:
+    """Whether the sample workspace is still there, and how much of it."""
+    return demo_service.sample_data_status(db, user)
+
+
+@router.delete("/settings/demo-data")
+def clear_demo_data(user: CurrentUser, db: DbSession) -> dict:
+    """Remove the sample emails, events, tasks and the rest — nothing else.
+
+    demo.py has always promised this endpoint; it didn't exist, so sample data,
+    once seeded, could only be removed by deleting the whole account.
+    """
+    return demo_service.clear_user(db, user)

@@ -109,7 +109,18 @@ def register(payload: RegisterIn, db: DbSession) -> TokenOut:
     db.add(UserSettings(user_id=user.id))
     db.commit()
     log.info("registered user %s", user.id)
-    return _issue(db, user)
+    token = _issue(db, user)
+    # The landing page promises that a new account "runs on realistic sample
+    # data out of the box", and the Google sign-up path already seeds it. This
+    # path didn't, so a password sign-up — the only kind the live site offers —
+    # landed in an empty app ("0 unread of 0"). It can be removed from
+    # Settings, or replaced by connecting Google.
+    try:
+        demo_service.seed_user(db, user)
+    except Exception:  # sample data is a nicety; never fail a sign-up over it
+        log.exception("Seeding sample data failed for %s", user.id)
+        db.rollback()
+    return token
 
 
 @router.post("/login", response_model=TokenOut)

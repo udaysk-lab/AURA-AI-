@@ -13,7 +13,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import timeutil
-
 from app.models import (
     AutomationRule,
     CalendarEvent,
@@ -405,3 +404,75 @@ def seed_user(db: Session, user: User) -> dict:
         "skill_runs": len(SKILL_HISTORY),
     }
 
+
+# ---------------------------------------------------------------------------
+# Removing it again
+# ---------------------------------------------------------------------------
+
+SEED_HEADLINE = "Handled 4 things while you were away · 3 need your attention"
+SEED_NOTIFICATION = "Your workspace is ready"
+SEED_SCHEDULE_CRON = "30 7 * * 1-5"
+
+
+def _seeded_rows(db: Session, user: User) -> dict[str, list]:
+    """Every row seed_user() created for this user and that still looks untouched.
+
+    Matching is by the signatures seed_user() writes: the demo- external ids
+    and label on emails, source="seed" on memories and documents, the seeded
+    flag on skill runs, and the exact titles and names of the sample events,
+    tasks, contacts, automations, schedule, heartbeat and notification. Rows
+    the user created themselves never carry those signatures, so they stay.
+    """
+    from app.models import Document
+
+    uid = user.id
+    event_titles = {e["title"] for e in EVENTS}
+    task_titles = {t["title"] for t in TASKS}
+    contact_emails = {c["email"] for c in CONTACTS}
+    automation_names = {a["name"] for a in AUTOMATIONS}
+    history = {(code, summary) for code, _, summary, _ in SKILL_HISTORY}
+
+    def rows(model, *where):
+        return list(db.scalars(select(model).where(model.user_id == uid, *where)).all())
+
+    return {
+        "emails": [
+            e for e in rows(EmailMessage)
+            if (e.external_id or "").startswith("demo-") and DEMO_LABEL in (e.labels or [])
+        ],
+        "events": [
+            e for e in rows(CalendarEvent, CalendarEvent.source == "local")
+            if e.title in event_titles
+        ],
+        "tasks": [t for t in rows(Task, Task.source == "manual") if t.title in task_titles],
+        "memories": rows(Memory, Memory.source == "seed"),
+        "contacts": [c for c in rows(Contact) if c.email in contact_emails],
+        "automations": [a for a in rows(AutomationRule) if a.name in automation_names],
+        "skill_runs": [
+            r for r in rows(SkillRun)
+            if (r.detail or {}).get("seeded") and (r.code, r.summary) in history
+        ],
+        "heartbeats": rows(HeartbeatReport, HeartbeatReport.headline == SEED_HEADLINE),
+        "schedules": [
+            s for s in rows(Schedule, Schedule.name == "Morning briefing")
+            if s.cron == SEED_SCHEDULE_CRON
+        ],
+        "documents": rows(Document, Document.source == "seed"),
+        "notifications": rows(Notification, Notification.title == SEED_NOTIFICATION),
+    }
+
+
+def sample_data_status(db: Session, user: User) -> dict:
+    counts = {kind: len(items) for kind, items in _seeded_rows(db, user).items()}
+    return {"present": any(counts.values()), "counts": counts}
+
+
+def clear_user(db: Session, user: User) -> dict:
+    """Delete the sample data, and nothing else. Safe to call repeatedly."""
+    removed: dict[str, int] = {}
+    for kind, items in _seeded_rows(db, user).items():
+        for row in items:
+            db.delete(row)  # document chunks cascade with the document
+        removed[kind] = len(items)
+    db.commit()
+    return {"removed": removed, "total": sum(removed.values())}
