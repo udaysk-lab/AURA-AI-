@@ -38,6 +38,19 @@ router = APIRouter(prefix="/api", tags=["intelligence"])
 def list_skills(
     user: CurrentUser, db: DbSession, category: str = Query("")
 ) -> list[SkillOut]:
+    return _skill_views(db, user, category=category)
+
+
+def _skill_views(db, user, category: str = "") -> list[SkillOut]:
+    """The skills this user can see, as the API returns them.
+
+    Kept separate from the route on purpose. The PATCH and teach endpoints used
+    to call `list_skills(user, db)` directly, which left `category` at its
+    default — a FastAPI `Query("")` object, not the string "". That object is
+    truthy and never equals a category name, so every skill was filtered out,
+    `next()` found nothing, and the StopIteration surfaced as a 500 ("coroutine
+    raised StopIteration") after the change had already been committed.
+    """
     rows = {r.code: r for r in skill_registry.ensure_user_skills(db, user.id)}
     unlocked = skill_registry.unlocked_codes(db, user.id)
     out: list[SkillOut] = []
@@ -65,6 +78,24 @@ def list_skills(
             )
         )
     return sorted(out, key=lambda s: (s.category, s.code))
+
+
+def _require_visible(db, user, code: str) -> None:
+    if code not in skill_registry.CATALOG:
+        raise HTTPException(status_code=404, detail="Unknown skill")
+    if code not in skill_registry.unlocked_codes(db, user.id):
+        raise HTTPException(
+            status_code=404,
+            detail="That skill belongs to a plugin that isn't installed.",
+        )
+
+
+def _skill_view(db, user, code: str) -> SkillOut:
+    for skill in _skill_views(db, user):
+        if skill.code == code:
+            return skill
+    _require_visible(db, user, code)
+    raise HTTPException(status_code=404, detail="Unknown skill")
 
 
 @router.get("/skills/categories", response_model=list[str])
@@ -100,8 +131,7 @@ def update_skill(
     code: str, payload: SkillPatch, user: CurrentUser, db: DbSession
 ) -> SkillOut:
     code = code.upper()
-    if code not in skill_registry.CATALOG:
-        raise HTTPException(status_code=404, detail="Unknown skill")
+    _require_visible(db, user, code)
     row = skill_registry.get_user_skill(db, user.id, code)
     if not row:
         skill_registry.ensure_user_skills(db, user.id)
@@ -109,7 +139,7 @@ def update_skill(
     if row and payload.enabled is not None:
         row.enabled = payload.enabled
         db.commit()
-    return next(s for s in list_skills(user, db) if s.code == code)
+    return _skill_view(db, user, code)
 
 
 @router.post("/skills/{code}/teach", response_model=SkillOut)
@@ -118,11 +148,10 @@ def teach_skill(
 ) -> SkillOut:
     """Tell a skill how you want it done. Replayed into the prompt from now on."""
     code = code.upper()
-    if code not in skill_registry.CATALOG:
-        raise HTTPException(status_code=404, detail="Unknown skill")
+    _require_visible(db, user, code)
     skill_registry.teach(db, user.id, code, payload.note.strip())
     identity_service.record_correction(db, user)
-    return next(s for s in list_skills(user, db) if s.code == code)
+    return _skill_view(db, user, code)
 
 
 @router.delete("/skills/{code}/notes")

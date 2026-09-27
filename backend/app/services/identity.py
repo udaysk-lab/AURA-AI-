@@ -115,7 +115,14 @@ def compute_stage(sig: dict) -> Stage:
 
 
 def progress_to_next(sig: dict, current: Stage) -> dict | None:
-    """How far along to the next stage, as the weakest of the three signals."""
+    """How far along to the next stage.
+
+    The stage itself still needs all three thresholds. The percentage is the
+    average of the three, each capped at 100%. It used to be the weakest one
+    alone, so an assistant with 3 of 5 conversations and 7 of 2 actions done
+    showed "0% to Acquaintance" for as long as it had no memories — a bar that
+    never moved no matter how much you used it. `needs` says what's missing.
+    """
     idx = STAGES.index(current)
     if idx >= len(STAGES) - 1:
         return None
@@ -127,10 +134,12 @@ def progress_to_next(sig: dict, current: Stage) -> dict | None:
         ("actions", nxt.actions),
     ):
         ratios.append(min(1.0, sig[key] / target) if target else 1.0)
+    # Never show 100% for a stage that hasn't been reached yet.
+    percent = min(99, round(sum(ratios) / len(ratios) * 100))
     return {
         "next": nxt.key,
         "next_label": nxt.label,
-        "percent": round(min(ratios) * 100),
+        "percent": percent,
         "needs": {
             "interactions": max(0, nxt.interactions - sig["interactions"]),
             "memories": max(0, nxt.memories - sig["memories"]),

@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterator
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from app.agent.coordinator import persist_exchange, run_agent, stream_agent
+from app.config import settings
+from app.db import SessionLocal
 from app.deps import CurrentUser, DbSession, get_user_settings
-from app.models import Conversation, Message
+from app.models import Conversation, Message, User
 from app.schemas import (
     ChatIn,
     ChatOut,
@@ -22,6 +26,21 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+log = logging.getLogger("aura.chat")
+
+
+def _stream_error(exc: Exception) -> str:
+    """What the chat shows when a turn fails part-way through a stream.
+
+    The raw exception text is for the logs; outside debug mode it can carry SQL,
+    file paths or provider responses, which is the same reason the global
+    handler answers "Internal error".
+    """
+    if isinstance(exc, OperationalError):
+        return "I couldn't reach the database just now, so that didn't finish. Please try again in a minute."
+    if settings.debug:
+        return str(exc)
+    return "Something went wrong on my side while answering. Please try again."
 
 
 def _get_or_create(db, user, conversation_id: str | None) -> Conversation:
@@ -119,14 +138,32 @@ def chat(payload: ChatIn, user: CurrentUser, db: DbSession) -> ChatOut:
 def chat_stream(payload: ChatIn, user: CurrentUser, db: DbSession) -> StreamingResponse:
     convo = _get_or_create(db, user, payload.conversation_id)
     tier = get_user_settings(db, user).autonomy_level
+    user_id, convo_id = user.id, convo.id
+    bind = db.get_bind()  # same engine as the request, test overrides included
 
     def event_source() -> Iterator[str]:
-        yield f"data: {json.dumps({'type': 'start', 'conversation_id': convo.id})}\n\n"
+        yield f"data: {json.dumps({'type': 'start', 'conversation_id': convo_id})}\n\n"
+        # The generator runs after the route has returned, and by then FastAPI
+        # has already closed the request's session. Working through that closed
+        # session left `convo` and `user` detached: tools and messages still
+        # committed, but changes to the conversation itself were never flushed,
+        # so every streamed chat stayed titled "New conversation" and its
+        # updated_at never moved. The stream gets a session of its own.
+        stream_db = SessionLocal(bind=bind)
         try:
-            for event in stream_agent(db, user, convo, payload.message, autonomy_level=tier):
+            stream_user = stream_db.get(User, user_id)
+            stream_convo = stream_db.get(Conversation, convo_id)
+            for event in stream_agent(
+                stream_db, stream_user, stream_convo, payload.message,
+                autonomy_level=tier,
+            ):
                 yield f"data: {json.dumps(event, default=str)}\n\n"
         except Exception as exc:  # never leave the client hanging
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+            log.exception("Chat stream failed for conversation %s", convo_id)
+            stream_db.rollback()
+            yield f"data: {json.dumps({'type': 'error', 'message': _stream_error(exc)})}\n\n"
+        finally:
+            stream_db.close()
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
