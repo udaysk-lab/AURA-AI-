@@ -655,3 +655,36 @@ def test_an_empty_parent_id_means_no_parent(client):
     resp = client.post("/api/tasks", headers=auth, json={"title": "Loose", "parent_id": ""})
     assert resp.status_code == 200, resp.text
     assert resp.json()["parent_id"] is None
+
+
+def test_google_state_survives_a_different_instance_and_is_single_use(client, monkeypatch):
+    """On Vercel the callback rarely lands on the instance that started the
+    flow, so state kept in a dict there came back as bad_state."""
+    from app.api import auth as auth_api
+    from app.config import settings
+    from app.services import google as google_service
+
+    monkeypatch.setattr(settings, "google_client_id", "test-client")
+    monkeypatch.setattr(settings, "google_client_secret", "test-secret")
+    monkeypatch.setattr(
+        google_service, "exchange_code", lambda code: (_ for _ in ()).throw(RuntimeError("offline"))
+    )
+
+    started = client.get("/api/auth/google/start", params={"tz": "Asia/Kolkata"}).json()
+    state = started["state"]
+    auth_api._used_states.clear()  # nothing shared between instances but the secret
+
+    def reason(s: str) -> str:
+        resp = client.get(
+            "/api/auth/google/callback", params={"code": "x", "state": s}, follow_redirects=False
+        )
+        return resp.headers["location"].split("reason=")[-1]
+
+    assert reason(state) == "exchange_failed"  # accepted: it got as far as Google
+    assert reason(state) == "bad_state"  # but only once
+
+    fresh = client.get("/api/auth/google/start", params={"tz": "Asia/Kolkata"}).json()["state"]
+    assert auth_api._read_state(fresh)["tz"] == "Asia/Kolkata"
+    assert reason(fresh[:-3] + ("aaa" if not fresh.endswith("aaa") else "bbb")) == "bad_state"
+    session = _demo(client, "fixes-demo@example.com")["Authorization"][7:]
+    assert reason(session) == "bad_state"  # a session token is not a state

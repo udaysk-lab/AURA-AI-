@@ -738,7 +738,7 @@ def test_start_binds_the_signed_in_user(client, auth, monkeypatch):
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == "test@aura.ai").one()
-        entry = auth_api._oauth_state[body["state"]]
+        entry = auth_api._read_state(body["state"])
         assert entry["user_id"] == user.id
         assert entry["mode"] == "connect"
     finally:
@@ -754,7 +754,7 @@ def test_start_without_a_session_is_signin_mode(client, monkeypatch):
 
     from app.api import auth as auth_api
 
-    assert auth_api._oauth_state[body["state"]]["user_id"] is None
+    assert auth_api._read_state(body["state"])["user_id"] is None
 
 
 def test_callback_rejects_unknown_state(client):

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Header, HTTPException, Query
+from jose import JWTError, jwt
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select, update
 
@@ -42,10 +43,56 @@ from app.services import identity as identity_service
 log = logging.getLogger("aura.auth")
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-# Short-lived CSRF state for the OAuth round trip, holding which user started it
-# and whether they were signing in or connecting. In-process, so it only works
-# with one worker — move to Redis before scaling out.
-_oauth_state: dict[str, dict] = {}
+# CSRF state for the OAuth round trip: who started it, whether they were signing
+# in or connecting, and their zone. It used to live in a dict in this process,
+# which only works with one worker. On Vercel the callback usually lands on a
+# different instance from the one that started the flow, so Google sign-in
+# failed with bad_state more often than not. It is now a short-lived token
+# signed with SECRET_KEY, which any instance can check.
+_STATE_TYPE = "google_oauth_state"
+_STATE_TTL = timedelta(minutes=10)
+# Best effort against a state being replayed on the same instance. Google's
+# code is single-use anyway; this just refuses the second attempt early.
+_used_states: dict[str, float] = {}
+
+
+def _issue_state(user_id: str | None, mode: str, tz: str) -> str:
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {
+            "typ": _STATE_TYPE,
+            "uid": user_id,
+            "mode": mode,
+            "tz": tz,
+            "nonce": secrets.token_urlsafe(12),
+            "iat": int(now.timestamp()),
+            "exp": int((now + _STATE_TTL).timestamp()),
+        },
+        settings.secret_key,
+        algorithm=settings.jwt_algorithm,
+    )
+
+
+def _read_state(state: str) -> dict | None:
+    """The flow a state belongs to, or None if it's forged, expired or reused.
+
+    No "sub" claim, so a state can never pass for a session token, and a
+    session token has no "typ", so it can never pass for a state.
+    """
+    try:
+        claims = jwt.decode(state, settings.secret_key, algorithms=[settings.jwt_algorithm])
+    except JWTError:
+        return None
+    if claims.get("typ") != _STATE_TYPE or claims.get("mode") not in ("signin", "connect"):
+        return None
+    now = datetime.now(timezone.utc).timestamp()
+    for nonce in [n for n, exp in _used_states.items() if exp < now]:
+        _used_states.pop(nonce, None)
+    nonce = str(claims.get("nonce") or "")
+    if not nonce or nonce in _used_states:
+        return None
+    _used_states[nonce] = float(claims.get("exp") or now)
+    return {"user_id": claims.get("uid"), "mode": claims["mode"], "tz": claims.get("tz") or ""}
 
 
 def _zone_or_utc(name: str | None) -> str:
@@ -161,12 +208,6 @@ def demo_login(payload: DemoLoginIn, db: DbSession) -> TokenOut:
     return _issue(db, user)
 
 
-def _prune_states() -> None:
-    cutoff = datetime.now(timezone.utc).timestamp() - 600
-    for key in [k for k, v in _oauth_state.items() if v.get("ts", 0) < cutoff]:
-        _oauth_state.pop(key, None)
-
-
 def _fail(mode: str, reason: str) -> RedirectResponse:
     """Send the user back where they came from, with something actionable."""
     target = "/settings" if mode == "connect" else "/login"
@@ -209,15 +250,8 @@ def google_start(
             user_id = payload["sub"]
 
     mode = "connect" if user_id else "signin"
-    state = secrets.token_urlsafe(24)
-    _oauth_state[state] = {
-        "ts": datetime.now(timezone.utc).timestamp(),
-        "user_id": user_id,
-        "mode": mode,
-        # The browser's zone, for an account this sign-in creates.
-        "tz": tz if isinstance(tz, str) else "",
-    }
-    _prune_states()
+    # The browser's zone rides along, for an account this sign-in creates.
+    state = _issue_state(user_id, mode, tz if isinstance(tz, str) else "")
 
     return {
         "authorization_url": google_service.authorization_url(state),
@@ -233,7 +267,7 @@ def google_callback(
     state: str = Query(default=""),
     error: str = Query(default=""),
 ) -> RedirectResponse:
-    entry = _oauth_state.pop(state, None) if state else None
+    entry = _read_state(state) if state else None
     mode = (entry or {}).get("mode", "signin")
 
     if error:
