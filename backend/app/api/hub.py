@@ -59,8 +59,10 @@ def _plugin_out(plugin, installed: set[str]) -> PluginOut:
             if c in skill_registry.CATALOG
         ],
         core=plugin.core,
-        available=plugin.available,
-        unavailable_reason=plugin.unavailable_reason,
+        # Device control's availability depends on how this instance was
+        # started, so ask the registry rather than reading the static flag.
+        available=plugin_registry.availability(plugin)[0],
+        unavailable_reason=plugin_registry.availability(plugin)[1],
         accent=plugin.accent,
         installed=plugin.id in installed,
     )

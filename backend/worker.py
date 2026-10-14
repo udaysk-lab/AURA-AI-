@@ -88,9 +88,8 @@ def run_once() -> None:
     log.info("Worker: done")
 
 
-def main() -> None:
-    init_db()
-    log.info("Worker started — schedules + heartbeat every %ss, compaction daily", TICK_SECONDS)
+def _loop(should_stop=None) -> None:
+    """The timer. `should_stop` lets an embedded run exit cleanly on shutdown."""
     last_compaction = datetime.now(timezone.utc) - COMPACTION_INTERVAL
 
     while True:
@@ -99,7 +98,54 @@ def main() -> None:
         tick(compact=due_for_compaction)
         if due_for_compaction:
             last_compaction = now
-        time.sleep(TICK_SECONDS)
+
+        # Sleep in short slices so a stop request is honoured promptly rather
+        # than after a full tick — otherwise Ctrl+C on a local install hangs
+        # for up to a minute waiting for this thread.
+        if should_stop is None:
+            time.sleep(TICK_SECONDS)
+            continue
+        for _ in range(TICK_SECONDS):
+            if should_stop():
+                log.info("Worker loop stopping")
+                return
+            time.sleep(1)
+
+
+def start_embedded():
+    """Run the worker on a daemon thread inside the API process.
+
+    This is what makes a local install a single launch: the same loops the
+    standalone worker runs, in-process, so heartbeat, schedules, automations
+    and compaction happen without a second terminal. Returns a callable that
+    asks the thread to stop; the app's lifespan calls it on shutdown.
+
+    A real server should keep running worker.py (or a platform cron) on its
+    own, so that web traffic and background work scale separately.
+    """
+    import threading
+
+    stopping = threading.Event()
+    thread = threading.Thread(
+        target=_loop,
+        args=(stopping.is_set,),
+        name="aura-worker",
+        daemon=True,
+    )
+    thread.start()
+    log.info("Worker running in-process — ticking every %ss", TICK_SECONDS)
+
+    def stop() -> None:
+        stopping.set()
+        thread.join(timeout=5)
+
+    return stop
+
+
+def main() -> None:
+    init_db()
+    log.info("Worker started — schedules + heartbeat every %ss, compaction daily", TICK_SECONDS)
+    _loop()
 
 
 if __name__ == "__main__":

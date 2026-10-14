@@ -1,0 +1,33 @@
+# Optional extras for local device control.
+#
+#   pip install -r requirements-device.txt
+#
+# None of these are required. AURA runs commands, reads and writes files,
+# launches apps and fetches URLs with the standard library alone — these only
+# add the parts that need a platform library, and each one degrades to a clear
+# "not available here" message when it's missing rather than failing mid-task.
+#
+# Install them on the machine AURA is meant to operate. Do NOT add them to
+# requirements.txt: a headless server has no display, pyautogui's import pulls
+# in X11/Quartz bindings, and a deployment shouldn't carry packages whose only
+# purpose is driving a desktop it doesn't have.
+
+# CPU, memory, disk and battery stats; the process list; stopping a process.
+# Without it: system_info reports core count only, and the process tools say
+# they need this package.
+psutil==6.1.0
+
+# Screenshots, mouse and keyboard. This is what lets AURA operate programs
+# that have no command line. Needs a real desktop session.
+#   Linux also needs: sudo apt install python3-tk python3-dev scrot
+#   macOS asks for Accessibility + Screen Recording permission on first use
+#     (System Settings → Privacy & Security), granted to the terminal or app
+#     that launched AURA.
+# Without it: screen control reports itself unavailable and AURA sticks to the
+# command line.
+pyautogui==0.9.54
+
+# Clipboard read/write. On Windows and macOS AURA falls back to the built-in
+# clip/pbcopy commands, so this mainly matters on Linux.
+#   Linux also needs: sudo apt install xclip   (or xsel)
+pyperclip==1.9.0

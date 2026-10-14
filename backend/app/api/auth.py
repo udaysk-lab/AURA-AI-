@@ -7,7 +7,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from jose import JWTError, jwt
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select, update
@@ -128,7 +128,72 @@ def auth_config() -> dict:
         "demo_login_enabled": settings.allow_demo_login,
         "password_login_enabled": True,
         "llm_provider": settings.resolved_provider(),
+        # A local install is one person on one machine: the login screen offers
+        # a single "open" button instead of asking them to invent an account.
+        "local_mode": settings.local_mode,
+        "device_control": settings.device_control_enabled,
     }
+
+
+LOOPBACK = {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
+
+
+@router.post("/local", response_model=TokenOut)
+def local_login(request: Request, db: DbSession) -> TokenOut:
+    """Sign in as this machine's owner. Local installs only, loopback only.
+
+    On a local install there is exactly one person — whoever is sitting at the
+    computer — and asking them to register an account to use their own machine
+    is friction for nothing. So LOCAL_MODE grants a single owner account keyed
+    to the OS user.
+
+    Two things keep that honest. The request must come from loopback, so the
+    door doesn't open to the network if someone binds AURA to 0.0.0.0. And it
+    requires LOCAL_MODE, which is off on every hosted deployment. Anyone who
+    can reach loopback on this machine can already run commands as this user,
+    so this grants no authority they didn't have.
+    """
+    if not settings.local_mode:
+        raise HTTPException(
+            status_code=403,
+            detail="Local sign-in is only available when AURA runs in local mode.",
+        )
+
+    client = request.client.host if request.client else ""
+    if client not in LOOPBACK:
+        log.warning("Rejected local sign-in from %s (not loopback)", client)
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Local sign-in only works from this computer. AURA appears to be "
+                "listening on the network — bind it to 127.0.0.1, or sign in with an "
+                "email and password."
+            ),
+        )
+
+    import getpass
+
+    try:
+        os_user = getpass.getuser()
+    except Exception:
+        os_user = "owner"
+    email = f"{os_user.lower().replace(' ', '-')}@localhost"
+
+    user = db.scalars(select(User).where(User.email == email)).first()
+    if not user:
+        user = User(
+            email=email,
+            name=os_user.replace(".", " ").replace("-", " ").title(),
+            timezone=_zone_or_utc(timeutil.system_zone_name()),
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        db.add(UserSettings(user_id=user.id))
+        db.commit()
+        log.info("Created the local owner account for %s", email)
+
+    return _issue(db, user)
 
 
 @router.post("/register", response_model=TokenOut, status_code=201)

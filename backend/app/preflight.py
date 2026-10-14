@@ -308,6 +308,76 @@ def _check_debug() -> Check:
     return Check("debug", "Debug mode", "ok", "Appropriate for this environment.")
 
 
+def _check_device_control() -> Check:
+    """Is device control on, and is this a machine it should be on for?
+
+    The dangerous configuration is device control on a deployment that isn't a
+    single person's own computer: it would hand the model a shell on a shared
+    host. That's a blocking failure, not a warning.
+    """
+    if not settings.device_control_enabled:
+        return Check(
+            "device", "Device control", "ok",
+            "Off — AURA works on its own data only.",
+            fix="Set LOCAL_MODE=true to let AURA operate the computer it runs on.",
+        )
+
+    if settings.environment == "production":
+        return Check(
+            "device", "Device control", "fail",
+            "Device control is ON in a production environment. That gives the model a "
+            "shell, your files and your screen on a shared host.",
+            fix="Set DEVICE_CONTROL=off (and LOCAL_MODE=false) on anything but your own computer.",
+        )
+
+    from app.device.runtime import capabilities
+
+    caps = capabilities()
+    roots = ", ".join(settings.device_allowed_root_list)
+    missing = [name for name, present in caps["packages"].items() if not present]
+
+    if settings.environment != "local":
+        return Check(
+            "device", "Device control", "warn",
+            f"On, in a '{settings.environment}' environment. Intended for a local install.",
+            fix="Only leave this on if this really is the user's own machine.",
+        )
+
+    detail = f"On. {caps['os']} {caps['arch']}, shell {caps['shell']['kind']}, folders: {roots}."
+    if missing:
+        return Check(
+            "device", "Device control", "warn",
+            detail + f" Optional packages missing: {', '.join(missing)}.",
+            fix="pip install -r requirements-device.txt  (adds process stats, screen control, clipboard)",
+        )
+    return Check("device", "Device control", "ok", detail)
+
+
+def _check_device_exposure() -> Check:
+    """Device control plus a non-loopback bind is the shape that gets people hurt."""
+    if not settings.device_control_enabled:
+        return Check("device_exposure", "Device exposure", "ok", "Not applicable.")
+
+    origins = settings.cors_origin_list
+    remote = [
+        o for o in origins
+        if not any(host in o for host in ("localhost", "127.0.0.1", "[::1]"))
+    ]
+    if remote:
+        return Check(
+            "device_exposure", "Device exposure", "warn",
+            f"Device control is on and these non-local origins may call the API: {', '.join(remote)}.",
+            fix=(
+                "Keep a device-controlling instance on 127.0.0.1 and set "
+                "CORS_ORIGINS=http://localhost:3000 only."
+            ),
+        )
+    return Check(
+        "device_exposure", "Device exposure", "ok",
+        "Local origins only — the device surface isn't reachable from the network.",
+    )
+
+
 CHECKS = [
     _check_model,
     _check_secret_key,
@@ -322,6 +392,8 @@ CHECKS = [
     _check_google,
     _check_email_sending,
     _check_search,
+    _check_device_control,
+    _check_device_exposure,
 ]
 
 

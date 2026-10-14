@@ -166,6 +166,28 @@ CATALOG: dict[str, Plugin] = {
             skills=("FG01",),
             accent="sage",
         ),
+        # --- Local device control -----------------------------------------
+        #
+        # The plugin that gives AURA this computer. `available` is computed at
+        # import from the device-control flag, so on a hosted deployment it
+        # shows greyed out with the reason and its skills can never unlock.
+        Plugin(
+            id="device-control",
+            name="Device Control",
+            category="System",
+            summary="Operate this computer.",
+            detail=(
+                "Turns AURA from an assistant that talks about your work into one that "
+                "does it on the machine it's installed on: runs commands, reads and "
+                "writes your files, opens apps, watches the system, and — where a "
+                "program has no command line — sees the screen and drives the mouse "
+                "and keyboard. Every action still goes through your trust tier and the "
+                "same approval card as everything else, and file access is fenced to "
+                "the folders you allow."
+            ),
+            skills=("DV01", "DV02", "DV03", "DV04", "DV05", "DV06", "DV07"),
+            accent="violet",
+        ),
         # --- Optional: needs an integration we haven't built --------------
         Plugin(
             id="developer",
@@ -219,22 +241,56 @@ CATALOG: dict[str, Plugin] = {
 
 CORE_IDS = {p.id for p in CATALOG.values() if p.core}
 
+DEVICE_PLUGIN_ID = "device-control"
+
 # skill code -> owning plugin id
 SKILL_TO_PLUGIN: dict[str, str] = {
     code: plugin.id for plugin in CATALOG.values() for code in plugin.skills
 }
 
 
+def availability(plugin: Plugin) -> tuple[bool, str]:
+    """Is this plugin installable right now, and if not, why not?
+
+    Everything in the catalogue answers from its own static flags except
+    device control, which depends on how this instance was started. Computing
+    it here rather than at import means a test (or a restart with LOCAL_MODE
+    set) sees the right answer without rebuilding the catalogue.
+    """
+    if plugin.id == DEVICE_PLUGIN_ID:
+        from app.config import settings
+
+        if settings.device_control_enabled:
+            return True, ""
+        return False, (
+            "Device control is a local-only capability. Run AURA on your own computer "
+            "with LOCAL_MODE=true to let it operate that machine."
+        )
+    return plugin.available, plugin.unavailable_reason
+
+
 def ensure_core(db: Session, user_id: str) -> None:
-    """Core plugins are installed on first touch and can't be removed."""
+    """Core plugins are installed on first touch and can't be removed.
+
+    On a local install the device-control plugin joins them, so AURA can
+    operate the computer from first launch without a trip to the hub. Its
+    skills still obey the trust tier, and the risky ones (shell, screen) sit
+    at a floor that asks first until you say otherwise.
+    """
+    from app.config import settings
+
     installed = {
         row.plugin_id
         for row in db.scalars(
             select(InstalledPlugin).where(InstalledPlugin.user_id == user_id)
         ).all()
     }
+    wanted = set(CORE_IDS)
+    if settings.device_control_enabled:
+        wanted.add(DEVICE_PLUGIN_ID)
+
     added = False
-    for plugin_id in CORE_IDS:
+    for plugin_id in wanted:
         if plugin_id not in installed:
             db.add(InstalledPlugin(user_id=user_id, plugin_id=plugin_id, enabled=True))
             added = True
@@ -269,8 +325,9 @@ def install(db: Session, user_id: str, plugin_id: str) -> tuple[bool, str]:
     plugin = CATALOG.get(plugin_id)
     if not plugin:
         return False, "Unknown plugin"
-    if not plugin.available:
-        return False, plugin.unavailable_reason
+    available, reason = availability(plugin)
+    if not available:
+        return False, reason
 
     row = db.scalars(
         select(InstalledPlugin).where(
@@ -314,6 +371,6 @@ def summary(db: Session, user_id: str) -> dict:
     live = installed_ids(db, user_id)
     return {
         "installed": len(live),
-        "available": sum(1 for p in CATALOG.values() if p.available),
+        "available": sum(1 for p in CATALOG.values() if availability(p)[0]),
         "total": len(CATALOG),
     }

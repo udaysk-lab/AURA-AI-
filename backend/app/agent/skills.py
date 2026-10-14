@@ -202,6 +202,85 @@ def _sum_focus(result: Any) -> str:
     )
 
 
+# --- Device control -------------------------------------------------------
+
+
+def _sum_command(result: Any) -> str:
+    if not isinstance(result, dict):
+        return "Ran a command"
+    if result.get("error"):
+        return str(result["error"])[:160]
+    if result.get("session_id"):
+        return f"Started in background · {result['session_id']}"
+    if result.get("timed_out"):
+        return f"Command timed out after {result.get('timeout_seconds')}s"
+    code = result.get("exit_code")
+    verb = "ran" if result.get("ok") else f"exited {code}"
+    return f"`{str(result.get('command', ''))[:60]}` {verb}"
+
+
+def _sum_file_read(result: Any) -> str:
+    if isinstance(result, dict) and result.get("path"):
+        return f"Read {result['path']} ({result.get('size', 0)} bytes)"
+    if isinstance(result, dict) and result.get("entries") is not None:
+        return f"Listed {result.get('path', 'a folder')} · {result.get('count', 0)} items"
+    return f"Searched · {_n(result)} matches"
+
+
+def _sum_file_write(result: Any) -> str:
+    if not isinstance(result, dict):
+        return "Changed a file"
+    if result.get("error"):
+        return str(result["error"])[:160]
+    if result.get("deleted"):
+        return f"Deleted {result.get('path')}"
+    if "to" in result:
+        return f"Moved to {result['to']}"
+    if result.get("replaced") is not None:
+        return f"Edited {result.get('path')} · {result['replaced']} change(s)"
+    return f"Wrote {result.get('path')} ({result.get('bytes', 0)} bytes)"
+
+
+def _sum_apps(result: Any) -> str:
+    if isinstance(result, list):
+        return f"Listed {len(result)} applications"
+    if isinstance(result, dict):
+        return result.get("message", result.get("error", "Did it"))[:160]
+    return "Managed applications"
+
+
+def _sum_system(result: Any) -> str:
+    if isinstance(result, list):
+        return f"Inspected {len(result)} processes"
+    if isinstance(result, dict) and result.get("cpu_percent") is not None:
+        return (
+            f"CPU {result['cpu_percent']}% · "
+            f"RAM {(result.get('memory') or {}).get('percent', '?')}% · "
+            f"disk {(result.get('disk') or {}).get('free_gb', '?')} GB free"
+        )
+    if isinstance(result, dict):
+        return result.get("message", result.get("error", "Checked the system"))[:160]
+    return "Checked the system"
+
+
+def _sum_screen(result: Any) -> str:
+    if not isinstance(result, dict):
+        return "Controlled the screen"
+    if result.get("error"):
+        return str(result["error"])[:160]
+    if result.get("path"):
+        return f"Captured the screen ({result.get('width')}×{result.get('height')})"
+    return result.get("message", "Controlled the screen")[:160]
+
+
+def _sum_web(result: Any) -> str:
+    if isinstance(result, dict) and result.get("status"):
+        return f"Fetched {str(result.get('url', ''))[:60]} · {result['status']}"
+    if isinstance(result, dict) and result.get("error"):
+        return str(result["error"])[:160]
+    return "Fetched a URL"
+
+
 # ---------------------------------------------------------------------------
 # Catalogue
 # ---------------------------------------------------------------------------
@@ -412,6 +491,105 @@ CATALOG: dict[str, Skill] = {
             autonomy_floor="strict",
             summarize=_sum_focus,
         ),
+        # --- Unlocked by the Device Control plugin (local installs only) ---
+        #
+        # Every one of these is proactive=False on purpose. The heartbeat is
+        # allowed to read your inbox unattended; it is not allowed to run
+        # commands on your computer while you're asleep. Device work happens
+        # when you ask for it, through the same approval gate as everything
+        # else. Turning a skill off here removes its tools from the model's
+        # toolset outright — the honest way to say "never touch my shell".
+        Skill(
+            code="DV01",
+            name="Command Line",
+            category="Device",
+            description=(
+                "Runs commands on this computer and manages long-running ones. "
+                "The broadest capability AURA has: anything you could do in a terminal."
+            ),
+            tools=(
+                "run_command",
+                "run_in_background",
+                "process_output",
+                "send_process_input",
+                "stop_process",
+                "list_background_commands",
+            ),
+            autonomy_floor="full",
+            summarize=_sum_command,
+        ),
+        Skill(
+            code="DV02",
+            name="File Access",
+            category="Device",
+            description=(
+                "Reads, writes, edits, moves and deletes files on this computer, "
+                "inside the folders you've allowed."
+            ),
+            tools=(
+                "read_file",
+                "write_file",
+                "edit_file",
+                "list_directory",
+                "search_files",
+                "move_file",
+                "delete_file",
+                "make_directory",
+            ),
+            autonomy_floor="relaxed",
+            summarize=_sum_file_write,
+        ),
+        Skill(
+            code="DV03",
+            name="Applications",
+            category="Device",
+            description="Opens, closes and lists the applications on this computer.",
+            tools=("open_app", "close_app", "list_applications"),
+            autonomy_floor="relaxed",
+            summarize=_sum_apps,
+        ),
+        Skill(
+            code="DV04",
+            name="System Monitor",
+            category="Device",
+            description=(
+                "Reports CPU, memory, disk and battery, lists running processes, "
+                "and can stop one that's misbehaving."
+            ),
+            tools=("system_info", "list_processes", "kill_process"),
+            autonomy_floor="relaxed",
+            summarize=_sum_system,
+        ),
+        Skill(
+            code="DV05",
+            name="Screen Control",
+            category="Device",
+            description=(
+                "Sees the screen and drives the mouse and keyboard, so it can operate "
+                "apps that have no command line."
+            ),
+            tools=("take_screenshot", "mouse_click", "type_text", "press_keys", "scroll_screen"),
+            autonomy_floor="full",
+            summarize=_sum_screen,
+        ),
+        Skill(
+            code="DV06",
+            name="Clipboard & Alerts",
+            category="Device",
+            description="Reads and sets this computer's clipboard, and raises native desktop notifications.",
+            tools=("read_clipboard", "set_clipboard", "desktop_notify"),
+            autonomy_floor="conservative",
+            summarize=_sum_apps,
+        ),
+        Skill(
+            code="DV07",
+            name="Web Fetch",
+            category="Device",
+            description="Fetches a specific URL — a page, a feed, an API — and reads what comes back.",
+            tools=("fetch_url",),
+            autonomy_floor="strict",
+            summarize=_sum_web,
+        ),
     ]
 }
 
@@ -429,8 +607,18 @@ CATEGORIES = [
     "Research",
     "Documents",
     "Planning",
+    "Device",
     "System",
 ]
+
+# Skills that operate the computer rather than AURA's own data. Used to label
+# them in the UI, to keep them out of unattended background work, and to hide
+# the category entirely on an install where device control is off.
+DEVICE_CODES = {"DV01", "DV02", "DV03", "DV04", "DV05", "DV06", "DV07"}
+
+
+def is_device_skill(code: str) -> bool:
+    return code in DEVICE_CODES
 
 
 def skill_for_tool(tool_name: str) -> Skill | None:
@@ -510,8 +698,18 @@ def enabled_codes(db: Session, user_id: str) -> set[str]:
 
 
 def enabled_tools(db: Session, user_id: str) -> set[str]:
-    """Tool names the model is allowed to see for this user."""
+    """Tool names the model is allowed to see for this user.
+
+    Device skills are filtered out whenever device control is off, on top of
+    the plugin gate that already keeps them locked. Two independent checks,
+    because the consequence of getting this wrong is a hosted deployment
+    offering the model a shell.
+    """
+    from app.config import settings
+
     codes = enabled_codes(db, user_id)
+    if not settings.device_control_enabled:
+        codes = {c for c in codes if not is_device_skill(c)}
     return {tool for code in codes for tool in CATALOG[code].tools}
 
 

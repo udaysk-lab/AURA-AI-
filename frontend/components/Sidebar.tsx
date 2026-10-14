@@ -8,6 +8,7 @@ import {
   Calendar,
   CheckSquare,
   FileText,
+  Laptop,
   LayoutDashboard,
   LogOut,
   Mail,
@@ -64,6 +65,13 @@ const NAV = [
   },
 ];
 
+// Only on a local install: the screen for the computer AURA is running on.
+// Hidden entirely on a hosted instance, where there is no device to operate.
+const DEVICE_SECTION = {
+  group: "This computer",
+  items: [{ href: "/device", label: "Device", icon: Laptop }],
+};
+
 export default function Sidebar({
   onOpenPalette,
   onNavigate,
@@ -78,6 +86,7 @@ export default function Sidebar({
   const { assistant } = useAssistant();
   const [pending, setPending] = useState<PendingAction[]>([]);
   const [unread, setUnread] = useState(0);
+  const [deviceControl, setDeviceControl] = useState(false);
   const lastLoad = useRef(0);
 
   const load = useCallback(async (force = false) => {
@@ -100,6 +109,23 @@ export default function Sidebar({
   useEffect(() => {
     void load();
   }, [pathname, load]);
+
+  // Whether this instance can operate a computer is fixed at startup, so ask
+  // once per mount rather than on every navigation.
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .authConfig()
+      .then((config) => {
+        if (!cancelled) setDeviceControl(config.device_control);
+      })
+      .catch(() => {
+        /* the nav item just stays hidden */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const t = setInterval(() => void load(true), 30000);
@@ -165,7 +191,7 @@ export default function Sidebar({
       )}
 
       <nav className="relative -mx-1 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1">
-        {NAV.map((section) => (
+        {[...NAV, ...(deviceControl ? [DEVICE_SECTION] : [])].map((section) => (
           <div key={section.group || "main"}>
             {section.group && <div className="label px-2.5 pb-0.5 pt-2.5">{section.group}</div>}
             {section.items.map(({ href, label, icon: Icon }) => {

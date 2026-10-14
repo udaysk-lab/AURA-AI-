@@ -8,6 +8,7 @@ import {
   Calendar,
   CheckSquare,
   FileText,
+  Laptop,
   LayoutDashboard,
   type LucideIcon,
   Mail,
@@ -79,6 +80,16 @@ export default function CommandPalette({
       { id: "automations", label: "Automations", group: "Go", icon: Workflow, run: go("/automations") },
       { id: "notifications", label: "Notifications", group: "Go", icon: Bell, run: go("/notifications"), keywords: "alerts inbox unread" },
       { id: "settings", label: "Settings", group: "Go", icon: Settings, run: go("/settings") },
+      // Harmless on a hosted instance: the screen explains that device
+      // control is off rather than 404ing.
+      {
+        id: "device",
+        label: "This computer",
+        group: "Go",
+        icon: Laptop,
+        run: go("/device"),
+        keywords: "device terminal console shell files processes machine local",
+      },
       {
         id: "catchup",
         label: "Catch me up",

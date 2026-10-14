@@ -5,6 +5,10 @@ gets better at. FastAPI backend, Next.js frontend, a tool-calling agent that pla
 before it acts, works in the background, reaches you wherever you are, and earns
 permission rather than assuming it.
 
+Run it on your own computer and it operates that computer: runs commands, works
+with your files, opens apps, watches the system, and drives the screen when a
+program offers nothing better. See **[DEVICE.md](./DEVICE.md)**.
+
 ---
 
 > **Deploying for real people?** Read [DEPLOY.md](./DEPLOY.md). It covers getting a
@@ -38,12 +42,36 @@ cd frontend && npm install && npm run dev
 Sign in with any email, name your assistant, and you land in a populated workspace.
 `⌘K` opens the command palette from anywhere.
 
+### Or run it as *your computer's* assistant
+
+```bat
+start-aura-local.bat      REM Windows
+```
+```bash
+./aura-local.sh           # macOS / Linux
+```
+
+Same app, plus the ability to operate the machine it's running on. One launch
+does everything (the background worker runs in-process), it binds to
+`127.0.0.1`, and the sign-in screen offers a single **Open AURA on this
+computer** button because a local install has exactly one user. There's a
+terminal client too:
+
+```bash
+./aura.sh "what's eating my disk in ~/projects"
+./aura.sh --status
+```
+
+Device control is **off** in every other configuration, including the hosted
+one — see [DEVICE.md](./DEVICE.md) for what it does and the five things that
+stop it.
+
 **Docker:** `cp .env.example .env && docker compose up --build` brings up Postgres
 (pgvector), Redis, the API, the worker and the frontend.
 
 ---
 
-## The six ideas this is built on
+## The seven ideas this is built on
 
 ### 1. Skills, not tools
 
@@ -57,8 +85,8 @@ named capability with a code, a track record, and notes it has learned about how
 [SKILL·RS02] Briefed Northwind Ventures · 4 emails · 5 sources
 ```
 
-Twenty-one skills across Email, Calendar, Meetings, Tasks, Memory, People,
-Research, Documents, Planning and System. Each can be switched off — and switching
+Twenty-eight skills across Email, Calendar, Meetings, Tasks, Memory, People,
+Research, Documents, Planning, Device and System. Each can be switched off — and switching
 it off strips its tools from the model's toolset entirely. **It cannot call what it
 cannot see**, which is a real guarantee rather than a prompt instruction. A test
 asserts no tool exists outside a skill, because an orphan tool would be permanently
@@ -141,6 +169,38 @@ a value.* Not in a prompt, not in a tool argument, not in a result, not in a log
 Substitution happens after the model has finished deciding and before the request
 leaves the process. That ordering is the whole trick.
 
+### 7. On your own machine, it has hands
+
+Everything above is an assistant that *talks about* your work. Installed on your
+own computer, AURA also does it: runs commands, reads and writes your files,
+opens apps, reports on the system, and — for programs with no command line —
+takes a screenshot and drives the mouse and keyboard.
+
+The interesting part isn't the capability, it's that it needed no new
+permission system. A shell command is a tool like `send_email`: it goes in the
+registry, belongs to a skill you can switch off, is classed by risk, and is
+gated by the same four tiers. `run_command` sits in the top class, so below
+full trust it is queued with the actual command on the card:
+
+```
+Run on this computer:
+
+    rm -rf ~/old-project
+```
+
+Allow once, ten minutes, always, or refuse — and "always" is a standing grant
+you can revoke. That reuse is deliberate: the gate deciding whether AURA may
+run a command is the one that has been deciding whether it may send an email
+since the beginning, rather than a second system to keep in step.
+
+Underneath it, two things don't negotiate. The file tools resolve every path and
+refuse anything outside the folders you allowed or inside a credential folder,
+so no spelling of a path reaches `~/.ssh`. And the whole subsystem is off unless
+`LOCAL_MODE` says otherwise, so the hosted deployment has no device surface at
+all — it refuses to even start with device control on in production.
+
+It is off by default. [DEVICE.md](./DEVICE.md) is the full account.
+
 ---
 
 ## Architecture
@@ -151,8 +211,8 @@ Next.js (App Router)  ──►  FastAPI  ──►  Coordinator agent
    ⌘K palette              ┌──────────────────┼──────────────────┐
    toasts, mobile          ▼                  ▼                  ▼
                     Plugin registry      Skill registry       Memory
-                    (12 plugins)         (21 skills /         (semantic,
-                          │               31 tools)            compacted)
+                    (14 plugins)         (28 skills /         (semantic,
+                          │               60 tools)            compacted)
                           ▼                  │
                     Autonomy gate ──► PendingAction / ApprovalGrant
                           │
@@ -241,9 +301,10 @@ backend/app/
   plugins.py             Plugin catalogue and install state
   agent/
     coordinator.py       The loop, corrections, approvals, streaming
-    skills.py            21-skill catalogue and per-user state
+    skills.py            28-skill catalogue and per-user state
     autonomy.py          Risk classes, four tiers, standing grants
-    tools.py             31 tools + registry
+    tools.py             31 assistant tools + registry
+    device_tools.py      29 device tools (local installs only)
     prompts.py           System prompt, rule compiler, correction detector
   services/
     identity.py          Assistant persona and the growth arc
@@ -257,8 +318,16 @@ backend/app/
     google.py            Gmail + Calendar sync
     briefing.py · triage.py · demo.py
   automation/engine.py   Rule compilation, matching, cron
-  api/                   auth · chat · workspace · intelligence · hub · assistant
+  device/                Local device control (off unless LOCAL_MODE)
+    runtime.py           The master switch, OS facts, capability probing
+    policy.py            Command classification, allowlist, denylist
+    shell.py             Foreground and background command execution
+    files.py             The folder fence, and file operations inside it
+    apps.py · screen.py · system.py
+  api/                   auth · chat · workspace · intelligence · hub · assistant · device
 worker.py                automations · schedules · heartbeat · compaction
+                         (runs in-process on a local install)
+aura_cli.py              Terminal client
 
 frontend/
   app/                   Landing, login, onboarding, 13 app pages
@@ -277,7 +346,7 @@ frontend/
 
 | Area | Endpoints |
 |---|---|
-| Auth | `POST /api/auth/demo`, `GET /api/auth/google/start`, `/auth/me`, `/auth/integrations` |
+| Auth | `POST /api/auth/demo`, `POST /api/auth/local` (local installs), `GET /api/auth/google/start`, `/auth/me`, `/auth/integrations` |
 | Chat | `POST /api/chat`, `POST /api/chat/stream` (SSE), conversation CRUD |
 | Skills | `GET /api/skills`, `/skills/stats`, `/skills/activity`, `PATCH /api/skills/{code}`, `POST /api/skills/{code}/teach` |
 | **Plugins** | `GET /api/plugins`, `/plugins/summary`, `POST /api/plugins/{id}/install`, `/uninstall` |
@@ -288,6 +357,7 @@ frontend/
 | Identity | `GET/PATCH /api/assistant`, `POST /api/assistant/hatch` |
 | Heartbeat | `GET /api/heartbeat`, `/heartbeat/latest`, `POST /api/heartbeat/run` |
 | Trust | `GET /api/pending-actions`, `POST /api/pending-actions/{id}` (`reject`\|`once`\|`always`\|`window`), `GET/DELETE /api/grants` |
+| **Device** (local only) | `GET /api/device`, `/device/system`, `/device/files`, `/device/processes`, `/device/background`, `POST /api/device/run` |
 | Email · Calendar · Tasks · Memory · Automations · Delegations | see `/docs` |
 
 ---
@@ -302,7 +372,11 @@ cd backend && pytest -q
 Two suites, both on throwaway SQLite with the mock provider — no keys, no infra.
 
 `test_smoke.py` covers behaviour: skills, plugins, autonomy tiers, channels,
-documents, schedules, identity, memory. `test_production_guards.py` covers the
+documents, schedules, identity, memory. `test_device.py` covers device control,
+and is mostly about refusal — that it's off by default, that the folder fence
+can't be climbed with `..` or a symlink, that a command below full trust is
+queued rather than run (checked by asserting the file it would have written
+doesn't exist), and that a disabled skill's tools never reach the model. `test_production_guards.py` covers the
 things that stay invisible until they cost money or leak something — spend cap
 enforcement, background budget isolation, rate-limit windows, security headers,
 `send_email` never claiming a send it didn't make, export excluding secret values,
@@ -345,6 +419,35 @@ Honest list, because these are what will bite first:
   multiple workers.
 - **`ALLOW_DEMO_LOGIN=true` is a password-free login.** Turn it off in production;
   startup warns if you don't.
+- **The shell is not sandboxed.** A command runs as your OS user and can reach
+  anything that user can, whatever `DEVICE_ALLOWED_ROOTS` says — that fence
+  binds the file tools. What holds the shell back is the approval gate in front
+  of it and the denylist beneath it, which is why `run_command` needs full
+  trust or an explicit grant. If you want a real boundary rather than a gate,
+  leave the Command Line skill off and give AURA the file tools only.
+- **Background commands live in one process.** The handles for `run_in_background`
+  are held in memory by the API process, so restarting it loses track of
+  anything still running (the processes themselves survive; AURA just can't
+  poll or stop them any more). Right for one local machine, wrong the moment
+  there are two API workers.
+- **Device actions never run unattended.** Every device skill is
+  `proactive=False`, so the heartbeat will not run commands or drive the screen
+  while you're away. That's a deliberate default rather than a limitation of
+  the mechanism — but it does mean "do this overnight" isn't available yet.
+- **Screen control is pixels, not structure.** AURA takes a screenshot, the
+  image goes to the model, and it clicks the coordinates it reads off it. There
+  is no accessibility-tree awareness, so it has no handle on "the Save button" —
+  only on a position. A window that moves between screenshot and click means a
+  misclick, and the downscaled copy it looks at costs it some precision on small
+  targets. Prefer the command line wherever the task has one.
+- **Without a model key, it cannot see.** The offline mock provider has no
+  vision, so screenshots reach it as a note that an image was attached. Screen
+  control needs a real model (`ANTHROPIC_API_KEY`, or OpenAI) to be worth
+  anything.
+- **Operating it remotely isn't built.** Device control is loopback-only on
+  purpose: the owner sign-in refuses non-local requests. Reaching this machine
+  from your phone needs its own pairing and authentication story; until that
+  exists, a tunnel you control (Tailscale, SSH forward) is the honest route.
 
 ---
 

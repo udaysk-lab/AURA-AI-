@@ -7,6 +7,18 @@ Internal message format (provider-agnostic):
     {"role": "system"|"user"|"assistant", "content": str}
     {"role": "assistant", "content": str, "tool_calls": [ToolCall, ...]}
     {"role": "tool", "tool_call_id": str, "name": str, "content": str}
+
+A user message may carry images instead of a plain string, for screenshots and
+other pictures the model needs to actually look at:
+
+    {"role": "user", "content": [
+        {"type": "text", "text": "Here is the screen."},
+        {"type": "image", "media_type": "image/png", "data": "<base64>"},
+    ]}
+
+Each provider translates that into its own shape. The mock has no eyes, so it
+reduces an image to a note that one was attached — which keeps every code path
+working without a key, just without sight.
 """
 
 from __future__ import annotations
@@ -127,6 +139,23 @@ class OpenAIProvider(LLMProvider):
                         ],
                     }
                 )
+            elif isinstance(m.get("content"), list):
+                # Mixed text/image content. OpenAI calls an image part
+                # "image_url" and accepts a data: URI in place of a real URL.
+                parts = []
+                for part in m["content"]:
+                    if part.get("type") == "image":
+                        parts.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{part['media_type']};base64,{part['data']}"
+                                },
+                            }
+                        )
+                    else:
+                        parts.append({"type": "text", "text": part.get("text", "")})
+                out.append({"role": m["role"], "content": parts})
             else:
                 out.append({"role": m["role"], "content": m.get("content", "")})
         return out
@@ -229,6 +258,24 @@ class AnthropicProvider(LLMProvider):
                         }
                     )
                 convo.append({"role": "assistant", "content": blocks})
+            elif isinstance(m.get("content"), list):
+                # Mixed text/image content, in Anthropic's block shape.
+                blocks = []
+                for part in m["content"]:
+                    if part.get("type") == "image":
+                        blocks.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": part["media_type"],
+                                    "data": part["data"],
+                                },
+                            }
+                        )
+                    else:
+                        blocks.append({"type": "text", "text": part.get("text", "")})
+                convo.append({"role": m["role"], "content": blocks})
             else:
                 convo.append({"role": m["role"], "content": m.get("content", "")})
         return "\n\n".join(system_parts), convo
@@ -341,6 +388,14 @@ class MockProvider(LLMProvider):
         last_user = next(
             (m.get("content", "") for m in reversed(messages) if m["role"] == "user"), ""
         )
+        # A user turn can carry images now. The mock has no eyes, so flatten to
+        # whatever text came with them rather than crashing on a list.
+        if isinstance(last_user, list):
+            last_user = " ".join(
+                part.get("text", "")
+                for part in last_user
+                if isinstance(part, dict) and part.get("type") != "image"
+            )
         available = {t.name for t in tools or []}
         text = last_user.lower()
 

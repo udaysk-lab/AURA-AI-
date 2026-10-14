@@ -493,6 +493,103 @@ export interface UsageReport {
   by_trigger: Array<{ trigger: string; cost_usd: number; calls: number }>;
 }
 
+export interface AuthConfig {
+  google_enabled: boolean;
+  demo_login_enabled: boolean;
+  password_login_enabled: boolean;
+  llm_provider: string;
+  /** True when AURA is running as one person's local install. */
+  local_mode: boolean;
+  /** True when it can operate the computer it's running on. */
+  device_control: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Device control (local installs)
+// ---------------------------------------------------------------------------
+
+export interface DevicePolicy {
+  allowed_roots: string[];
+  protected_paths: string[];
+  exec_mode: "ask" | "allowlist" | "full" | string;
+  exec_allowlist: string[];
+  denylist_active: boolean;
+  exec_timeout_seconds: number;
+  max_read_bytes: number;
+  explanation: string;
+}
+
+export interface DeviceStatus {
+  enabled: boolean;
+  os: string;
+  platform: string;
+  arch: string;
+  hostname: string;
+  user: string;
+  home: string;
+  python: string;
+  shell: Record<string, string>;
+  shell_control: boolean;
+  file_control: boolean;
+  process_control: boolean;
+  screen_control: boolean;
+  clipboard: boolean;
+  has_display: boolean;
+  packages: Record<string, boolean>;
+  policy: DevicePolicy | null;
+  active_skills: string[];
+}
+
+export interface DeviceRunResult {
+  command: string;
+  workdir: string;
+  exit_code: number | null;
+  ok: boolean;
+  output: string;
+  truncated: boolean;
+  duration_ms: number;
+  timed_out: boolean;
+  error: string;
+}
+
+export interface DeviceProcess {
+  pid: number;
+  name: string;
+  cpu_percent: number;
+  memory_percent: number;
+}
+
+export interface DeviceBackgroundCommand {
+  session_id: string;
+  command: string;
+  status: string;
+  exit_code: number | null;
+  running_seconds: number;
+}
+
+export interface DeviceFileEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size: number;
+  modified: number;
+}
+
+export interface DeviceListing {
+  path: string;
+  count: number;
+  entries: DeviceFileEntry[];
+}
+
+export interface DeviceSystemSnapshot {
+  cpu_percent?: number;
+  cpu_count?: number;
+  memory?: { total_gb: number; used_gb: number; percent: number };
+  disk?: { total_gb: number; free_gb: number; percent: number };
+  battery?: { percent: number; plugged_in: boolean };
+  note?: string;
+}
+
 export interface PreflightCheck {
   key: string;
   label: string;
@@ -624,13 +721,15 @@ export interface Conflict {
 // ---------------------------------------------------------------------------
 
 export const api = {
-  authConfig: () =>
-    get<{
-      google_enabled: boolean;
-      demo_login_enabled: boolean;
-      password_login_enabled: boolean;
-      llm_provider: string;
-    }>("/api/auth/config"),
+  authConfig: () => get<AuthConfig>("/api/auth/config"),
+  /**
+   * Sign in as this machine's owner. Only works on a local install, and only
+   * from the machine itself — the backend checks the request came from
+   * loopback. There is no password because there is nothing to protect it
+   * from: anyone who can reach loopback here can already run commands as this
+   * user.
+   */
+  localLogin: () => post<{ access_token: string; user: User }>("/api/auth/local"),
   // The browser's zone goes along at sign-up, so "tomorrow at 5" and the
   // working day mean the user's own rather than UTC's.
   register: (email: string, password: string, name: string) =>
@@ -869,6 +968,24 @@ export const api = {
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
   },
+
+  // --- Device control (local installs) ------------------------------------
+  //
+  // `device()` answers even when control is off (with enabled: false), so the
+  // Device screen can explain itself. Everything else 404s in that case.
+  device: () => get<DeviceStatus>("/api/device"),
+  deviceSystem: () => get<DeviceSystemSnapshot>("/api/device/system"),
+  deviceRun: (command: string, workdir = "", timeout?: number) =>
+    post<DeviceRunResult>("/api/device/run", { command, workdir, timeout }),
+  deviceFiles: (path = "~", showHidden = false) =>
+    get<DeviceListing>(
+      `/api/device/files?path=${encodeURIComponent(path)}&show_hidden=${showHidden}`
+    ),
+  deviceProcesses: (query = "") =>
+    get<DeviceProcess[]>(`/api/device/processes?query=${encodeURIComponent(query)}`),
+  deviceBackground: () => get<DeviceBackgroundCommand[]>("/api/device/background"),
+  deviceStopBackground: (sessionId: string) =>
+    post<DeviceBackgroundCommand>(`/api/device/background/${sessionId}/stop`),
 
   // --- Diagnostics (unauthenticated) --------------------------------------
   preflight: async (): Promise<Preflight> => {

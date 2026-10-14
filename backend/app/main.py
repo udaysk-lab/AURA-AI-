@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
 
 from app import preflight
-from app.api import account, assistant, auth, chat, hub, intelligence, workspace
+from app.api import account, assistant, auth, chat, device, hub, intelligence, workspace
 from app.config import settings
 from app.db import init_db
 from app.llm import get_provider
@@ -47,7 +47,33 @@ async def lifespan(_: FastAPI):
         "sqlite" if settings.is_sqlite else "postgres",
         get_provider().name,
     )
-    yield
+
+    if settings.device_control_enabled:
+        from app.device.runtime import capabilities
+
+        caps = capabilities()
+        log.info(
+            "Device control ON | %s %s | shell=%s | screen=%s | roots=%s",
+            caps["os"], caps["arch"], caps["shell"]["kind"],
+            "yes" if caps["screen_control"] else "no",
+            ", ".join(settings.device_allowed_root_list),
+        )
+
+    # On a local install one launch should do everything, so the background
+    # loops (heartbeat, schedules, automations, compaction) run on a thread in
+    # this process instead of needing a second terminal. A server sets
+    # RUN_EMBEDDED_WORKER=off and runs worker.py separately.
+    stop_worker = None
+    if settings.embedded_worker_enabled:
+        import worker
+
+        stop_worker = worker.start_embedded()
+
+    try:
+        yield
+    finally:
+        if stop_worker is not None:
+            stop_worker()
 
 
 app = FastAPI(
@@ -79,6 +105,7 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(chat.router)
+app.include_router(device.router)
 app.include_router(workspace.router)
 app.include_router(intelligence.router)
 app.include_router(hub.router)

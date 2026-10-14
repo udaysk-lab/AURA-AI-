@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import {
   AlertTriangle,
   Check,
@@ -9,6 +10,7 @@ import {
   Gauge,
   Globe,
   KeyRound,
+  Laptop,
   Link2,
   Moon,
   Plus,
@@ -25,6 +27,7 @@ import {
   AutonomyTier,
   Colourway,
   Compaction,
+  DeviceStatus,
   Grant,
   Integration,
   Secret,
@@ -114,6 +117,7 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [grants, setGrants] = useState<Grant[]>([]);
+  const [device, setDevice] = useState<DeviceStatus | null>(null);
   const [provider, setProvider] = useState("");
   const [compaction, setCompaction] = useState<Compaction | null>(null);
   const [compacting, setCompacting] = useState(false);
@@ -145,7 +149,7 @@ export default function SettingsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, i, c, g, v, u, d] = await Promise.all([
+      const [s, i, c, g, v, u, d, dev] = await Promise.all([
         api.settings(),
         api.integrations(),
         api.authConfig(),
@@ -153,6 +157,7 @@ export default function SettingsPage() {
         api.secrets().catch(() => []),
         api.usage().catch(() => null),
         api.sampleData().catch(() => null),
+        api.device().catch(() => null),
       ]);
       setSettings(s);
       setIntegrations(i);
@@ -161,6 +166,7 @@ export default function SettingsPage() {
       setSecrets(v);
       setUsage(u);
       setSample(d);
+      setDevice(dev);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't load your settings");
     } finally {
@@ -514,6 +520,58 @@ export default function SettingsPage() {
           </div>
         )}
       </Card>
+
+      {/* This computer — only on a local install */}
+      {device?.enabled && (
+        <Card id="device">
+          <SectionTitle>
+            <span className="flex items-center gap-2">
+              <Laptop size={12} className="text-accent-soft" /> This computer
+            </span>
+          </SectionTitle>
+          <p className="mb-3.5 text-[12.5px] leading-relaxed text-muted">
+            AURA is running on <span className="text-ink">{device.hostname}</span> and can
+            operate it — commands, files, apps, the screen. The trust tier above decides
+            what it does without asking: shell commands and screen control need{" "}
+            <span className="text-ink">full access</span> or a standing permission, and
+            everything else asks first.
+          </p>
+          <div className="space-y-2 rounded-xl border border-line bg-raised/40 p-3.5 text-[12.5px]">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-faint">Shell approval</span>
+              <Badge tone={device.policy?.exec_mode === "full" ? "urgent" : "success"}>
+                {device.policy?.exec_mode ?? "ask"}
+              </Badge>
+            </div>
+            <div>
+              <span className="text-faint">Folders it may read and write</span>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {(device.policy?.allowed_roots ?? []).map((root) => (
+                  <code
+                    key={root}
+                    className="rounded-md border border-line bg-canvas/60 px-1.5 py-0.5 text-[11px] text-muted"
+                  >
+                    {root}
+                  </code>
+                ))}
+              </div>
+            </div>
+            <p className="text-[11.5px] leading-relaxed text-faint">
+              These are set in your <code>.env</code> (DEVICE_EXEC_MODE,
+              DEVICE_ALLOWED_ROOTS) and read at startup, so they can&apos;t be widened
+              from inside the app — including by AURA itself.
+            </p>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Link href="/device" className="btn-ghost">
+              <Laptop size={13} /> Open the device screen
+            </Link>
+            <Link href="/skills" className="btn-quiet">
+              Choose which device skills are on
+            </Link>
+          </div>
+        </Card>
+      )}
 
       {/* Heartbeat */}
       <Card>

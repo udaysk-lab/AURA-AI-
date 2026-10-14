@@ -7,6 +7,7 @@ import { ArrowLeft } from "lucide-react";
 import {
   API_BASE,
   API_BASE_IS_FALLBACK,
+  AuthConfig,
   api,
   markGoogleSignInStarted,
   setToken,
@@ -19,12 +20,7 @@ export default function LoginPage() {
   const router = useRouter();
   const { refresh, user, loading } = useAuth();
 
-  const [config, setConfig] = useState<{
-    google_enabled: boolean;
-    demo_login_enabled: boolean;
-    password_login_enabled: boolean;
-    llm_provider: string;
-  } | null>(null);
+  const [config, setConfig] = useState<AuthConfig | null>(null);
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -162,6 +158,25 @@ export default function LoginPage() {
     }
   };
 
+  /**
+   * On a local install there's one person — whoever is at the keyboard — so
+   * there's nothing to sign in *to*. One button, no account to invent. The
+   * backend only honours it from this machine.
+   */
+  const openLocally = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await api.localLogin();
+      setToken(res.access_token);
+      await refresh();
+      router.push("/dashboard");
+    } catch (e) {
+      setError(describeFailure(e));
+      setBusy(false);
+    }
+  };
+
   const signInGoogle = async () => {
     setBusy(true);
     try {
@@ -204,6 +219,23 @@ export default function LoginPage() {
         </div>
 
         <div className="glass space-y-4 p-6">
+          {config?.local_mode && (
+            <>
+              <button onClick={openLocally} disabled={busy} className="btn-primary w-full">
+                {busy ? <Spinner /> : null} Open AURA on this computer
+              </button>
+              <p className="text-center text-[11.5px] leading-relaxed text-faint">
+                {config.device_control
+                  ? "This is your own install. AURA will work as you, on this machine."
+                  : "This is your own install — no account needed."}
+              </p>
+              <div className="flex items-center gap-3 text-[11px] uppercase tracking-widest text-faint">
+                <span className="h-px flex-1 bg-line" /> or sign in{" "}
+                <span className="h-px flex-1 bg-line" />
+              </div>
+            </>
+          )}
+
           {config?.google_enabled && (
             <>
               <button onClick={signInGoogle} disabled={busy} className="btn-ghost w-full">

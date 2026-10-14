@@ -115,3 +115,37 @@ def fmt_when(dt: datetime | None, tz: tzinfo) -> str:
 
 def zone_label(tz: tzinfo) -> str:
     return getattr(tz, "key", None) or "UTC"
+
+
+def system_zone_name() -> str:
+    """This machine's IANA zone name, or "" if it can't be determined.
+
+    Used when AURA creates the local owner account: the person is sitting at
+    this computer, so its clock is theirs. Everywhere else the zone comes from
+    the browser or the account, because the server's clock says nothing about
+    where the user is.
+    """
+    try:
+        from datetime import datetime as _dt
+
+        local = _dt.now().astimezone().tzinfo
+        name = getattr(local, "key", None)  # zoneinfo exposes the IANA name
+        if name and is_valid_zone(name):
+            return str(name)
+    except Exception:
+        pass
+
+    # Linux and macOS keep it here; a container often doesn't have it at all.
+    try:
+        import os
+
+        link = "/etc/localtime"
+        if os.path.islink(link):
+            target = os.path.realpath(link)
+            if "zoneinfo/" in target:
+                candidate = target.split("zoneinfo/", 1)[1]
+                if is_valid_zone(candidate):
+                    return candidate
+    except Exception:
+        pass
+    return ""

@@ -757,4 +757,94 @@ class AccountDeleteIn(BaseModel):
     understand: bool = False
 
 
+# ---------------------------------------------------------------------------
+# Device control (local installs)
+# ---------------------------------------------------------------------------
+
+
+class DevicePolicyOut(BaseModel):
+    allowed_roots: list[str] = Field(default_factory=list)
+    protected_paths: list[str] = Field(default_factory=list)
+    exec_mode: str = "ask"
+    exec_allowlist: list[str] = Field(default_factory=list)
+    denylist_active: bool = False
+    exec_timeout_seconds: int = 300
+    max_read_bytes: int = 200_000
+    explanation: str = ""
+
+
+class DeviceStatusOut(BaseModel):
+    """What AURA can do on this machine, for the Device screen and /setup."""
+
+    enabled: bool
+    os: str = ""
+    platform: str = ""
+    arch: str = ""
+    hostname: str = ""
+    user: str = ""
+    home: str = ""
+    python: str = ""
+    shell: dict[str, str] = Field(default_factory=dict)
+    shell_control: bool = False
+    file_control: bool = False
+    process_control: bool = False
+    screen_control: bool = False
+    clipboard: bool = False
+    has_display: bool = False
+    packages: dict[str, bool] = Field(default_factory=dict)
+    policy: DevicePolicyOut | None = None
+    # Device skills the user currently has switched on, so the screen can say
+    # "shell is off" without the user hunting through the skills page.
+    active_skills: list[str] = Field(default_factory=list)
+
+
+class DeviceRunIn(BaseModel):
+    """A command the *user* runs from the Device console, not the agent."""
+
+    command: str = Field(min_length=1, max_length=4000)
+    workdir: str = ""
+    timeout: int | None = Field(default=None, ge=1, le=3600)
+
+
+class DeviceRunOut(BaseModel):
+    command: str = ""
+    workdir: str = ""
+    exit_code: int | None = None
+    ok: bool = False
+    output: str = ""
+    truncated: bool = False
+    duration_ms: int = 0
+    timed_out: bool = False
+    error: str = ""
+
+
+class DeviceProcessOut(BaseModel):
+    pid: int
+    name: str
+    cpu_percent: float = 0.0
+    memory_percent: float = 0.0
+
+
+class DeviceBackgroundOut(BaseModel):
+    session_id: str
+    command: str
+    status: str
+    exit_code: int | None = None
+    running_seconds: int = 0
+
+
+class DeviceFileEntryOut(BaseModel):
+    name: str
+    path: str
+    is_dir: bool
+    size: int = 0
+    modified: float = 0.0
+
+
+class DeviceListingOut(BaseModel):
+    path: str
+    count: int = 0
+    entries: list[DeviceFileEntryOut] = Field(default_factory=list)
+
+
 ChatOut.model_rebuild()

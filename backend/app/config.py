@@ -178,6 +178,76 @@ class Settings(BaseSettings):
     rate_limit_inbound_per_minute: int = 15   # per channel token
     redis_url: str = ""                       # blank = in-memory buckets
 
+    # --- Local device control ---------------------------------------------
+    # The switch that turns AURA from a hosted assistant into one that operates
+    # the computer it runs on: shell, files, apps, screen/keyboard/mouse, system.
+    #
+    # OFF by default, and it MUST stay off on any shared or public deployment —
+    # the whole point is that it gives the agent the current user's hands on
+    # this machine. The local launchers set LOCAL_MODE=true, which turns it on
+    # along with the single-user owner login and the in-process worker. On a
+    # server (Vercel, etc.) none of this is set, so behaviour is unchanged and
+    # the device tools never even reach the model.
+    local_mode: bool = False
+
+    # Explicit override. Blank means "follow local_mode". Set DEVICE_CONTROL=off
+    # to keep a local install chat-only, or =on to enable it without the other
+    # local-mode conveniences (own risk).
+    device_control: Literal["", "on", "off"] = ""
+
+    # Directories the file tools may read and write. Blank means the current
+    # user's home directory. Everything resolves to an absolute real path and is
+    # checked against these roots, so the agent cannot read or write outside
+    # them however the path is written (.., symlinks, ~).
+    device_allowed_roots: str = ""
+
+    # Directories that are always refused even inside an allowed root — secrets
+    # and the things that own this machine's trust.
+    device_protected_paths: str = (
+        "~/.ssh,~/.aws,~/.gnupg,~/.config/gcloud,~/.kube,~/.docker/config.json,"
+        "~/.aura"
+    )
+
+    # How shell command approval works, on top of the autonomy tier:
+    #   ask        every command is previewed and queued for approval unless a
+    #              standing grant covers it (the safe default)
+    #   allowlist  commands matching device_exec_allowlist run without asking;
+    #              everything else is queued
+    #   full       commands run without asking (still subject to the denylist)
+    # The autonomy tier still applies: at "full" trust the tier already waves
+    # shell through, and this narrows that back down when you want it.
+    device_exec_mode: Literal["ask", "allowlist", "full"] = "ask"
+
+    # Command prefixes allowed to run without approval under device_exec_mode
+    # = allowlist, e.g. "git status,git diff,ls,cat,python --version". Matched
+    # against the command with its arguments, prefix-wise.
+    device_exec_allowlist: str = ""
+
+    # Commands refused outright, even after approval and even at full trust —
+    # the last stop against a catastrophic instruction (yours or a web page's).
+    # Empty by default so "operate the whole machine" means what it says; fill
+    # it on a machine you want to fence off. Matched as case-insensitive
+    # substrings of the command.
+    device_command_denylist: str = ""
+
+    # Cap on how long one foreground command may run before it is killed.
+    device_exec_timeout_seconds: int = 300
+
+    # Ceiling on bytes read from a single file / returned from a command, so a
+    # huge file or a chatty command can't blow up the model's context.
+    device_max_read_bytes: int = 200_000
+
+    # Let the agent see and drive the screen (screenshots, mouse, keyboard).
+    # Needs a desktop session and the optional packages in
+    # requirements-device.txt; degrades to "unavailable" without them.
+    device_screen_control: bool = True
+
+    # Run the background worker (heartbeat, schedules, automations, compaction)
+    # inside the API process on a thread, so a single launch does everything.
+    # Blank means "follow local_mode". A real server should run worker.py (or a
+    # platform cron) separately instead and set this to off.
+    run_embedded_worker: Literal["", "on", "off"] = ""
+
     @model_validator(mode="before")
     @classmethod
     def _apply_database_override(cls, values):
@@ -262,6 +332,56 @@ class Settings(BaseSettings):
         return bool(self.openai_base_url) and any(
             host in self.openai_base_url for host in ("localhost", "127.0.0.1", "0.0.0.0")
         )
+
+    # --- Local device control ---------------------------------------------
+
+    @property
+    def device_control_enabled(self) -> bool:
+        """The one gate the whole device subsystem checks.
+
+        DEVICE_CONTROL wins if set; otherwise it follows LOCAL_MODE. Off on any
+        deployment that sets neither, which is every server deployment.
+        """
+        if self.device_control == "on":
+            return True
+        if self.device_control == "off":
+            return False
+        return self.local_mode
+
+    @property
+    def embedded_worker_enabled(self) -> bool:
+        if self.run_embedded_worker == "on":
+            return True
+        if self.run_embedded_worker == "off":
+            return False
+        return self.local_mode
+
+    @property
+    def device_allowed_root_list(self) -> list[str]:
+        import os.path
+
+        raw = [r.strip() for r in self.device_allowed_roots.split(",") if r.strip()]
+        if not raw:
+            raw = ["~"]
+        return [os.path.abspath(os.path.expanduser(r)) for r in raw]
+
+    @property
+    def device_protected_path_list(self) -> list[str]:
+        import os.path
+
+        return [
+            os.path.abspath(os.path.expanduser(p.strip()))
+            for p in self.device_protected_paths.split(",")
+            if p.strip()
+        ]
+
+    @property
+    def device_exec_allow_list(self) -> list[str]:
+        return [c.strip() for c in self.device_exec_allowlist.split(",") if c.strip()]
+
+    @property
+    def device_command_deny_list(self) -> list[str]:
+        return [c.strip().lower() for c in self.device_command_denylist.split(",") if c.strip()]
 
     def resolved_provider(self) -> str:
         if self.llm_provider != "auto":

@@ -362,6 +362,17 @@ def run_agent(
                         }
                     )
 
+            # An image a tool produced (a screenshot) travels separately from
+            # its tool result: both providers take an image on a user turn,
+            # while only one takes it inside a tool result. Lift it out before
+            # the payload goes anywhere else, so a megabyte of base64 isn't
+            # carried through the result object, the stream and the HTTP
+            # response for the sake of one model call.
+            image = None
+            if isinstance(payload, dict) and isinstance(payload.get("image"), dict):
+                image = payload["image"]
+                payload = {k: v for k, v in payload.items() if k != "image"}
+
             result.tool_calls.append(
                 {
                     "name": call.name,
@@ -378,6 +389,20 @@ def run_agent(
                     "content": json.dumps(payload, default=str)[:8000],
                 }
             )
+            if image and image.get("data"):
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": f"[{call.name}] what it captured:"},
+                            {
+                                "type": "image",
+                                "media_type": image.get("media_type", "image/png"),
+                                "data": image["data"],
+                            },
+                        ],
+                    }
+                )
     else:
         result.text = result.text or (
             "I ran out of steps on that one. Here's where I got to — ask me to continue "

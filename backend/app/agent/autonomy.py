@@ -66,13 +66,63 @@ SAFE_WRITE = {
     "notify",
     "delegate_task",
     "chase_delegation",  # drafts the nudge; sending is a separate, gated step
+    # Device: a native notification is harmless and self-contained.
+    "desktop_notify",
 }
 
 # Visible outside AURA, but recoverable.
-EXTERNAL_WRITE = {"create_event"}
+EXTERNAL_WRITE = {
+    "create_event",
+    # Device actions that change the machine's state but are recoverable or
+    # visible rather than destructive: writing/editing files, moving things,
+    # opening/closing apps, driving the screen, the clipboard. These sit at
+    # "external" so conservative trust asks first and relaxed trust acts.
+    "write_file",
+    "edit_file",
+    "move_file",
+    "make_directory",
+    "open_app",
+    "close_app",
+    "set_clipboard",
+    "mouse_click",
+    "type_text",
+    "press_keys",
+    "scroll_screen",
+    "send_process_input",
+}
 
 # Irreversible or seen by other people.
-IRREVERSIBLE = {"send_email", "archive_email", "delete_event", "delete_task"}
+IRREVERSIBLE = {
+    "send_email",
+    "archive_email",
+    "delete_event",
+    "delete_task",
+    # Device: running arbitrary code and anything with no undo. These stay at
+    # the top class, so only full trust (or a standing grant) runs them without
+    # asking — and shell additionally passes the exec denylist floor.
+    "run_command",
+    "run_in_background",
+    "stop_process",
+    "kill_process",
+    "delete_file",
+}
+
+# Device read-only tools: observing the machine, never changing it. Folded into
+# READ_ONLY below so they run at every tier like any other read.
+DEVICE_READ_ONLY = {
+    "read_file",
+    "list_directory",
+    "search_files",
+    "list_applications",
+    "system_info",
+    "list_processes",
+    "list_background_commands",
+    "process_output",
+    "read_clipboard",
+    "take_screenshot",
+    "fetch_url",
+}
+READ_ONLY = READ_ONLY | DEVICE_READ_ONLY
 
 # The highest risk class each tier will run without asking.
 _TIER_CEILING = {

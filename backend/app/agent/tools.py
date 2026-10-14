@@ -1338,3 +1338,15 @@ def _check_focus_blocks(ctx: ToolContext, args: dict) -> dict:
         "intrusions": intrusions,
         "suggested_alternatives": alternatives[:4],
     }
+
+
+# ---------------------------------------------------------------------------
+# Device-control tools (local mode)
+# ---------------------------------------------------------------------------
+
+# Importing the module registers its tools into REGISTRY above. They are only
+# ever offered to the model when the device-control plugin is installed, which
+# happens only in local mode — so on a server this import is inert and the
+# tools stay invisible. Kept at the end so `tool`, `ToolContext` and `_log` are
+# all defined before device_tools.py imports them.
+from app.agent import device_tools as _device_tools  # noqa: E402,F401
