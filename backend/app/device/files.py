@@ -251,12 +251,45 @@ def _grep(path: str, needle: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+# Line endings. Files are read and written exactly as they are (no newline
+# translation), so what read_file shows is what's on disk on every system.
+# Python's text mode would otherwise turn every "\n" into "\r\n" when writing
+# on Windows, and every "\r\n" into "\n" when reading anywhere — so editing
+# one line would silently rewrite the line endings of the whole file. Instead
+# a write into an existing file keeps that file's own convention.
+
+
+def _newline_style(text: str) -> str:
+    """"\r\n" when the text's first line break is CRLF, otherwise "\n"."""
+    at = text.find("\n")
+    return "\r\n" if at > 0 and text[at - 1] == "\r" else "\n"
+
+
+def _in_style(text: str, newline: str) -> str:
+    if newline == "\r\n":
+        return text.replace("\r\n", "\n").replace("\n", "\r\n")
+    return text
+
+
+def _existing_style(real: str) -> str | None:
+    """The line endings a file already uses, or None for a new or empty one."""
+    try:
+        with open(real, "r", encoding="utf-8", errors="replace", newline="") as fh:
+            head = fh.read(65536)
+    except OSError:
+        return None
+    return _newline_style(head) if "\n" in head else None
+
+
 def write_text(path: str, content: str, *, append: bool = False) -> dict:
     real = resolve(path)
     _guard_write(real, path)
     os.makedirs(os.path.dirname(real) or ".", exist_ok=True)
     existed = os.path.exists(real)
-    with open(real, "a" if append else "w", encoding="utf-8") as fh:
+    style = _existing_style(real) if existed else None
+    if style:
+        content = _in_style(content, style)
+    with open(real, "a" if append else "w", encoding="utf-8", newline="") as fh:
         fh.write(content)
     return {
         "path": _rel(real),
@@ -270,16 +303,24 @@ def edit_text(path: str, find: str, replace: str, *, count: int = 0) -> dict:
     """Replace exact text in a file. count=0 replaces every occurrence."""
     real = resolve(path, must_exist=True)
     _guard_write(real, path)
-    with open(real, "r", encoding="utf-8", errors="replace") as fh:
+    with open(real, "r", encoding="utf-8", errors="replace", newline="") as fh:
         original = fh.read()
-    occurrences = original.count(find)
+    # The model tends to quote text with "\n" whatever the file uses; in a
+    # CRLF file, try its own line endings first, then the text as given.
+    style = _newline_style(original)
+    occurrences = 0
+    for f, r in ((_in_style(find, style), _in_style(replace, style)), (find, replace)):
+        occurrences = original.count(f)
+        if occurrences:
+            find, replace = f, r
+            break
     if occurrences == 0:
         raise DeviceUnavailable(
             "The text to replace wasn't found, so nothing was changed. "
             "Read the file first and copy the text exactly."
         )
     updated = original.replace(find, replace, count if count > 0 else -1)
-    with open(real, "w", encoding="utf-8") as fh:
+    with open(real, "w", encoding="utf-8", newline="") as fh:
         fh.write(updated)
     return {
         "path": _rel(real),

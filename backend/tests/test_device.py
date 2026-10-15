@@ -251,6 +251,29 @@ def test_files_round_trip_inside_the_fence(sandbox):
         device_files.read_text(str(target))
 
 
+def test_files_keep_their_own_line_endings(sandbox):
+    """No newline translation on any system: an edit changes what it edits."""
+    lf = sandbox / "unix.txt"
+    device_files.write_text(str(lf), "one\ntwo\n")
+    assert lf.read_bytes() == b"one\ntwo\n"  # not CRLF, even on Windows
+
+    crlf = sandbox / "windows.txt"
+    crlf.write_bytes(b"one\r\ntwo\r\n")
+    assert device_files.read_text(str(crlf))["content"] == "one\r\ntwo\r\n"
+
+    # The model quotes with "\n"; the file keeps its "\r\n".
+    device_files.edit_text(str(crlf), "one\ntwo", "uno\ndos")
+    assert crlf.read_bytes() == b"uno\r\ndos\r\n"
+    device_files.write_text(str(crlf), "tres\n", append=True)
+    assert crlf.read_bytes() == b"uno\r\ndos\r\ntres\r\n"
+    device_files.write_text(str(crlf), "new\ncontent\n")
+    assert crlf.read_bytes() == b"new\r\ncontent\r\n"
+
+    # And an LF file edited anywhere stays LF.
+    device_files.edit_text(str(lf), "two", "2")
+    assert lf.read_bytes() == b"one\n2\n"
+
+
 def test_edit_that_matches_nothing_changes_nothing(sandbox):
     target = sandbox / "a.txt"
     device_files.write_text(str(target), "hello")
