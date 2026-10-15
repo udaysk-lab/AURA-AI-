@@ -1,11 +1,14 @@
 # Builds the AURA AI desktop app for Windows, macOS and Linux, checks each
 # build actually starts and answers, and publishes them as a GitHub release.
 #
-# Runs when a version tag is pushed (v1.0.0 — it must match
-# backend/app/version.py), or by hand from the Actions tab to try a build
-# without publishing it. A pull request that changes how the app is built or
-# packaged builds and smoke-tests it too, so a release tag never meets a
-# broken build for the first time. Only a tag publishes.
+# Publishes when a version tag is pushed (v1.0.0), or a release branch
+# (release/v1.0.0) for tools that can push branches but not tags — the
+# workflow then creates the tag itself. Either must match
+# backend/app/version.py.
+#
+# A pull request that changes how the app is built or packaged builds and
+# smoke-tests it too, so a release never meets a broken build for the first
+# time; so does a run by hand from the Actions tab. Neither publishes.
 #
 # The website's download buttons point at
 #   https://github.com/udaysk-lab/AURA-AI-/releases/latest/download/<file>
@@ -15,6 +18,7 @@ name: Desktop release
 on:
   push:
     tags: ["v*"]
+    branches: ["release/v*"]
   pull_request:
     paths:
       - "desktop/**"
@@ -26,11 +30,6 @@ on:
       - "frontend/scripts/**"
       - ".github/workflows/desktop-release.yml"
   workflow_dispatch:
-    inputs:
-      publish:
-        description: "Publish a release (only from a tag)"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -45,12 +44,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Tag matches the app's version
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Release name matches the app's version
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')
         run: |
           app=$(python3 -c "import re;print(re.search(r'__version__ = \"(.+?)\"', open('backend/app/version.py').read()).group(1))")
-          tag="${GITHUB_REF_NAME#v}"
-          echo "app $app, tag $tag"
+          tag="${GITHUB_REF_NAME#release/}"
+          tag="${tag#v}"
+          echo "app $app, release $tag"
           test "$app" = "$tag"
       - uses: actions/setup-node@v6
         with:
@@ -167,7 +167,7 @@ jobs:
   release:
     name: Publish the release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -188,11 +188,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${GITHUB_REF_NAME}"
+          # v1.0.0 from a tag; from release/v1.0.0 the tag is made here, on
+          # the commit that was built.
+          tag="${GITHUB_REF_NAME#release/}"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" dist/* --clobber
           else
             gh release create "$tag" dist/* \
+              --target "$GITHUB_SHA" \
               --title "AURA AI ${tag}" \
               --notes-file desktop/RELEASE_NOTES.md \
               --latest

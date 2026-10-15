@@ -138,7 +138,9 @@ still match the models.
 
 1. Set the version in `backend/app/version.py` (e.g. `1.0.1`) and update
    `desktop/RELEASE_NOTES.md`.
-2. Push a matching tag: `git tag v1.0.1 && git push origin v1.0.1`.
+2. Push a matching tag: `git tag v1.0.1 && git push origin v1.0.1` — or, where
+   only branches can be pushed, a `release/v1.0.1` branch, and the workflow
+   makes the tag on the commit it built.
 3. The **Desktop release** workflow builds Windows (installer and portable zip),
    macOS (Apple silicon and Intel) and Linux, starts every build and checks it
    answers (`--smoke-test`), installs the Windows installer and checks the

@@ -124,9 +124,11 @@ Other options: `--port 9000`, `--data-dir <folder>`, `--no-browser`,
 ## Publishing a release
 
 See [DEPLOY.md](../DEPLOY.md#the-desktop-app): bump `backend/app/version.py`,
-update `RELEASE_NOTES.md`, push a matching `v` tag. The **Desktop release**
-workflow builds and smoke-tests every platform, installs and re-tests the
-Windows installer, and publishes the files the home page links to.
+update `RELEASE_NOTES.md`, push a matching `v` tag (or a `release/v…` branch).
+The **Desktop release** workflow builds and smoke-tests every platform,
+installs and re-tests the Windows installer, and publishes the files the home
+page links to. Pull requests that touch the packaging run the same builds
+without publishing.
 
 ## Files here
 
