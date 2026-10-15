@@ -10,9 +10,15 @@ type Tier = {
   monthly: number | null;
   blurb: string;
   cta: string;
+  /** Where the button goes. Plans you start yourself go to sign-up. */
+  href?: string;
   features: string[];
   featured?: boolean;
 };
+
+// Team plans start with a conversation. The project's issue tracker is the
+// public way to reach the people behind AURA until there's a contact address.
+const CONTACT = "https://github.com/udaysk-lab/AURA-AI-/issues/new?title=Studio%20plan%20enquiry";
 
 const TIERS: Tier[] = [
   {
@@ -37,7 +43,7 @@ const TIERS: Tier[] = [
     cta: "Get started",
     featured: true,
     features: [
-      "All 21 skills",
+      "Every skill in the browser",
       "Overnight heartbeat and briefings",
       "Unlimited memory with consolidation",
       "All four trust levels",
@@ -51,6 +57,7 @@ const TIERS: Tier[] = [
     monthly: 49,
     blurb: "Shared context, per-person assistants, and an audit trail.",
     cta: "Talk to us",
+    href: CONTACT,
     features: [
       "Everything in Daily",
       "One assistant per teammate",
@@ -72,7 +79,7 @@ export default function Pricing() {
   };
 
   return (
-    <section id="pricing" className="relative mx-auto max-w-6xl px-6 py-24">
+    <section id="pricing" className="relative mx-auto max-w-6xl scroll-mt-24 px-6 py-24">
       <div
         className="aurora-spot left-1/2 top-10 h-[340px] w-[560px] -translate-x-1/2"
         style={{ background: "rgb(var(--accent) / 0.28)" }}
@@ -84,8 +91,8 @@ export default function Pricing() {
           Choose your plan
         </h2>
         <p className="mx-auto max-w-md text-[14.5px] leading-relaxed text-muted">
-          Start free and keep the assistant you raised. Upgrade when you want it
-          working through the night.
+          For AURA in your browser. Start free and keep the assistant you raised; upgrade
+          when you want it working through the night. The desktop app is free.
         </p>
 
         <div className="mt-7 inline-flex items-center gap-3">
@@ -165,12 +172,23 @@ export default function Pricing() {
                 ))}
               </ul>
 
-              <Link
-                href="/login"
-                className={`w-full ${t.featured ? "btn-primary" : "btn-ghost"}`}
-              >
-                {t.cta} <ArrowRight size={14} />
-              </Link>
+              {t.href ? (
+                <a
+                  href={t.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={`w-full ${t.featured ? "btn-primary" : "btn-ghost"}`}
+                >
+                  {t.cta} <ArrowRight size={14} />
+                </a>
+              ) : (
+                <Link
+                  href="/login"
+                  className={`w-full ${t.featured ? "btn-primary" : "btn-ghost"}`}
+                >
+                  {t.cta} <ArrowRight size={14} />
+                </Link>
+              )}
             </div>
           );
 

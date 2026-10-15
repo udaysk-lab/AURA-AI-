@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ArrowRight, Menu, X } from "lucide-react";
+import { ArrowRight, Download, Menu, X } from "lucide-react";
 import Mascot from "@/components/Mascot";
 import { useAuth } from "@/lib/auth";
 
 const LINKS = [
   { href: "#stages", label: "How it grows" },
   { href: "#skills", label: "Skills" },
+  { href: "#computer", label: "On your computer" },
   { href: "#pricing", label: "Pricing" },
   { href: "#faq", label: "FAQ" },
 ];
@@ -77,9 +78,9 @@ export default function LandingNav() {
               >
                 Sign in
               </Link>
-              <Link href="/login" className="btn-primary !px-4 !py-1.5 text-[13px]">
-                Get started
-              </Link>
+              <a href="#download" className="btn-primary !px-4 !py-1.5 text-[13px]">
+                <Download size={13} /> Download
+              </a>
             </>
           )}
           <button

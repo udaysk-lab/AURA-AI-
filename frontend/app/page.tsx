@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowDown, ArrowRight, Sparkles } from "lucide-react";
+import { ArrowRight, Sparkles } from "lucide-react";
 import Mascot from "@/components/Mascot";
 import LandingNav from "@/components/landing/LandingNav";
 import HeroPreview from "@/components/landing/HeroPreview";
@@ -7,16 +7,21 @@ import LogoMarquee from "@/components/landing/LogoMarquee";
 import Bento from "@/components/landing/Bento";
 import Pricing from "@/components/landing/Pricing";
 import Faq from "@/components/landing/Faq";
+import DownloadCta from "@/components/landing/DownloadCta";
+import GetAura from "@/components/landing/GetAura";
+import OnYourComputer from "@/components/landing/OnYourComputer";
+import DesktopHome from "@/components/landing/DesktopHome";
+import { SkillCount } from "@/components/landing/SkillCount";
+import { REPO_URL } from "@/lib/downloads";
 
 // `edge` keeps the divider rules static so Tailwind can see every class.
 //
 // These are claims about the product, so they have to stay true. Sources:
-//   skills   → backend/app/agent/skills.py CATALOG
+//   skills   → GET /api/skills/catalog (backend/app/agent/skills.py CATALOG)
 //   channels → backend/app/services/channels.py KINDS, available ones only
 //   trust    → backend/app/agent/autonomy.py TIERS
-// If you add a skill or a channel, update the number here in the same commit.
 const STATS = [
-  { value: "21", label: "Named skills", edge: "" },
+  { value: <SkillCount />, label: "Named skills", edge: "" },
   { value: "5", label: "Ways to reach it", edge: "border-l border-line" },
   {
     value: "4",
@@ -42,25 +47,30 @@ const STAGES = [
   },
   {
     stage: "acquaintance" as const,
-    need: "5 chats · 3 things learned · 2 actions",
+    need: "5 chats, 3 things learned, 2 actions",
     title: "Acquaintance",
     body: "It's picking up patterns. Gets things half-right, asks better questions. Correct it and the correction sticks.",
   },
   {
     stage: "colleague" as const,
-    need: "25 chats · 12 things learned · 15 actions",
+    need: "25 chats, 12 things learned, 15 actions",
     title: "Colleague",
     body: "It finishes your thought. Acts before you ask. You stop managing it and start relying on it.",
   },
   {
     stage: "chief_of_staff" as const,
-    need: "80 chats · 30 things learned · 60 actions",
+    need: "80 chats, 30 things learned, 60 actions",
     title: "Chief of Staff",
     body: "It runs your day without checking in, and surfaces only what genuinely needs your judgement.",
   },
 ];
 
 export default function Landing() {
+  // Inside the desktop app this page is a doorway into the app, not an advert
+  // for it. The value is fixed at build time, so the hosted build carries none
+  // of this and the desktop build none of the rest.
+  if (process.env.NEXT_PUBLIC_AURA_DESKTOP === "1") return <DesktopHome />;
+
   return (
     <div className="relative overflow-hidden">
       <LandingNav />
@@ -77,9 +87,9 @@ export default function Landing() {
         />
 
         <div className="relative mx-auto max-w-3xl text-center">
-          <a href="#skills" className="pill mb-7 animate-fade-up hover:text-ink">
+          <a href="#download" className="pill mb-7 animate-fade-up hover:text-ink">
             <Sparkles size={12} className="text-accent-soft" />
-            Skills v2 — all twenty-one live
+            Now on Windows, Mac and Linux
             <ArrowRight size={12} className="text-faint" />
           </a>
 
@@ -96,29 +106,14 @@ export default function Landing() {
             className="mx-auto mb-9 max-w-xl animate-fade-up text-[16px] leading-relaxed text-muted"
             style={{ animationDelay: "120ms" }}
           >
-            AURA starts as a stranger. It reads your inbox, holds your calendar,
-            tracks what you owe people, and learns how you like things done — until
-            you stop managing it and start relying on it.
+            AURA reads your inbox, holds your calendar, tracks what you owe people and
+            learns how you like things done. On your own computer it can work the computer
+            too, asking first.
           </p>
 
-          <div
-            className="flex animate-fade-up flex-wrap items-center justify-center gap-3"
-            style={{ animationDelay: "180ms" }}
-          >
-            <Link href="/login" className="btn-primary !px-6 !py-2.5">
-              Wake one up <ArrowRight size={15} />
-            </Link>
-            <a href="#skills" className="btn-ghost !px-6 !py-2.5">
-              See it work <ArrowDown size={15} />
-            </a>
+          <div className="animate-fade-up" style={{ animationDelay: "180ms" }}>
+            <DownloadCta />
           </div>
-
-          <p
-            className="mt-5 animate-fade-up text-[12.5px] text-faint"
-            style={{ animationDelay: "220ms" }}
-          >
-            Runs on realistic sample data out of the box. No setup, no card.
-          </p>
         </div>
 
         <div
@@ -143,14 +138,14 @@ export default function Landing() {
 
       {/* ---------------------------------------------------------- Logo strip */}
       <section className="mx-auto max-w-5xl px-6 py-12">
-        <p className="mb-7 text-center text-[12px] uppercase tracking-[0.2em] text-faint">
+        <p className="mb-7 text-center text-[12.5px] text-faint">
           Works across the tools you already live in
         </p>
         <LogoMarquee />
       </section>
 
       {/* -------------------------------------------------------------- Stages */}
-      <section id="stages" className="relative mx-auto max-w-6xl px-6 py-24">
+      <section id="stages" className="relative mx-auto max-w-6xl scroll-mt-24 px-6 py-24">
         <div
           className="aurora-spot left-0 top-20 h-[380px] w-[380px]"
           style={{ background: "rgb(var(--c-violet) / 0.24)" }}
@@ -170,30 +165,32 @@ export default function Landing() {
           </p>
         </div>
 
-        <div className="relative grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <ol className="relative grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {STAGES.map((s, i) => (
-            <div key={s.stage} className="glass group">
+            <li key={s.stage} className="glass group">
               <div className="p-7">
                 <div className="mb-5 flex items-center justify-between">
                   <Mascot colourway="violet" stage={s.stage} size={56} />
-                  <span className="font-mono text-[11px] text-faint">
-                    0{i + 1}
-                  </span>
+                  <span className="font-mono text-[11px] text-faint">0{i + 1}</span>
                 </div>
                 <div className="mb-2 text-[11px] font-medium tracking-wide text-faint">{s.need}</div>
-                <h3 className="mb-2 text-[17px] font-semibold tracking-tight">
-                  {s.title}
-                </h3>
+                <h3 className="mb-2 text-[17px] font-semibold tracking-tight">{s.title}</h3>
                 <p className="text-[13.5px] leading-relaxed text-muted">{s.body}</p>
                 <div className="mt-6 h-px w-full bg-gradient-to-r from-accent/50 via-accent/10 to-transparent" />
               </div>
-            </div>
+            </li>
           ))}
-        </div>
+        </ol>
       </section>
 
       {/* ------------------------------------------------------------- Skills */}
       <Bento />
+
+      {/* ------------------------------------------------- On your computer */}
+      <OnYourComputer />
+
+      {/* ----------------------------------------------------------- Download */}
+      <GetAura />
 
       {/* ------------------------------------------------------------ Pricing */}
       <Pricing />
@@ -209,29 +206,17 @@ export default function Landing() {
             style={{ background: "rgb(var(--accent) / 0.45)" }}
           />
           <div className="relative px-8 py-16">
-            <Mascot
-              colourway="violet"
-              stage="chief_of_staff"
-              size={64}
-              className="mx-auto mb-6"
-            />
+            <Mascot colourway="violet" stage="chief_of_staff" size={64} className="mx-auto mb-6" />
             <h2 className="display text-shine mx-auto mb-4 max-w-lg text-[30px] sm:text-[40px]">
               Wake one up tonight.
               <br />
               Rely on it by Friday.
             </h2>
             <p className="mx-auto mb-8 max-w-md text-[14.5px] leading-relaxed text-muted">
-              It boots as a stranger with sample data. By the end of the week it
-              knows how you work — and it will have already done some of it.
+              It starts as a stranger with sample data. By the end of the week it knows how
+              you work — and it will have already done some of it.
             </p>
-            <div className="flex flex-wrap items-center justify-center gap-3">
-              <Link href="/login" className="btn-primary !px-6 !py-2.5">
-                Get started <ArrowRight size={15} />
-              </Link>
-              <a href="#pricing" className="btn-ghost !px-6 !py-2.5">
-                Compare plans
-              </a>
-            </div>
+            <DownloadCta compact />
           </div>
         </div>
       </section>
@@ -244,20 +229,26 @@ export default function Landing() {
             <span className="text-[14px] font-semibold tracking-tight">AURA</span>
           </div>
           <p className="max-w-md text-[12.5px] leading-relaxed text-faint">
-            Email, calendar, tasks, memory and automation — in one assistant that
-            remembers.
+            Email, calendar, tasks, memory and automation — in one assistant that remembers,
+            in your browser or on your own computer.
           </p>
-          <div className="flex items-center gap-5 text-[12.5px] text-faint">
+          <nav aria-label="Footer" className="flex flex-wrap items-center justify-center gap-5 text-[12.5px] text-faint">
+            <a href="#download" className="transition hover:text-muted">
+              Download
+            </a>
             <a href="#skills" className="transition hover:text-muted">
               Skills
             </a>
             <a href="#pricing" className="transition hover:text-muted">
               Pricing
             </a>
+            <a href={REPO_URL} className="transition hover:text-muted">
+              Source code
+            </a>
             <Link href="/login" className="transition hover:text-muted">
               Sign in
             </Link>
-          </div>
+          </nav>
         </div>
       </footer>
     </div>

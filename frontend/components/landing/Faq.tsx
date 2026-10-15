@@ -14,7 +14,23 @@ const ITEMS = [
   },
   {
     q: "What are skills, and why can I switch them off?",
-    a: "Twenty-one named capabilities, each with its own code. Turning one off doesn't hide a button — the assistant genuinely loses that ability, and will tell you so when it can't help.",
+    a: "Named capabilities, each with its own code — twenty-one in the browser, and seven more in the desktop app for working your computer. Turning one off doesn't hide a button: the assistant genuinely loses that ability, and will tell you so when it can't help.",
+  },
+  {
+    q: "What does the desktop app add?",
+    a: "Everything in the browser version, running on your own machine — plus the ability to work the computer itself: run commands, find and edit files, open apps, check the system and, for programs with no command line, see the screen and use the mouse and keyboard. Your chats and memory stay on your computer.",
+  },
+  {
+    q: "Is it safe to let an assistant use my computer?",
+    a: "It's built to ask. Below full trust, running a command or using the mouse and keyboard waits for your approval, showing exactly what it will do. File tools are fenced to the folders you allow, and never touch the folders that hold your keys and credentials, or anything that runs at startup. Commands you never want run can be refused outright, and only your computer — and phones you pair — can reach it.",
+  },
+  {
+    q: "Why does Windows or macOS warn me when I open it?",
+    a: "Because the app isn't code-signed yet, and signing certificates cost money a free project doesn't have. On Windows choose More info, then Run anyway. On a Mac, right-click the app and choose Open. The source code and SHA-256 checksums for every download are public, so you can check what you're running.",
+  },
+  {
+    q: "Do I need an API key?",
+    a: "Not to start: without one, AURA runs a limited demo that understands a few kinds of request. For the real assistant, paste a Claude or OpenAI key in Settings → AI model — or point it at a free model running on your own machine with Ollama or LM Studio.",
   },
   {
     q: "What does it do while I'm not there?",
@@ -34,7 +50,7 @@ export default function Faq() {
   const [open, setOpen] = useState<number | null>(0);
 
   return (
-    <section id="faq" className="mx-auto max-w-3xl px-6 py-24">
+    <section id="faq" className="mx-auto max-w-3xl scroll-mt-24 px-6 py-24">
       <div className="mb-10 text-center">
         <span className="pill mb-5">Answers</span>
         <h2 className="display text-shine text-[32px] sm:text-[40px]">

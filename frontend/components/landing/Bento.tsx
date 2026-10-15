@@ -7,31 +7,7 @@ import {
   Sparkles,
   Wand2,
 } from "lucide-react";
-
-/**
- * The full skill catalogue, in the order it is declared in
- * backend/app/agent/skills.py.
- *
- * This list previously drifted: it advertised MM02, DR01, AU01 and PL01, none of
- * which exist, and omitted eleven skills that do. Keep it in step with the
- * backend catalogue — or better, when this page can afford a client fetch, read
- * it from GET /api/skills so it cannot drift again.
- */
-const SKILL_CODES = [
-  "EM01", "EM02", "EM03",
-  "CA01", "CA02", "CA03",
-  "MP01",
-  "TK01", "TK02",
-  "MM01",
-  "CT01",
-  "BR01",
-  "NT01",
-  "SY01",
-  "RS01", "RS02",
-  "DC01", "DC02",
-  "DL01", "DL02",
-  "FG01",
-] as const;
+import { SkillChips, SkillCount } from "@/components/landing/SkillCount";
 
 /**
  * Asymmetric capability mosaic. Each tile carries a small piece of real product
@@ -39,7 +15,7 @@ const SKILL_CODES = [
  */
 export default function Bento() {
   return (
-    <section id="skills" className="relative mx-auto max-w-6xl px-6 py-24">
+    <section id="skills" className="relative mx-auto max-w-6xl scroll-mt-24 px-6 py-24">
       <div
         className="aurora-spot right-0 top-24 h-[420px] w-[420px]"
         style={{ background: "rgb(var(--c-azure) / 0.24)" }}
@@ -51,8 +27,10 @@ export default function Bento() {
           Skills, not features.
         </h2>
         <p className="text-[15px] leading-relaxed text-muted">
-          Twenty-one named capabilities you can switch on, off, and teach. Turn
-          one off and your assistant genuinely can&apos;t use it — and it will say so.
+          <SkillCount /> named capabilities you can switch on, off and teach —{" "}
+          <SkillCount kind="browser" /> everywhere, and <SkillCount kind="device" /> more
+          that work your computer in the desktop app. Turn one off and your assistant
+          genuinely can&apos;t use it, and it will say so.
         </p>
       </div>
 
@@ -279,18 +257,10 @@ export default function Bento() {
                 </span>
                 <span className="label">Skill registry</span>
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                {SKILL_CODES.map((c) => (
-                  <span
-                    key={c}
-                    className="chip border-accent/25 bg-accent-dim font-mono text-accent-soft"
-                  >
-                    {c}
-                  </span>
-                ))}
-              </div>
+              <SkillChips />
               <p className="mt-3 text-[12.5px] text-faint">
-                Each one switchable, teachable, and auditable.
+                Each one switchable, teachable and auditable. The teal ones are the desktop
+                app&apos;s.
               </p>
             </div>
           </div>
