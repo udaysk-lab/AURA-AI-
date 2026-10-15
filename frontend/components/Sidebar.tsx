@@ -95,8 +95,11 @@ export default function Sidebar({
     if (!force && Date.now() - lastLoad.current < 15_000) return;
     lastLoad.current = Date.now();
     try {
+      // On a page load the page beside this asks for the same list; the
+      // shared request answers both. A forced reload (after a decision, or
+      // the 30-second poll) asks afresh.
       const [actions, notes] = await Promise.all([
-        api.pendingActions(),
+        api.pendingActions(force),
         api.notifications().catch(() => []),
       ]);
       setPending(actions);

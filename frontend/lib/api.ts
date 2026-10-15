@@ -7,10 +7,11 @@ const CONFIGURED_API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "");
 /**
  * Where the API lives.
  *
- * Set NEXT_PUBLIC_API_URL when the backend is on a different host — a Render
- * service, say. Leave it unset and requests go to the page's own origin, which
- * is correct whenever something in front of the app routes /api to the backend:
- * the `rewrites` in vercel.json do exactly that, as would a reverse proxy.
+ * Set NEXT_PUBLIC_API_URL when the backend is on a different host — `npm run
+ * dev` against a backend on :8000, say. Leave it unset and requests go to the
+ * page's own origin, which is correct whenever something in front of the app
+ * routes /api to the backend: the `rewrites` in vercel.json do exactly that, as
+ * does the desktop app, whose backend serves the web app itself.
  *
  * The old fallback was a hardcoded http://localhost:8000. That is right in
  * development and actively wrong once deployed, where it makes every visitor's
@@ -93,7 +94,7 @@ export function browserTimeZone(): string {
 // bounce the visitor to the sign-in form: the landing page's AuthProvider
 // checks the token on load, and a 401 there used to redirect everyone with an
 // expired session away from the marketing page.
-const PUBLIC_PATHS = ["/", "/login", "/setup", "/auth/callback"];
+const PUBLIC_PATHS = ["/", "/login", "/setup", "/auth/callback", "/reset-password"];
 
 function onPublicPage(): boolean {
   if (typeof window === "undefined") return true;
@@ -171,7 +172,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   // password. Let these fall through to the generic branch below so the real
   // message reaches the form.
   const isCredentialCheck =
-    path === "/api/auth/login" || path === "/api/auth/register";
+    path === "/api/auth/login" ||
+    path === "/api/auth/register" ||
+    path === "/api/auth/local" ||
+    path === "/api/remote/pair" ||
+    path.startsWith("/api/auth/password/");
 
   if (res.status === 401 && !isCredentialCheck) handleExpiredSession();
   if (!res.ok) throw new ApiError(res.status, await describeError(res));
@@ -184,7 +189,35 @@ const post = <T,>(p: string, body?: unknown) =>
   request<T>(p, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
 const patch = <T,>(p: string, body?: unknown) =>
   request<T>(p, { method: "PATCH", body: body === undefined ? undefined : JSON.stringify(body) });
+const put = <T,>(p: string, body?: unknown) =>
+  request<T>(p, { method: "PUT", body: body === undefined ? undefined : JSON.stringify(body) });
 const del = <T,>(p: string) => request<T>(p, { method: "DELETE" });
+
+/**
+ * One request, shared by everyone who asks within a moment of each other.
+ *
+ * The sidebar's badge and the page it sits beside both want the pending
+ * approvals as a screen loads, which was two identical requests every time.
+ * Callers that change the answer clear it with `forget`.
+ */
+const shared = new Map<string, { at: number; promise: Promise<unknown> }>();
+const SHARE_MS = 1500;
+
+function sharedGet<T>(path: string): Promise<T> {
+  const now = Date.now();
+  const hit = shared.get(path);
+  if (hit && now - hit.at < SHARE_MS) return hit.promise as Promise<T>;
+  const promise = get<T>(path).catch((e) => {
+    shared.delete(path);
+    throw e;
+  });
+  shared.set(path, { at: now, promise });
+  return promise;
+}
+
+export function forget(path: string) {
+  shared.delete(path);
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -461,6 +494,8 @@ export interface Grant {
   id: string;
   tool_name: string;
   scope: string;
+  /** For send_email: the one recipient it covers. Empty: the whole tool. */
+  target: string;
   expires_at: string | null;
   created_at: string;
 }
@@ -497,11 +532,100 @@ export interface AuthConfig {
   google_enabled: boolean;
   demo_login_enabled: boolean;
   password_login_enabled: boolean;
+  /** "Forgot password?" works here (a mail server is configured). */
+  password_reset_enabled?: boolean;
   llm_provider: string;
   /** True when AURA is running as one person's local install. */
   local_mode: boolean;
   /** True when it can operate the computer it's running on. */
   device_control: boolean;
+  /** The desktop app: signing in needs the key from the link it opened. */
+  local_login_key_required?: boolean;
+  /** This browser is on another device, reaching a local install. */
+  remote_client?: boolean;
+  remote_access?: boolean;
+  version?: string;
+}
+
+// ---------------------------------------------------------------------------
+// The desktop app: model settings, remote access, pairing
+// ---------------------------------------------------------------------------
+
+export interface LocalProvider {
+  provider: string;
+  choice: "auto" | "anthropic" | "openai" | "mock";
+  anthropic_key_set: boolean;
+  anthropic_key_hint: string;
+  anthropic_model: string;
+  openai_key_set: boolean;
+  openai_key_hint: string;
+  openai_model: string;
+  openai_base_url: string;
+  background_model: string;
+  config_file: string;
+  writable: boolean;
+}
+
+export type LocalProviderPatch = Partial<{
+  choice: LocalProvider["choice"];
+  anthropic_api_key: string;
+  anthropic_model: string;
+  openai_api_key: string;
+  openai_model: string;
+  openai_base_url: string;
+  background_model: string;
+}>;
+
+export interface ProviderTest {
+  ok: boolean;
+  provider: string;
+  model: string;
+  detail: string;
+}
+
+export interface RemoteSettings {
+  enabled: boolean;
+  saved: boolean;
+  hostnames: string;
+  restart_needed: boolean;
+  writable: boolean;
+}
+
+export interface RemoteStatus {
+  available: boolean;
+  enabled: boolean;
+  listening: boolean;
+  remote_session: boolean;
+  urls: string[];
+}
+
+export interface Pairing {
+  code: string;
+  expires_at: string;
+  urls: string[];
+}
+
+export interface PairedDevice {
+  id: string;
+  name: string;
+  created_at: string;
+  last_seen_at: string | null;
+  last_address: string;
+  this_device: boolean;
+}
+
+export interface CatalogSkill {
+  code: string;
+  name: string;
+  category: string;
+  description: string;
+  device: boolean;
+  tools: number;
+}
+
+export interface SkillCatalog {
+  skills: CatalogSkill[];
+  counts: { skills: number; device_skills: number; tools: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -729,7 +853,28 @@ export const api = {
    * from: anyone who can reach loopback here can already run commands as this
    * user.
    */
-  localLogin: () => post<{ access_token: string; user: User }>("/api/auth/local"),
+  localLogin: (key = "") =>
+    post<{ access_token: string; user: User }>("/api/auth/local", { key }),
+  forgotPassword: (email: string) =>
+    post<{ message: string }>("/api/auth/password/forgot", { email }),
+  resetPassword: (token: string, password: string) =>
+    post<{ access_token: string; user: User }>("/api/auth/password/reset", { token, password }),
+  remotePair: (code: string, deviceName: string) =>
+    post<{ access_token: string; user: User; device_id: string }>("/api/remote/pair", {
+      code,
+      device_name: deviceName,
+    }),
+  remoteStatus: () => get<RemoteStatus>("/api/remote/status"),
+  startPairing: () => post<Pairing>("/api/remote/pairing"),
+  pairedDevices: () => get<PairedDevice[]>("/api/remote/devices"),
+  unpairDevice: (id: string) => del<{ unpaired: string }>(`/api/remote/devices/${id}`),
+  localProvider: () => get<LocalProvider>("/api/local/provider"),
+  updateLocalProvider: (body: LocalProviderPatch) => put<LocalProvider>("/api/local/provider", body),
+  testLocalProvider: () => post<ProviderTest>("/api/local/provider/test"),
+  localRemote: () => get<RemoteSettings>("/api/local/remote"),
+  updateLocalRemote: (body: { enabled: boolean; hostnames?: string }) =>
+    put<RemoteSettings>("/api/local/remote", body),
+  skillCatalog: () => get<SkillCatalog>("/api/skills/catalog"),
   // The browser's zone goes along at sign-up, so "tomorrow at 5" and the
   // working day mean the user's own rather than UTC's.
   register: (email: string, password: string, name: string) =>
@@ -812,9 +957,19 @@ export const api = {
   deleteAutomation: (id: string) => del<{ message: string }>(`/api/automations/${id}`),
   runAutomation: (id: string) => post<Record<string, any>>(`/api/automations/${id}/run`),
 
-  pendingActions: () => get<PendingAction[]>("/api/pending-actions"),
-  decidePending: (id: string, decision: Decision, minutes = 10) =>
-    post<Record<string, any>>(`/api/pending-actions/${id}`, { decision, minutes }),
+  /** Shared with anyone else asking right now, unless `fresh` (after a change). */
+  pendingActions: (fresh = false) =>
+    fresh
+      ? get<PendingAction[]>("/api/pending-actions")
+      : sharedGet<PendingAction[]>("/api/pending-actions"),
+  decidePending: async (id: string, decision: Decision, minutes = 10) => {
+    const outcome = await post<Record<string, any>>(`/api/pending-actions/${id}`, {
+      decision,
+      minutes,
+    });
+    forget("/api/pending-actions");
+    return outcome;
+  },
 
   settings: () => get<AppSettings>("/api/settings"),
   updateSettings: (body: Partial<AppSettings>) => patch<AppSettings>("/api/settings", body),
@@ -861,7 +1016,10 @@ export const api = {
 
   // --- Trust + memory maintenance -----------------------------------------
   grants: () => get<Grant[]>("/api/grants"),
-  revokeGrant: (tool: string) => del<{ revoked: number }>(`/api/grants/${tool}`),
+  revokeGrant: (tool: string, target?: string) =>
+    del<{ revoked: number }>(
+      `/api/grants/${tool}${target ? `?target=${encodeURIComponent(target)}` : ""}`
+    ),
   compactMemory: (dryRun = false) =>
     post<Compaction>(`/api/memories/compact?dry_run=${dryRun}`),
 
@@ -1002,8 +1160,10 @@ export const api = {
 
 export type StreamEvent =
   | { type: "start"; conversation_id: string }
-  | { type: "status"; value: string }
-  | { type: "skill"; code: string; name: string; summary: string; ok: boolean }
+  | { type: "status"; value: string; step?: number }
+  /** A tool has started; `label` is what to show while it runs. */
+  | { type: "tool_start"; name: string; code: string; label: string }
+  | { type: "skill"; code: string; name: string; summary: string; ok: boolean; tool?: string }
   | { type: "learned"; value: string }
   | { type: "memory"; count: number }
   | {

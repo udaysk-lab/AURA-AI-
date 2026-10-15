@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import {
   AlertTriangle,
+  ArrowRight,
   ArrowUp,
   Check,
   Clock4,
@@ -14,6 +16,7 @@ import {
   Sparkles,
   Trash2,
   X,
+  Zap,
 } from "lucide-react";
 import {
   Conversation,
@@ -54,6 +57,48 @@ interface LiveSkill {
   ok: boolean;
 }
 
+/** The tool running right now, while a reply is being worked out. */
+interface RunningTool {
+  code: string;
+  label: string;
+}
+
+/**
+ * Where to look at what a skill touched. A reply that read your calendar
+ * offers a way to the calendar, rather than leaving you to find it.
+ */
+const SKILL_SCREENS: Array<{ prefix: string; href: string; label: string }> = [
+  { prefix: "EM", href: "/emails", label: "Email" },
+  { prefix: "CA", href: "/calendar", label: "Calendar" },
+  { prefix: "MP", href: "/calendar", label: "Calendar" },
+  { prefix: "FG", href: "/calendar", label: "Calendar" },
+  { prefix: "TK", href: "/tasks", label: "Tasks" },
+  { prefix: "DL", href: "/tasks", label: "Tasks" },
+  { prefix: "MM", href: "/memory", label: "Memory" },
+  { prefix: "DC", href: "/documents", label: "Documents" },
+  { prefix: "BR", href: "/dashboard", label: "Today" },
+  { prefix: "NT", href: "/notifications", label: "Notifications" },
+  { prefix: "DV", href: "/device", label: "This computer" },
+];
+
+function screensFor(codes: string[]): Array<{ href: string; label: string }> {
+  const out: Array<{ href: string; label: string }> = [];
+  for (const code of codes) {
+    const hit = SKILL_SCREENS.find((s) => code.startsWith(s.prefix));
+    if (hit && !out.some((o) => o.href === hit.href)) out.push({ href: hit.href, label: hit.label });
+  }
+  return out.slice(0, 3);
+}
+
+/** One tap for the things people ask most, once a conversation is going. */
+const QUICK_ACTIONS = [
+  "Catch me up on today",
+  "What needs a reply?",
+  "What's due this week?",
+  "Find me an hour to focus tomorrow",
+];
+const DEVICE_QUICK_ACTION = "How's my computer doing?";
+
 const recallLine = (n: number) => `Recalled ${n} relevant memor${n === 1 ? "y" : "ies"}`;
 
 /** The automatic recall line, unless a memory search already said the same. */
@@ -70,6 +115,9 @@ export default function ChatPage() {
   const [streaming, setStreaming] = useState(false);
   const [draft, setDraft] = useState("");
   const [liveSkills, setLiveSkills] = useState<LiveSkill[]>([]);
+  const [running, setRunning] = useState<RunningTool | null>(null);
+  const [step, setStep] = useState(1);
+  const [deviceControl, setDeviceControl] = useState(false);
   const [memoryHits, setMemoryHits] = useState(0);
   const [learned, setLearned] = useState("");
   const [pending, setPending] = useState<PendingAction[]>([]);
@@ -93,9 +141,9 @@ export default function ChatPage() {
     }
   }, []);
 
-  const loadPending = useCallback(async () => {
+  const loadPending = useCallback(async (fresh = false) => {
     try {
-      setPending(await api.pendingActions());
+      setPending(await api.pendingActions(fresh));
     } catch {
       /* not fatal */
     }
@@ -104,6 +152,12 @@ export default function ChatPage() {
   useEffect(() => {
     void loadConversations();
     void loadPending();
+    api
+      .authConfig()
+      .then((c) => setDeviceControl(c.device_control))
+      .catch(() => {
+        /* the device quick action just stays hidden */
+      });
   }, [loadConversations, loadPending]);
 
   // ?c= opens a conversation (notification links use it). ?q= only fills in
@@ -162,6 +216,7 @@ export default function ChatPage() {
     }
     setDraft("");
     setLiveSkills([]);
+    setRunning(null);
     setLearned("");
   };
 
@@ -196,6 +251,8 @@ export default function ChatPage() {
     setStreaming(true);
     setDraft("");
     setLiveSkills([]);
+    setRunning(null);
+    setStep(1);
     setMemoryHits(0);
     setLearned("");
     setFailure(null);
@@ -220,7 +277,14 @@ export default function ChatPage() {
             convoId = e.conversation_id;
             setActiveId(e.conversation_id);
             break;
+          case "status":
+            if (e.step) setStep(e.step);
+            break;
+          case "tool_start":
+            setRunning({ code: e.code, label: e.label });
+            break;
           case "skill":
+            setRunning(null);
             setLiveSkills((s) => [
               ...s,
               { code: e.code, name: e.name, summary: e.summary, ok: e.ok },
@@ -233,7 +297,8 @@ export default function ChatPage() {
             setMemoryHits(e.count);
             break;
           case "pending_action":
-            void loadPending();
+            setRunning(null);
+            void loadPending(true);
             refreshBadges();
             break;
           case "delta":
@@ -286,10 +351,11 @@ export default function ChatPage() {
     setFailure(streamError ? { message: streamError, retry: content } : null);
     setDraft("");
     setLiveSkills([]);
+    setRunning(null);
     setLearned("");
     streamingRef.current = false;
     setStreaming(false);
-    await Promise.all([loadConversations(), loadPending(), refreshAssistant()]);
+    await Promise.all([loadConversations(), loadPending(true), refreshAssistant()]);
   };
   sendRef.current = send;
 
@@ -297,7 +363,7 @@ export default function ChatPage() {
     setDeciding(id);
     try {
       await api.decidePending(id, decision);
-      await loadPending();
+      await loadPending(true);
       refreshBadges();
       // Mid-reply, the thread reloads itself when the reply lands.
       if (activeId && !streamingRef.current) await openConversation(activeId);
@@ -439,7 +505,7 @@ export default function ChatPage() {
                     Learned: {learned}
                   </div>
                 )}
-                {(liveSkills.length > 0 || memoryHits > 0) && (
+                {(liveSkills.length > 0 || memoryHits > 0 || running) && (
                   <div className="rounded-xl border border-line bg-raised/50 px-3 py-2">
                     {showRecall(memoryHits, liveSkills) && (
                       <SkillLine code="MM01" summary={recallLine(memoryHits)} />
@@ -447,13 +513,22 @@ export default function ChatPage() {
                     {liveSkills.map((s, i) => (
                       <SkillLine key={i} code={s.code} summary={s.summary} ok={s.ok} />
                     ))}
+                    {running && (
+                      <div className="flex items-center gap-2 py-1 text-[12.5px] text-muted">
+                        <Spinner className="h-3 w-3 text-accent-soft" />
+                        {running.code && (
+                          <span className="skill-line skill-code shrink-0">[SKILL·{running.code}]</span>
+                        )}
+                        <span className="min-w-0 truncate">{running.label}…</span>
+                      </div>
+                    )}
                   </div>
                 )}
                 {draft ? (
                   <Markdown text={draft} />
-                ) : (
+                ) : running ? null : (
                   <div className="flex items-center gap-2 text-[13px] text-faint">
-                    <Spinner /> Thinking…
+                    <Spinner /> {step > 1 ? `Working it out — step ${step}…` : "Thinking…"}
                   </div>
                 )}
               </div>
@@ -539,6 +614,23 @@ export default function ChatPage() {
         {/* Composer */}
         <div className="border-t border-line bg-canvas/40 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur-xl sm:px-6 sm:pt-4">
           <div className="mx-auto max-w-2xl">
+            {messages.length > 0 && !streaming && (
+              <div
+                className="-mx-1 mb-2.5 flex gap-1.5 overflow-x-auto px-1 pb-0.5"
+                aria-label="Quick actions"
+              >
+                <Zap size={12} className="mt-1.5 shrink-0 text-faint" aria-hidden />
+                {[...QUICK_ACTIONS, ...(deviceControl ? [DEVICE_QUICK_ACTION] : [])].map((q) => (
+                  <button
+                    key={q}
+                    onClick={() => send(q)}
+                    className="shrink-0 rounded-full border border-line bg-raised/30 px-2.5 py-1 text-[11.5px] text-muted transition hover:border-accent/40 hover:text-ink"
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="panel flex items-end gap-2 p-2 transition-colors focus-within:border-accent/40">
               <textarea
                 ref={textareaRef}
@@ -611,6 +703,19 @@ function MessageBubble({ message }: { message: Message }) {
         </div>
       )}
       <Markdown text={message.content} />
+      {skillRuns.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {screensFor(skillRuns.map((s) => s.code)).map((screen) => (
+            <Link
+              key={screen.href}
+              href={screen.href}
+              className="inline-flex items-center gap-1 rounded-full border border-line bg-raised/40 px-2.5 py-1 text-[11.5px] text-muted transition hover:border-accent/40 hover:text-ink"
+            >
+              Open {screen.label} <ArrowRight size={11} />
+            </Link>
+          ))}
+        </div>
+      )}
       {message.meta?.latency_ms ? (
         <div className="flex items-center gap-1.5 text-[10.5px] text-faint">
           <Sparkles size={9} />

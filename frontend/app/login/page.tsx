@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Smartphone } from "lucide-react";
 import {
   API_BASE,
   API_BASE_IS_FALLBACK,
@@ -16,12 +16,51 @@ import { useAuth } from "@/lib/auth";
 import Mascot from "@/components/Mascot";
 import { Spinner } from "@/components/ui";
 
+/**
+ * The desktop app opens /login#key=… — the key that proves this browser was
+ * opened by the person who started AURA on this computer. It's kept for this
+ * tab only and taken out of the address bar at once.
+ */
+const LOCAL_KEY = "aura_local_key";
+
+function takeLocalKey(): string {
+  try {
+    const fromHash = new URLSearchParams(window.location.hash.slice(1)).get("key");
+    const fromQuery = new URLSearchParams(window.location.search).get("key");
+    const key = fromHash || fromQuery || "";
+    if (key) {
+      sessionStorage.setItem(LOCAL_KEY, key);
+      window.history.replaceState({}, "", "/login");
+      return key;
+    }
+    return sessionStorage.getItem(LOCAL_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function defaultDeviceName(): string {
+  if (typeof navigator === "undefined") return "Phone";
+  const ua = navigator.userAgent;
+  if (/iPhone/.test(ua)) return "iPhone";
+  if (/iPad/.test(ua)) return "iPad";
+  if (/Android/.test(ua)) return "Android phone";
+  if (/Mac/.test(ua)) return "Mac";
+  if (/Windows/.test(ua)) return "Windows PC";
+  return "Phone";
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const { refresh, user, loading } = useAuth();
 
   const [config, setConfig] = useState<AuthConfig | null>(null);
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [mode, setMode] = useState<"signin" | "signup" | "forgot">("signin");
+  const [localKey, setLocalKey] = useState("");
+  const [pairCode, setPairCode] = useState("");
+  const [deviceName, setDeviceName] = useState("");
+  const [notice, setNotice] = useState("");
+  const autoTried = useRef(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
@@ -30,6 +69,8 @@ export default function LoginPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    setLocalKey(takeLocalKey());
+    setDeviceName(defaultDeviceName());
     const params = new URLSearchParams(window.location.search);
     // The OAuth callback sends ?google=error&reason=… ; older links used ?error=.
     const reason = params.get("reason") || params.get("error");
@@ -44,6 +85,8 @@ export default function LoginPage() {
         no_code: "Google didn't send an authorisation code. Try again.",
         missing_token: "Google sign-in didn't finish. Try again.",
         cancelled: "Sign-in cancelled. Nothing changed.",
+        local_install:
+          "AURA on your own computer has one account, yours. Sign in with “Open AURA on this computer”, then connect Google from Settings.",
       };
       // Unknown reasons get a fixed sentence: the URL is anyone's to write,
       // and echoing it let a link put its own words on the sign-in page.
@@ -167,12 +210,52 @@ export default function LoginPage() {
     setBusy(true);
     setError("");
     try {
-      const res = await api.localLogin();
+      const res = await api.localLogin(localKey);
       setToken(res.access_token);
       await refresh();
       router.push("/dashboard");
     } catch (e) {
       setError(describeFailure(e));
+      setBusy(false);
+    }
+  };
+
+  // The desktop app's own link carries the key: sign straight in, once, so a
+  // double-click on AURA lands in AURA rather than on a button to press.
+  useEffect(() => {
+    if (autoTried.current || loading || user || !config?.local_mode || config.remote_client) return;
+    if (config.local_login_key_required && !localKey) return;
+    if (!localKey) return; // a source install: the button is enough
+    autoTried.current = true;
+    void openLocally();
+    // openLocally is recreated each render; the guard makes this run once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config, localKey, loading, user]);
+
+  const pair = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await api.remotePair(pairCode, deviceName.trim() || defaultDeviceName());
+      setToken(res.access_token);
+      await refresh();
+      router.push("/dashboard");
+    } catch (e) {
+      setError(describeFailure(e));
+      setBusy(false);
+    }
+  };
+
+  const sendReset = async () => {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const res = await api.forgotPassword(email);
+      setNotice(res.message);
+    } catch (e) {
+      setError(describeFailure(e));
+    } finally {
       setBusy(false);
     }
   };
@@ -211,30 +294,100 @@ export default function LoginPage() {
         <div className="mb-8 flex flex-col items-center text-center">
           <Mascot colourway="violet" stage="acquaintance" size={76} className="mb-5" />
           <h1 className="display text-shine text-[26px]">
-            {mode === "signup" ? "Create your AURA account" : "Sign in to AURA"}
+            {config?.remote_client
+              ? "Pair this device"
+              : config?.local_mode
+                ? "AURA on this computer"
+                : mode === "signup"
+                  ? "Create your AURA account"
+                  : mode === "forgot"
+                    ? "Set a new password"
+                    : "Sign in to AURA"}
           </h1>
           <p className="mt-2 text-[13px] leading-relaxed text-muted">
-            Your email, calendar, tasks and memory — in one assistant that remembers.
+            {config?.remote_client
+              ? "Use the AURA running on your computer from here."
+              : "Your email, calendar, tasks and memory — in one assistant that remembers."}
           </p>
         </div>
 
+        {config?.remote_client ? (
+          <div className="glass space-y-4 p-6">
+            <div className="flex items-start gap-3 rounded-xl border border-line bg-raised/40 p-3 text-[12.5px] leading-relaxed text-muted">
+              <Smartphone size={16} className="mt-0.5 shrink-0 text-accent-soft" />
+              <span>
+                On the computer running AURA, open <b className="text-ink">Settings → Use AURA from
+                your phone</b> and press <b className="text-ink">Pair a device</b>. Type the code
+                it shows here.
+              </span>
+            </div>
+            <form
+              className="space-y-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!busy) void pair();
+              }}
+            >
+              <div>
+                <label htmlFor="pair-code" className="label mb-1.5 block">
+                  Pairing code
+                </label>
+                <input
+                  id="pair-code"
+                  className="input text-center font-mono text-[18px] uppercase tracking-[0.3em]"
+                  value={pairCode}
+                  onChange={(e) => setPairCode(e.target.value.toUpperCase())}
+                  placeholder="ABCD-EFGH"
+                  autoComplete="one-time-code"
+                  autoCapitalize="characters"
+                  maxLength={12}
+                  required
+                />
+              </div>
+              <div>
+                <label htmlFor="pair-name" className="label mb-1.5 block">
+                  Call this device
+                </label>
+                <input
+                  id="pair-name"
+                  className="input"
+                  value={deviceName}
+                  onChange={(e) => setDeviceName(e.target.value)}
+                  maxLength={120}
+                />
+              </div>
+              <button type="submit" disabled={busy || pairCode.length < 8} className="btn-primary w-full">
+                {busy ? <Spinner /> : null} Pair
+              </button>
+            </form>
+            {error && (
+              <p role="alert" className="whitespace-pre-line rounded-lg border border-rose/30 bg-rose/10 px-3 py-2.5 text-[12px] leading-relaxed text-rose">
+                {error}
+              </p>
+            )}
+          </div>
+        ) : (
         <div className="glass space-y-4 p-6">
           {config?.local_mode && (
             <>
-              <button onClick={openLocally} disabled={busy} className="btn-primary w-full">
+              <button onClick={openLocally} disabled={busy || (config.local_login_key_required && !localKey)} className="btn-primary w-full">
                 {busy ? <Spinner /> : null} Open AURA on this computer
               </button>
               <p className="text-center text-[11.5px] leading-relaxed text-faint">
-                {config.device_control
-                  ? "This is your own install. AURA will work as you, on this machine."
-                  : "This is your own install — no account needed."}
+                {config.local_login_key_required && !localKey
+                  ? "To sign in, press “Open AURA” in the AURA AI window on this computer."
+                  : config.device_control
+                    ? "This is your own install. AURA will work as you, on this machine."
+                    : "This is your own install — no account needed."}
               </p>
-              <div className="flex items-center gap-3 text-[11px] uppercase tracking-widest text-faint">
-                <span className="h-px flex-1 bg-line" /> or sign in{" "}
-                <span className="h-px flex-1 bg-line" />
-              </div>
             </>
           )}
+
+          {/* A local install has one account, its owner's, so there is no
+              other form to offer: the backend refuses sign-up, passwords and
+              demo sign-in there. */}
+          {!config?.local_mode && (
+          <>
 
           {config?.google_enabled && (
             <>
@@ -251,6 +404,54 @@ export default function LoginPage() {
               unlike Google OAuth. Enter submits, because a login form that
               ignores the return key is the single most irritating thing a login
               form can do. */}
+          {mode === "forgot" ? (
+            <form
+              className="space-y-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!busy) void sendReset();
+              }}
+            >
+              <p className="text-[12.5px] leading-relaxed text-muted">
+                Enter your account&apos;s email. If it has an account, a link to choose a new
+                password arrives in a minute.
+              </p>
+              <div>
+                <label htmlFor="forgot-email" className="label mb-1.5 block">
+                  Email
+                </label>
+                <input
+                  id="forgot-email"
+                  className="input"
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@company.com"
+                  autoComplete="email"
+                />
+              </div>
+              <button type="submit" disabled={busy || !email} className="btn-primary w-full">
+                {busy ? <Spinner /> : "Email me a link"}
+              </button>
+              {notice && (
+                <p role="status" className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2.5 text-[12px] leading-relaxed text-sage">
+                  {notice}
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setMode("signin");
+                  setNotice("");
+                  setError("");
+                }}
+                className="block w-full text-center text-[12px] text-accent-soft underline-offset-2 hover:underline"
+              >
+                Back to sign in
+              </button>
+            </form>
+          ) : (
           <form
             className="space-y-3"
             onSubmit={(e) => {
@@ -314,8 +515,23 @@ export default function LoginPage() {
             >
               {busy ? <Spinner /> : mode === "signup" ? "Create account" : "Sign in"}
             </button>
+            {mode === "signin" && config?.password_reset_enabled && (
+              <button
+                type="button"
+                onClick={() => {
+                  setMode("forgot");
+                  setError("");
+                  setPassword("");
+                }}
+                className="block w-full text-center text-[12px] text-faint underline-offset-2 hover:text-muted hover:underline"
+              >
+                Forgot your password?
+              </button>
+            )}
           </form>
+          )}
 
+          {mode !== "forgot" && (
           <p className="text-center text-[12px] text-muted">
             {mode === "signup" ? "Already have an account?" : "No account yet?"}{" "}
             <button
@@ -330,10 +546,13 @@ export default function LoginPage() {
               {mode === "signup" ? "Sign in" : "Create one"}
             </button>
           </p>
+          )}
+          </>
+          )}
 
           {/* Only when the backend still accepts it. On a deployed instance this
               should be off — it is a password-free login. */}
-          {config?.demo_login_enabled && (
+          {config?.demo_login_enabled && !config.local_mode && (
             <>
               <div className="flex items-center gap-3 text-[11px] uppercase tracking-widest text-faint">
                 <span className="h-px flex-1 bg-line" /> or <span className="h-px flex-1 bg-line" />
@@ -353,6 +572,7 @@ export default function LoginPage() {
             </p>
           )}
         </div>
+        )}
 
         {/* Told to every visitor, so it's written for them: this used to say
             "add an API key in .env", which only the person running the

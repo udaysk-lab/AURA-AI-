@@ -203,9 +203,15 @@ export default function DevicePage() {
             <p className="mb-2 text-[12.5px] font-medium text-ink">To turn it on</p>
             <ol className="ml-4 list-decimal space-y-1.5 text-[12.5px] leading-relaxed text-muted">
               <li>
-                Run AURA on your own computer — <code className="text-accent-soft">start-aura-local.bat</code>{" "}
+                Download the AURA desktop app from{" "}
+                <a href="/#download" className="text-accent-soft underline-offset-2 hover:underline">
+                  the home page
+                </a>{" "}
+                and open it. Everything here is set up, and it asks before acting.
+              </li>
+              <li>
+                Or run it from source — <code className="text-accent-soft">start-aura-local.bat</code>{" "}
                 on Windows, <code className="text-accent-soft">./aura-local.sh</code> on macOS or Linux.
-                They set this up for you.
               </li>
               <li>
                 Or set <code className="text-accent-soft">LOCAL_MODE=true</code> in your{" "}

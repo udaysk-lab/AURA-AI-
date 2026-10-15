@@ -39,6 +39,7 @@ import {
 import { useAuth } from "@/lib/auth";
 import { useAssistant } from "@/lib/assistant";
 import Mascot from "@/components/Mascot";
+import { ModelSettingsCard, RemoteAccessCard } from "@/components/LocalSettings";
 import { useAction, useToast } from "@/components/Toast";
 import {
   Badge,
@@ -119,6 +120,8 @@ export default function SettingsPage() {
   const [grants, setGrants] = useState<Grant[]>([]);
   const [device, setDevice] = useState<DeviceStatus | null>(null);
   const [provider, setProvider] = useState("");
+  const [localMode, setLocalMode] = useState(false);
+  const [remoteSession, setRemoteSession] = useState(false);
   const [compaction, setCompaction] = useState<Compaction | null>(null);
   const [compacting, setCompacting] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -162,6 +165,8 @@ export default function SettingsPage() {
       setSettings(s);
       setIntegrations(i);
       setProvider(c.llm_provider);
+      setLocalMode(c.local_mode);
+      setRemoteSession(Boolean(c.remote_client));
       setGrants(g);
       setSecrets(v);
       setUsage(u);
@@ -466,6 +471,9 @@ export default function SettingsPage() {
       </Card>
 
       {/* Autonomy */}
+      {/* The model — on your own computer you connect it yourself, here. */}
+      {localMode && !remoteSession && <ModelSettingsCard />}
+
       <Card>
         <SectionTitle>How much freedom</SectionTitle>
         <p className="mb-3.5 text-[12.5px] leading-relaxed text-muted">
@@ -499,14 +507,22 @@ export default function SettingsPage() {
                   key={g.id}
                   className="flex items-center justify-between rounded-xl border border-line px-3 py-2 text-[12.5px]"
                 >
-                  <span className="font-mono text-[11.5px]">{g.tool_name}</span>
+                  <span className="min-w-0 truncate">
+                    <span className="font-mono text-[11.5px]">{g.tool_name}</span>
+                    {g.target && (
+                      <span className="ml-1.5 text-[11.5px] text-muted">to {g.target}</span>
+                    )}
+                  </span>
                   <div className="flex items-center gap-2">
                     <Badge tone={g.scope === "always" ? "warning" : "normal"}>
                       {g.scope === "always" ? "always" : "temporary"}
                     </Badge>
                     <button
                       onClick={async () => {
-                        await run(() => api.revokeGrant(g.tool_name), "Permission revoked");
+                        await run(
+                          () => api.revokeGrant(g.tool_name, g.target || undefined),
+                          "Permission revoked"
+                        );
                         await load();
                       }}
                       className="text-[11.5px] text-faint hover:text-ink"
@@ -557,8 +573,9 @@ export default function SettingsPage() {
               </div>
             </div>
             <p className="text-[11.5px] leading-relaxed text-faint">
-              These are set in your <code>.env</code> (DEVICE_EXEC_MODE,
-              DEVICE_ALLOWED_ROOTS) and read at startup, so they can&apos;t be widened
+              These live in AURA&apos;s settings file (<code>~/.aura/aura.env</code> for
+              the desktop app, <code>.env</code> when running from source — DEVICE_EXEC_MODE,
+              DEVICE_ALLOWED_ROOTS) and are read at startup, so they can&apos;t be widened
               from inside the app — including by AURA itself.
             </p>
           </div>
@@ -572,6 +589,9 @@ export default function SettingsPage() {
           </div>
         </Card>
       )}
+
+      {/* Using it from a phone — local installs, from the computer itself */}
+      {localMode && !remoteSession && <RemoteAccessCard />}
 
       {/* Heartbeat */}
       <Card>
