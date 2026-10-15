@@ -36,15 +36,15 @@
     ],
     "crons": [
         {
-            "path": "/api/health/keepalive",
+            "path": "/api/cron/tick",
             "schedule": "0 1 * * *"
         },
         {
-            "path": "/api/health/keepalive",
+            "path": "/api/cron/tick",
             "schedule": "0 9 * * *"
         },
         {
-            "path": "/api/health/keepalive",
+            "path": "/api/cron/tick",
             "schedule": "0 17 * * *"
         }
     ]

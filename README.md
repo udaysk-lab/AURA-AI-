@@ -9,6 +9,11 @@ Run it on your own computer and it operates that computer: runs commands, works
 with your files, opens apps, watches the system, and drives the screen when a
 program offers nothing better. See **[DEVICE.md](./DEVICE.md)**.
 
+**Use it:** in the browser at <https://aura-ai-psi-self.vercel.app>, or download
+the desktop app for Windows, macOS or Linux from the home page's **Download**
+button ([latest release](https://github.com/udaysk-lab/AURA-AI-/releases/latest),
+details in [desktop/README.md](./desktop/README.md)).
+
 ---
 
 > **Deploying for real people?** Read [DEPLOY.md](./DEPLOY.md). It covers getting a
@@ -17,6 +22,11 @@ program offers nothing better. See **[DEVICE.md](./DEVICE.md)**.
 > insecure is outstanding.
 
 ## Run it
+
+**Just want to use it?** Download the desktop app from the home page. It is
+everything below in one program: it keeps its data in `~/.aura`, opens in your
+browser already signed in, and asks for a model key in Settings. The rest of
+this section is for running AURA from source.
 
 The fastest path needs **no database, no API keys, no Google account**. AURA boots
 on SQLite with a seeded sample workspace and an offline agent, so every screen
@@ -64,7 +74,8 @@ terminal client too:
 
 Device control is **off** in every other configuration, including the hosted
 one — see [DEVICE.md](./DEVICE.md) for what it does and the five things that
-stop it.
+stop it. The desktop app is this same setup, packaged: `desktop/` builds it,
+and [desktop/README.md](./desktop/README.md) explains how.
 
 **Docker:** `cp .env.example .env && docker compose up --build` brings up Postgres
 (pgvector), Redis, the API, the worker and the frontend.
@@ -248,10 +259,13 @@ API Keys (billing must be enabled on the account), then:
 ```bash
 # .env in the project root
 ANTHROPIC_API_KEY=sk-ant-...
-ANTHROPIC_MODEL=claude-sonnet-5
+ANTHROPIC_MODEL=claude-sonnet-5-5
 ```
 
 Restart the backend and check `/setup` — it will tell you the provider is live.
+On the desktop app (or any local install) paste the key in **Settings → AI
+model** instead; it is written to the settings file on that computer and takes
+effect without a restart.
 
 **Why the env file and not the in-app vault?** The vault is for a *user's* third-party
 secrets: encrypted per row, decrypted on demand, never readable by the model. Your
@@ -296,7 +310,9 @@ priced pessimistically on purpose. Set a billing alert in the Anthropic console 
 
 ```
 backend/app/
-  main.py · config.py · db.py · models.py (27 tables) · schemas.py · security.py
+  main.py · config.py · db.py · models.py (30 tables) · schemas.py · security.py
+  middleware.py          Security headers, rate limits, the local-install Host guard
+  web.py                 Serves the exported web app (desktop app only)
   llm.py                 OpenAI / Anthropic / Mock adapters
   plugins.py             Plugin catalogue and install state
   agent/
@@ -325,19 +341,26 @@ backend/app/
     files.py             The folder fence, and file operations inside it
     apps.py · screen.py · system.py
   api/                   auth · chat · workspace · intelligence · hub · assistant · device
+                         local (model + remote settings) · remote (pairing) · cron (Vercel)
 worker.py                automations · schedules · heartbeat · compaction
                          (runs in-process on a local install)
 aura_cli.py              Terminal client
+aura_desktop.py          The desktop app's launcher: data folder, server, window, smoke test
+
+desktop/                 PyInstaller recipe, build script, Windows installer, icons
+.github/workflows/       ci.yml (tests on Linux/Windows/macOS) · desktop-release.yml
 
 frontend/
-  app/                   Landing, login, onboarding, 13 app pages
+  app/                   Landing, login, password reset, onboarding, 15 app pages
   components/
     Mascot.tsx           The assistant's face — shifts with its stage
     CommandPalette.tsx   ⌘K navigation and actions
     Toast.tsx            Toasts, useAction, useHotkey
     Sidebar.tsx          Identity, growth, grouped nav, mobile drawer
     ui.tsx               Primitives, skill-log lines, markdown renderer
+  components/landing/    The home page, including the Download section
   lib/api.ts             Typed client — single source of the API contract
+  lib/downloads.ts       Release file names the Download buttons point at
 ```
 
 ---
@@ -346,7 +369,7 @@ frontend/
 
 | Area | Endpoints |
 |---|---|
-| Auth | `POST /api/auth/demo`, `POST /api/auth/local` (local installs), `GET /api/auth/google/start`, `/auth/me`, `/auth/integrations` |
+| Auth | `POST /api/auth/register`, `/login`, `/demo`, `/local` (local installs), `/password/forgot`, `/password/reset`; `GET /api/auth/config`, `/google/start`, `/me`, `/integrations` |
 | Chat | `POST /api/chat`, `POST /api/chat/stream` (SSE), conversation CRUD |
 | Skills | `GET /api/skills`, `/skills/stats`, `/skills/activity`, `PATCH /api/skills/{code}`, `POST /api/skills/{code}/teach` |
 | **Plugins** | `GET /api/plugins`, `/plugins/summary`, `POST /api/plugins/{id}/install`, `/uninstall` |
@@ -358,6 +381,9 @@ frontend/
 | Heartbeat | `GET /api/heartbeat`, `/heartbeat/latest`, `POST /api/heartbeat/run` |
 | Trust | `GET /api/pending-actions`, `POST /api/pending-actions/{id}` (`reject`\|`once`\|`always`\|`window`), `GET/DELETE /api/grants` |
 | **Device** (local only) | `GET /api/device`, `/device/system`, `/device/files`, `/device/processes`, `/device/background`, `POST /api/device/run` |
+| **Local settings** (local only) | `GET/PUT /api/local/provider`, `POST /api/local/provider/test`, `GET/PUT /api/local/remote` |
+| **Remote access** (local only) | `GET /api/remote/status`, `POST /api/remote/pairing`, `POST /api/remote/pair`, `GET /api/remote/devices`, `DELETE /api/remote/devices/{id}` |
+| Platform cron | `GET /api/cron/tick` (Vercel crons; runs the worker when `CRON_SECRET` is set) |
 | Email · Calendar · Tasks · Memory · Automations · Delegations | see `/docs` |
 
 ---
@@ -369,18 +395,30 @@ frontend/
 cd backend && pytest -q
 ```
 
-Two suites, both on throwaway SQLite with the mock provider — no keys, no infra.
+Everything runs on throwaway SQLite with the mock provider — no keys, no infra —
+and CI (`.github/workflows/ci.yml`) runs it on Linux, Windows and macOS, plus
+once without the optional device packages, then type-checks and builds both
+versions of the frontend.
 
 `test_smoke.py` covers behaviour: skills, plugins, autonomy tiers, channels,
 documents, schedules, identity, memory. `test_device.py` covers device control,
 and is mostly about refusal — that it's off by default, that the folder fence
-can't be climbed with `..` or a symlink, that a command below full trust is
+can't be climbed with `..`, a symlink or a change of letter case, that startup
+items and git hooks can't be written, that a command below full trust is
 queued rather than run (checked by asserting the file it would have written
-doesn't exist), and that a disabled skill's tools never reach the model. `test_production_guards.py` covers the
-things that stay invisible until they cost money or leak something — spend cap
-enforcement, background budget isolation, rate-limit windows, security headers,
-`send_email` never claiming a send it didn't make, export excluding secret values,
-and account deletion cascading properly.
+doesn't exist), and that a disabled skill's tools never reach the model.
+`test_desktop.py` covers the local install: the Host guard, the owner sign-in
+key, pairing and paired-device limits, the settings screens, the launcher,
+serving the web app. `test_chat_live.py` covers the live chat stream, emailed
+schedules, the Vercel cron and password reset. `test_production_guards.py`
+covers the things that stay invisible until they cost money or leak something —
+spend cap enforcement, background budget isolation, rate-limit windows, security
+headers, `send_email` never claiming a send it didn't make, export excluding
+secret values, and account deletion cascading properly.
+
+The desktop builds have their own end-to-end check, `--smoke-test`, which the
+release workflow runs against every build it makes (see
+[desktop/README.md](./desktop/README.md)).
 
 ---
 
@@ -388,35 +426,36 @@ and account deletion cascading properly.
 
 Honest list, because these are what will bite first:
 
-- **Not executed in this environment.** Written and reviewed without a runnable
-  sandbox — never started or test-run end to end, and never load-tested. Run
-  `pytest -q` first; it exercises most of the backend. Expect to fix a small number
-  of issues on first boot.
-- **Schema: two modes.** In dev, `init_db()` runs `create_all` then patches in
-  missing columns (`db.py: apply_additive_migrations`) so an existing `aura.db`
-  survives a model change — additive only, never drops or retypes. For production
-  set `AUTO_CREATE_SCHEMA=false` and use the Alembic setup in `backend/alembic/`.
+- **Never load-tested.** The test suite runs on three operating systems and the
+  desktop builds are started and checked end to end, but nobody has measured
+  how it behaves under real traffic.
+- **Schema: two modes.** By default `init_db()` runs `create_all` then patches in
+  missing columns (`db.py: apply_additive_migrations`) so an existing database
+  survives a model change — additive only, never drops or retypes. To hand the
+  schema to Alembic, set `AUTO_CREATE_SCHEMA=false` and follow DEPLOY.md; CI
+  checks the migrations still match the models.
 - **One worker process only.** Schedule de-duplication is per-process, so a second
   worker double-fires everything. A Redis lock around `run_due` is the fix.
-- **Inbound channel tokens don't expire.** Rotatable, but no TTL.
+- **Background work on the hosted site runs three times a day.** Vercel's Hobby
+  plan allows daily crons only, so `vercel.json` calls the worker at 01:00, 09:00
+  and 17:00 UTC (once `CRON_SECRET` is set). A schedule fires on the next tick
+  after its time; the desktop app runs its worker continuously instead.
+- **Inbound channel tokens don't expire.** Rotatable and rate-limited, but no TTL.
 - **Similarity runs in Python.** Memory and document embeddings live in JSON
   columns so one schema works on SQLite and Postgres. Fine to the low tens of
   thousands of chunks. Past that, migrate to `vector(1536)` and swap the ranking
   loop for `ORDER BY embedding <=> :q`.
-- **Streaming is skill-level, not token-level.** The adapters make non-streaming
-  calls so tool-calling behaves identically across providers.
+- **Streaming is step-level, not token-level.** The chat shows each tool as it
+  runs and each approval as it's queued, but the reply arrives whole: the adapters
+  make non-streaming calls so tool-calling behaves identically across providers.
 - **Correction detection is regex-triggered.** A correction phrased without a
   marker phrase is missed; the model is only consulted once a marker fires, which
   keeps cost near zero but means recall is imperfect. Teaching a skill always works.
 - **The vault protects against the model, not against you.** Anyone with your JWT
   can't read values, but anyone with the database *and* `SECRET_KEY` can. Use a
   real KMS in production.
-- **Inbound channels have no rate limit.** Add one before exposing them publicly —
-  a leaked token currently costs you tokens as fast as someone can POST.
 - **The cron matcher is minimal** — `*`, values, lists, `a-b`, `*/n`. Swap in
   croniter for anything more.
-- **OAuth state is in-process memory.** Move `_oauth_state` to Redis before running
-  multiple workers.
 - **`ALLOW_DEMO_LOGIN=true` is a password-free login.** Turn it off in production;
   startup warns if you don't.
 - **The shell is not sandboxed.** A command runs as your OS user and can reach
@@ -425,11 +464,11 @@ Honest list, because these are what will bite first:
   of it and the denylist beneath it, which is why `run_command` needs full
   trust or an explicit grant. If you want a real boundary rather than a gate,
   leave the Command Line skill off and give AURA the file tools only.
-- **Background commands live in one process.** The handles for `run_in_background`
-  are held in memory by the API process, so restarting it loses track of
-  anything still running (the processes themselves survive; AURA just can't
-  poll or stop them any more). Right for one local machine, wrong the moment
-  there are two API workers.
+- **A restart loses the keyboard to background commands.** What `run_in_background`
+  started is recorded in `~/.aura/commands`, so after a restart AURA still lists
+  it, reads its output and can stop it (once `psutil` confirms the process id
+  still belongs to it) — but it can no longer type into it, because that pipe
+  belonged to the old process.
 - **Device actions never run unattended.** Every device skill is
   `proactive=False`, so the heartbeat will not run commands or drive the screen
   while you're away. That's a deliberate default rather than a limitation of
@@ -444,10 +483,15 @@ Honest list, because these are what will bite first:
   vision, so screenshots reach it as a note that an image was attached. Screen
   control needs a real model (`ANTHROPIC_API_KEY`, or OpenAI) to be worth
   anything.
-- **Operating it remotely isn't built.** Device control is loopback-only on
-  purpose: the owner sign-in refuses non-local requests. Reaching this machine
-  from your phone needs its own pairing and authentication story; until that
-  exists, a tunnel you control (Tailscale, SSH forward) is the honest route.
+- **Remote access is plain HTTP.** A paired phone talks to the computer over your
+  network unencrypted, so its token can be read by anyone on the same Wi-Fi. Use a
+  network you trust, or Tailscale (encrypted, and it works from anywhere). Off by
+  default.
+- **The desktop builds aren't code-signed.** Windows SmartScreen and macOS
+  Gatekeeper warn on first open; the download section says how to get past it.
+  Signing needs a Windows certificate and an Apple Developer ID.
+- **No automatic updates.** The desktop app's window says when a newer release is
+  out and links to it; installing it is still a download.
 
 ---
 

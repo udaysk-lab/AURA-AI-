@@ -1,180 +1,186 @@
 # Deploying AURA
 
-Two halves, deployed separately:
+AURA ships two ways:
 
-| Half | Host | Directory |
+| | Where it runs | How it's built |
 | --- | --- | --- |
-| Next.js frontend | Vercel | `frontend/` |
-| FastAPI backend + Postgres + cron worker | Render | `backend/` |
-
-They're joined by exactly two settings. Get these wrong and nothing works:
-
-- **`NEXT_PUBLIC_API_URL`** on Vercel → the backend's public URL
-- **`CORS_ORIGINS`** on Render → the frontend's public origin
+| **AURA in the browser** | One Vercel project: the Next.js frontend and the FastAPI backend as two services, Postgres on Supabase | Every push to `main` |
+| **AURA for your computer** | The desktop app, downloaded from the home page | A version tag (`v1.0.0`) runs `.github/workflows/desktop-release.yml` |
 
 ---
 
-## Why the deployed site currently fails
+## The hosted site (Vercel)
 
-`lib/api.ts` falls back to `http://localhost:8000` when `NEXT_PUBLIC_API_URL`
-isn't set. On a deployed page that means the visitor's browser tries to reach
-*their own machine* on port 8000. No backend change can fix it — the request
-never leaves the laptop it was made from.
+`vercel.json` declares both services and routes between them, so there is one
+domain and no CORS to configure:
 
-`NEXT_PUBLIC_*` variables are inlined into the JavaScript bundle at **build**
-time. Adding one in Vercel changes nothing until you redeploy.
+```
+/api/*, /health*, /docs  →  backend  (FastAPI, backend/app/main.py)
+everything else          →  frontend (Next.js, frontend/)
+```
 
----
+Functions run in `hnd1` (Tokyo), next to the Supabase project
+(`ap-northeast-1`). Keep them together: from Vercel's default `iad1` every page
+took 2–11 s, because each request opened a fresh connection across the Pacific.
+If the database moves, change `regions` to match (Mumbai `ap-south-1` → `bom1`,
+Singapore `ap-southeast-1` → `sin1`, US East `us-east-1` → `iad1`).
 
-## 1. Deploy the backend
+### Environment variables (Vercel → Settings → Environment Variables)
 
-### Option A — the blueprint (recommended)
-
-`render.yaml` at the repo root describes the whole backend: web service,
-Postgres, and the cron worker.
-
-1. Push this repo to GitHub.
-2. Render → **New** → **Blueprint** → pick the repo.
-3. Render reads `render.yaml` and prompts for the values marked `sync: false`.
-   Fill them in as below.
-4. Apply. First build takes a few minutes.
-
-### Values Render will ask for
-
-| Variable | What to put |
+| Variable | Value |
 | --- | --- |
+| `ENVIRONMENT` | `staging` — see below |
+| `DEBUG` | `false` |
+| `SECRET_KEY` | a long random string: `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `TOKEN_ENCRYPTION_KEY` | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
-| `CORS_ORIGINS` | `https://aura-ai-psi-self.vercel.app` — exact, no trailing slash |
-| `FRONTEND_URL` | same as above |
-| `BACKEND_URL` | the Render URL, e.g. `https://aura-api.onrender.com` |
-| `ANTHROPIC_API_KEY` | optional, but without it there's no real reasoning |
-| `OPENAI_API_KEY` | optional; also unlocks semantic memory/document search |
+| `DATABASE_URL_OVERRIDE` | the Supabase **transaction pooler** URL (port 6543) |
+| `FRONTEND_URL`, `BACKEND_URL` | `https://aura-ai-psi-self.vercel.app` |
+| `CORS_ORIGINS` | the same origin |
+| `ALLOW_DEMO_LOGIN` | `false` |
+| `ANTHROPIC_API_KEY` | needed for the real assistant; without it AI replies are a keyword demo |
+| `OPENAI_API_KEY` | optional: semantic memory and document search |
+| `CRON_SECRET` | optional but recommended: turns on background work (below) |
+| `SMTP_HOST`, `SMTP_FROM`, `SMTP_USERNAME`, `SMTP_PASSWORD` | optional: "Forgot password?" and emailed schedules |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | optional: Gmail + Calendar, "Continue with Google" |
 
-`BACKEND_URL` is a chicken-and-egg: you won't know the URL until the service
-exists. Put a placeholder, deploy, then edit it and redeploy. It only matters
-for the Google OAuth redirect.
+`DATABASE_URL_OVERRIDE` exists because the Neon store Vercel attached earlier
+injects a locked `DATABASE_URL`; the override wins over it without deleting
+anything.
 
-Set `TOKEN_ENCRYPTION_KEY` to **the same value** on both the web service and
-the cron worker. Different keys mean the worker can't decrypt what the API
-stored.
-
-### Option B — by hand
-
-New → Web Service → Docker → root directory `backend`. Add a Postgres instance,
-then set every variable from `backend/.env.example` in the Environment tab.
-
-### Verify
-
-```
-curl https://aura-api.onrender.com/health
-curl https://aura-api.onrender.com/health/ready
-curl https://aura-api.onrender.com/api/health/preflight
-```
-
-`/health` should return `{"status":"ok"}`. `/health/ready` proves the database
-connection works. `/api/health/preflight` names any setting still missing — it
-returns variable *names*, never values, so it's safe to leave reachable.
-
----
-
-## 2. Point the frontend at it
-
-Vercel → your project → **Settings** → **Environment Variables**:
-
-```
-NEXT_PUBLIC_API_URL = https://aura-api.onrender.com
-```
-
-Apply it to Production, Preview and Development. Then **Deployments → Redeploy**.
-Nothing changes until you rebuild.
-
-### Verify
-
-Open the site. The line under the sign-in card should read
-`Model provider: anthropic` (or `mock` if you skipped the key). If it still says
-"Connecting to API…", open DevTools → Network and look at the failing request:
-
-- Request URL is `localhost:8000` → the variable didn't reach the build. Confirm
-  it's set for the Production environment and that you redeployed.
-- Status **CORS error** → `CORS_ORIGINS` doesn't match. It must be the exact
-  origin, scheme included, no trailing slash.
-- Status **503** or a long hang → the free instance is asleep. First request
-  takes 30–60s.
-
----
-
-## Things that will bite you
-
-**Free instances sleep after 15 minutes idle.** The first request after that
-takes 30–60 seconds. The sign-in screen looks broken during the wait. Upgrade to
-a paid instance if that matters.
-
-**Free Postgres expires after 30 days.** Render deletes it. Diarise a migration
-to the paid tier before then.
-
-**Vercel preview deployments get their own URLs.** Only the origins in
-`CORS_ORIGINS` can call the API, so previews fail unless you add them too.
-
-**The API must run in the same region as the database.** `vercel.json` pins
-functions to `hnd1` (Tokyo) because the Supabase project is in
-`ap-northeast-1` (Tokyo). Vercel's default is `iad1` (Washington). From there,
-every request opened a new connection across the Pacific: about 1.3 s before
-the first row came back, and 2–11 s per page. If the database ever moves,
-change `regions` to match: Mumbai `ap-south-1` → `bom1`, Singapore
-`ap-southeast-1` → `sin1`, US East `us-east-1` → `iad1`.
-
-**Supabase pauses Free projects after 7 days without database activity.** The
-site then fails on every request that touches the database, sign-in first. The
-`crons` in `vercel.json` call `/api/health/keepalive` three times a day to
-prevent this. If it happens anyway, restore the project from the Supabase
-dashboard. The data survives.
-
-**Demo login is password-free.** Anyone who knows an email address can sign in
-as that user. `render.yaml` leaves it on so the deployed demo is usable at all —
-set `ALLOW_DEMO_LOGIN=false` and configure Google OAuth before anyone puts real
-data in.
+Never set `LOCAL_MODE`, `DEVICE_CONTROL` or `REMOTE_ACCESS` here. They're for
+someone's own computer; startup refuses device control in production.
 
 **`ENVIRONMENT` is `staging`, not `production`, on purpose.** In production
-`main.py` refuses to boot while any preflight check fails, and production also
-forbids demo login — so with no model key and no OAuth, a production deploy
-would crash-loop. Staging logs the identical warnings and still serves. Move to
-production once you have a model key and real authentication.
+`main.py` refuses to boot while any preflight check fails — no model key, say —
+so a production deploy without one crash-loops. Staging logs the same warnings
+and still serves. Switch once the model key and real authentication are in.
+
+### Background work: `CRON_SECRET`
+
+Vercel runs functions only while answering a request, so `worker.py`'s timer has
+nowhere to live. `vercel.json` registers three daily crons (01:00, 09:00, 17:00
+UTC — the Hobby plan allows daily schedules only) that call `/api/cron/tick`:
+
+- every call touches the database, so a Free Supabase project never idles into a
+  pause;
+- once `CRON_SECRET` is set, Vercel sends it with each call and the tick also
+  runs the worker: automations, schedules, the heartbeat and memory compaction,
+  for accounts used in the last 30 days.
+
+Without the secret nobody can make the site do work (and spend model tokens) by
+calling that URL; they only get the keep-alive. Schedules fire on the next tick
+after their time, so on Hobby a 7:30 schedule may run up to eight hours late.
+Vercel Pro allows a `*/30 * * * *` schedule instead.
+
+A tick stops starting new work after `CRON_BUDGET_SECONDS` (default 240), to
+finish inside the function's 300-second limit; whatever didn't fit is still due
+on the next tick. Lower it if the project runs without fluid compute, where the
+limit is shorter.
+
+### The Hobby deploy rule
+
+On the Hobby plan Vercel only builds a push whose **last commit is authored by
+the team owner** (`udaysk-lab <udaysk2008@gmail.com>`) with no `Co-Authored-By`
+trailer naming anyone else. Other pushes are silently ignored — no deployment,
+no error. Make the last commit of each push the owner's (an empty
+`git commit --allow-empty` works), or move to Pro.
+
+### Verify
+
+```
+curl https://aura-ai-psi-self.vercel.app/health
+curl https://aura-ai-psi-self.vercel.app/health/ready
+curl https://aura-ai-psi-self.vercel.app/api/health/preflight
+curl https://aura-ai-psi-self.vercel.app/api/cron/tick
+```
+
+`/health/ready` proves the database answers. `/api/health/preflight` names any
+setting still missing (names, never values) and now opens a real database
+connection too, so it's where to look when sign-in fails.
+
+### If Supabase paused anyway
+
+Supabase dashboard → the project → **Restore project**. The data survives, and a
+paused project can be restored for up to a year.
+
+### Database migrations
+
+The app creates its tables on start-up (`AUTO_CREATE_SCHEMA`, on by default)
+and adds new columns itself; it never drops or changes one. To hand the schema
+to Alembic instead:
+
+```
+cd backend
+DATABASE_URL=<the direct, non-pooler URL> alembic stamp head   # an existing database
+# then set AUTO_CREATE_SCHEMA=false on Vercel
+```
+
+A new, empty database takes `alembic upgrade head`. After a model change:
+`alembic revision --autogenerate -m "what changed"`. CI checks the migrations
+still match the models.
 
 ---
 
 ## Google OAuth (optional)
 
 1. Google Cloud Console → APIs & Services → Credentials → OAuth client ID → Web.
-2. Authorised redirect URI: `https://aura-api.onrender.com/api/auth/google/callback`
-   — must match `BACKEND_URL` exactly.
-3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on Render, redeploy.
-4. Enable the Gmail and Calendar APIs for the project.
+2. Authorised redirect URIs: `https://aura-ai-psi-self.vercel.app/api/auth/google/callback`
+   (and `http://localhost:8000/api/auth/google/callback` for development). No
+   JavaScript origins are needed — AURA uses the server-side flow.
+3. Enable the Gmail and Calendar APIs, set `GOOGLE_CLIENT_ID` and
+   `GOOGLE_CLIENT_SECRET` on Vercel, redeploy.
 
-The "Continue with Google" button appears on the sign-in screen once the backend
-reports the client as configured.
+---
+
+## The desktop app
+
+`desktop/README.md` covers building it yourself. To publish a release:
+
+1. Set the version in `backend/app/version.py` (e.g. `1.0.1`) and update
+   `desktop/RELEASE_NOTES.md`.
+2. Push a matching tag: `git tag v1.0.1 && git push origin v1.0.1`.
+3. The **Desktop release** workflow builds Windows (installer and portable zip),
+   macOS (Apple silicon and Intel) and Linux, starts every build and checks it
+   answers (`--smoke-test`), installs the Windows installer and checks the
+   installed app too, then publishes the release with `SHA256SUMS.txt`.
+
+The home page links to `releases/latest/download/<file>`, so a new release
+needs no website change. The file names are a contract between the workflow
+and `frontend/lib/downloads.ts`.
+
+The builds aren't code-signed: Windows SmartScreen and macOS Gatekeeper warn on
+first open, and the download page says how to get past that. Signing needs a
+Windows code-signing certificate and an Apple Developer ID; both slot into the
+workflow when there's one to use.
+
+---
+
+## Self-hosting with Docker
+
+`docker compose up --build` brings up Postgres, Redis, the API, the worker and
+the frontend on one machine — the shape for a server you run yourself. Set the
+same variables as above in `.env`.
 
 ---
 
 ## Local development
 
 ```bash
-# Terminal 1
+# Terminal 1 — API
 cd backend
-python -m venv .venv && .venv\Scripts\activate     # Windows
+python -m venv .venv && .venv\Scripts\activate     # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
-copy .env.example .env                              # optional; defaults work
 uvicorn app.main:app --reload
 
-# Terminal 2
+# Terminal 2 — web app
 cd frontend
-copy .env.example .env.local
 npm install
 npm run dev
 
-# Terminal 3 (optional — automations, schedules, heartbeat)
+# Terminal 3 (optional) — automations, schedules, heartbeat
 cd backend
 python worker.py
 ```
 
-Locally, CORS trusts any localhost port, so Next.js quietly moving to `:3001`
-when `:3000` is taken won't break anything.
+Or `start-aura-local.bat` / `./aura-local.sh` for the local, device-enabled
+setup in one go. Locally, CORS trusts any localhost port.

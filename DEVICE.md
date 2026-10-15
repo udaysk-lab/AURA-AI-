@@ -13,6 +13,14 @@ what it does, what stops it, and how to set the limits where you want them.
 
 ## Start it
 
+The easy way is the desktop app: **Download** on the home page, open it, and
+AURA starts with device control on, opens in your browser already signed in,
+and keeps its data in `~/.aura`. [desktop/README.md](./desktop/README.md) has
+the details. Everything below applies to it too; its settings file is
+`~/.aura/aura.env`.
+
+From source:
+
 ```bat
 REM Windows
 start-aura-local.bat
@@ -59,18 +67,22 @@ which is a stronger promise than asking it not to.
 | Skill | Code | What it gets | Runs without asking at |
 |---|---|---|---|
 | Command Line | `DV01` | Run commands, start and manage background ones | **Full access** |
-| File Access | `DV02` | Read, write, edit, move, delete, search files | Relaxed |
+| File Access | `DV02` | Read, write, edit, move, delete, search files | Relaxed; deleting at **Full access** |
 | Applications | `DV03` | Open, close and list applications | Relaxed |
-| System Monitor | `DV04` | CPU, memory, disk, battery, processes, stop a process | Relaxed |
-| Screen Control | `DV05` | Screenshots, mouse, keyboard | **Full access** |
-| Clipboard & Alerts | `DV06` | Read/write the clipboard, desktop notifications | Conservative |
-| Web Fetch | `DV07` | Fetch a specific URL | Any |
+| System Monitor | `DV04` | CPU, memory, disk, battery, processes, stop a process | Any; stopping a process at **Full access** |
+| Screen Control | `DV05` | Screenshots, mouse, keyboard | Clicking, typing and keys at **Full access**; scrolling relaxed |
+| Clipboard & Alerts | `DV06` | Read/write the clipboard, desktop notifications | Notifications conservative; setting the clipboard relaxed |
+| Web Fetch | `DV07` | Fetch a specific URL (GET only) | Relaxed |
 
 The last column is the trust tier at which AURA stops asking. Below it, every
-such action is previewed on an approval card and waits for you. The two
-broadest capabilities — running commands and driving the screen — need **Full
-access** or a standing permission, which is the point: they are the ones that
-can do anything.
+such action is previewed on an approval card and waits for you. Everything
+that can do anything — running commands, typing into them, clicking and typing
+on the screen, deleting, stopping processes — needs **Full access** or a
+standing permission. Clicks and keystrokes sit with the shell on purpose: a
+click in a terminal window is a command, and it shouldn't get a cheaper card.
+
+Fetching a URL asks below relaxed trust because a request is how something
+AURA just read would leave the machine (`https://somewhere/?data=...`).
 
 Reading is different from acting. Listing a folder, reading a file, taking a
 screenshot or checking memory use are read-only and run at any tier, like
@@ -124,11 +136,27 @@ standing grant for that one tool, listed and revocable in Settings. You can
 answer these in the web app or in the terminal, wherever you are.
 
 **4. The folder fence.** The file tools resolve every path to an absolute real
-path — expanding `~`, collapsing `..`, following symlinks — and refuse anything
-that lands outside `DEVICE_ALLOWED_ROOTS` (your home folder by default) or
-inside `DEVICE_PROTECTED_PATHS` (`~/.ssh`, `~/.aws`, `~/.gnupg`, cloud and
-Kubernetes credentials, AURA's own config). There is no spelling of a path that
-gets a file tool to `/etc/shadow`.
+path — expanding `~`, collapsing `..`, following symlinks, ignoring letter case
+where the file system does — and refuse anything that lands outside
+`DEVICE_ALLOWED_ROOTS` (your home folder by default) or inside a protected
+path. There is no spelling of a path that gets a file tool to `/etc/shadow`.
+
+Protected, whatever the settings say:
+
+- keys and credentials: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud`,
+  `~/.kube`, `~/.docker/config.json` (`DEVICE_PROTECTED_PATHS`);
+- everything that runs by itself: the Windows Startup folder and PowerShell
+  profiles, macOS LaunchAgents, Linux autostart and systemd user units, and
+  shell start-up files (`.bashrc`, `.profile`, `.zshrc` and friends);
+- git's own config, and every repository's `.git/hooks` and `.git/config` —
+  files that make git run a program;
+- AURA's own folder (`~/.aura`) and, in the desktop app, the folder it's
+  installed in, so it can't rewrite its settings or its code.
+
+A file tool that could write any of these could run a program later, or widen
+its own limits, without the shell's approval card ever appearing — so they go
+through `run_command`, which asks. Moving or deleting a folder that contains a
+protected path is refused for the same reason.
 
 **5. The command denylist.** `DEVICE_COMMAND_DENYLIST` refuses matching
 commands outright — after approval, at full trust, regardless. It's empty by
@@ -156,15 +184,18 @@ off the Command Line skill entirely and leaving it the file tools.
 
 ## Settings
 
-All of these live in `.env` and are read at startup, so they cannot be widened
-from inside the running app — including by AURA itself.
+All of these live in `.env` (the desktop app: `~/.aura/aura.env`) and are read at
+startup, so they cannot be widened from inside the running app — including by
+AURA itself, whose file tools can't reach either file. The app's Settings screen
+changes only the AI model and remote access, never these.
 
 | Setting | Default | What it does |
 |---|---|---|
 | `LOCAL_MODE` | `false` | Turns on device control, the single-owner sign-in, and the in-process worker |
 | `DEVICE_CONTROL` | *(follows `LOCAL_MODE`)* | `on` / `off` to decide device control on its own |
 | `DEVICE_ALLOWED_ROOTS` | your home folder | Folders the file tools may read and write, comma-separated |
-| `DEVICE_PROTECTED_PATHS` | credential folders | Never touched, even inside an allowed root |
+| `DEVICE_PROTECTED_PATHS` | credential folders | Never touched, even inside an allowed root (startup items, git config and `~/.aura` are protected on top of this) |
+| `DEVICE_EXTRA_PROTECTED_PATHS` | *(empty)* | More of the same, without restating the defaults |
 | `DEVICE_EXEC_MODE` | `ask` | `ask`, `allowlist` or `full` — see below |
 | `DEVICE_EXEC_ALLOWLIST` | *(empty)* | Command prefixes that skip approval under `allowlist` |
 | `DEVICE_COMMAND_DENYLIST` | *(empty)* | Commands refused outright, always |
@@ -173,6 +204,10 @@ from inside the running app — including by AURA itself.
 | `DEVICE_SCREEN_CONTROL` | `true` | Allow screenshots and mouse/keyboard at all |
 | `RUN_EMBEDDED_WORKER` | *(follows `LOCAL_MODE`)* | Run the background loops in the API process |
 | `MAX_AGENT_STEPS` | `8`, raised to `16` by the launchers | Tool calls allowed in one turn. Device work takes more: look, click, look again |
+| `AURA_HOME` | `~/.aura` | AURA's own folder: background-command output (and, in the desktop app, the database, settings and logs) |
+| `REMOTE_ACCESS` | `false` | Let paired devices reach this computer's AURA — see below |
+| `REMOTE_HOSTNAMES` | *(empty)* | Extra names this computer answers to, e.g. its Tailscale name |
+| `REMOTE_SESSION_DAYS` | `30` | How long a paired device stays signed in |
 
 ### `DEVICE_EXEC_MODE`
 
@@ -187,8 +222,10 @@ from inside the running app — including by AURA itself.
   ```
 
   Prefixes match on word boundaries, so `git status` allows `git status
-  --short` but not `git stash`. A dangerous-looking command is never
-  auto-allowed even if a prefix matches.
+  --short` but not `git stash`. A command that chains, pipes, redirects or
+  substitutes (`&&`, `;`, `|`, `>`, `$(…)`, backticks and the like) is never
+  auto-allowed — otherwise `git status && anything` would ride in on an
+  allowed prefix — and neither is a dangerous-looking one.
 - **`full`** — commands run without approval. The denylist still applies.
 
 A narrower fence is often the better tool than a looser gate. Pointing AURA at
@@ -220,24 +257,49 @@ don't point `DEVICE_ALLOWED_ROOTS` at more than the job needs.
 
 ---
 
-## Keep it off the network
+## Who can reach it
 
-A device-controlling instance should be reachable only from the machine it
-controls.
+By default, only this computer.
 
-- The launchers bind the API to `127.0.0.1`. Nothing on your network can reach
-  it.
-- The owner sign-in (`POST /api/auth/local`) additionally refuses any request
-  that doesn't come from loopback, so binding to `0.0.0.0` doesn't quietly open
-  a door.
+- The launchers and the desktop app bind to `127.0.0.1`, so nothing on your
+  network can connect.
+- Every request from this computer must also name it in its `Host` header
+  (`localhost`, `127.0.0.1`). That stops DNS rebinding: a web page can't get
+  your browser to talk to `127.0.0.1` under the page's own domain and drive
+  AURA from there.
+- The owner sign-in (`POST /api/auth/local`) refuses anything that doesn't come
+  from loopback. In the desktop app it also needs a key kept in your own
+  settings file, which the app puts in the link it opens — so another account
+  on a shared computer, which can reach `127.0.0.1` too, can't sign in as you.
+- A local install has one account, the owner's, and that is the only one it
+  serves. Signing up, password and demo sign-in, and signing in with Google are
+  switched off (Google can still be *connected* to the owner's account), and a
+  session for any other account is refused — so nothing on this computer can
+  make an account of its own and reach the shell through it.
+- A session token is refused when it arrives from the network: only a paired
+  device's token works there.
 - Preflight warns when device control is on alongside non-local CORS origins,
   and refuses to start in a production environment.
 
-Remote access — reaching this machine's AURA from your phone — is deliberately
-not built yet. When it is, it needs its own authentication and pairing story;
-until then, a tunnel you control (Tailscale, SSH port-forward) is the honest
-way to do it, because then the trust boundary is the tunnel's and not something
-improvised here.
+### Using it from your phone
+
+`REMOTE_ACCESS=true` (or **Settings → Use AURA from your phone**, then restart
+AURA) makes it listen on your network too. A device can't just connect: you
+start pairing on the computer, which shows a one-time code — 8 characters,
+valid 10 minutes, stored only as a hash, burned after five wrong tries — and
+the phone trades it for a token tied to that one paired device. Unpair it in
+Settings and it's signed out at once; turn remote access off and every paired
+device is.
+
+A paired device uses AURA through the same trust tier and approval cards as
+you do at the desk. It can't sign in as the owner directly, change the model
+or remote-access settings, use the command console on **This computer**, or
+pair more devices.
+
+The connection is plain HTTP, so on a network you share with people you don't
+trust, anyone watching could read a token. Use your own Wi-Fi, or put both
+devices on Tailscale, which encrypts the connection and works from anywhere
+(add its name to `REMOTE_HOSTNAMES` so it's offered when pairing).
 
 ---
 
@@ -262,6 +324,8 @@ Common things:
 | Clipboard unavailable on Linux | `sudo apt install xclip` |
 | "outside the folders AURA may touch" | The path is outside `DEVICE_ALLOWED_ROOTS`. Widen it, or work somewhere inside it |
 | Everything asks for approval | That's `DEVICE_EXEC_MODE=ask` with a trust tier below full. Use "Always" on a card, raise the tier, or use `allowlist` mode |
+| "only answers to its own address" | AURA was opened under another name. Use `http://127.0.0.1:<port>` or `localhost` |
+| The phone can't connect | Remote access is off, or AURA wasn't restarted after turning it on. On Windows, allow AURA through the firewall on private networks when asked |
 
 ---
 
@@ -279,8 +343,13 @@ backend/app/device/
 
 backend/app/agent/device_tools.py   the tools, registered into the normal registry
 backend/app/api/device.py           status, console, file browsing, processes
+backend/app/api/remote.py           pairing and paired devices
+backend/app/api/local.py            the Settings screens for the model and remote access
+backend/app/middleware.py           the Host guard and the who-can-reach-it checks
 backend/aura_cli.py                 the terminal client
-backend/tests/test_device.py        52 tests, mostly about refusal
+backend/aura_desktop.py             the desktop app's launcher
+backend/tests/test_device.py        70 tests, mostly about refusal
+backend/tests/test_desktop.py       the local install: Host guard, sign-in key, pairing
 frontend/app/(app)/device/page.tsx  the This computer screen
 ```
 
