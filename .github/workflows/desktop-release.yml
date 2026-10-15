@@ -3,7 +3,9 @@
 #
 # Runs when a version tag is pushed (v1.0.0 — it must match
 # backend/app/version.py), or by hand from the Actions tab to try a build
-# without publishing it.
+# without publishing it. A pull request that changes how the app is built or
+# packaged builds and smoke-tests it too, so a release tag never meets a
+# broken build for the first time. Only a tag publishes.
 #
 # The website's download buttons point at
 #   https://github.com/udaysk-lab/AURA-AI-/releases/latest/download/<file>
@@ -13,6 +15,16 @@ name: Desktop release
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths:
+      - "desktop/**"
+      - "backend/aura_desktop.py"
+      - "backend/requirements*.txt"
+      - "frontend/package.json"
+      - "frontend/package-lock.json"
+      - "frontend/next.config.mjs"
+      - "frontend/scripts/**"
+      - ".github/workflows/desktop-release.yml"
   workflow_dispatch:
     inputs:
       publish:
