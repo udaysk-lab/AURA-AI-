@@ -207,11 +207,22 @@ def run_rule(db: Session, user: User, rule: AutomationRule, context: dict | None
 
         # An unattended rule never fires an irreversible action on its own.
         if is_destructive(tool_name):
+            from app import timeutil
+            from app.agent import skills as skill_registry
+            from app.agent.tools import build_preview
+
+            skill = skill_registry.skill_for_tool(tool_name)
             pending = PendingAction(
                 user_id=user.id,
                 tool_name=tool_name,
                 arguments=args,
-                preview=f"[automation: {rule.name}] {tool_name} {json.dumps(args, default=str)[:300]}",
+                preview=(
+                    f"Automation “{rule.name}” wants to:\n\n"
+                    + build_preview(
+                        tool_name, args, timeutil.user_zone(user), db=db, user_id=user.id
+                    )
+                ),
+                skill_code=skill.code if skill else "",
             )
             db.add(pending)
             db.commit()
@@ -321,8 +332,11 @@ def due_schedules(rule: AutomationRule, now: datetime | None = None) -> bool:
     return all(field_matches(p, v) for p, v in zip(parts, fields))
 
 
-def run_due_schedules(db: Session, now: datetime | None = None) -> list[dict]:
-    """Call once a minute from a worker/cron to fire scheduled rules."""
+def run_due_schedules(db: Session, now: datetime | None = None, should_stop=None) -> list[dict]:
+    """Call once a minute from a worker/cron to fire scheduled rules.
+
+    `should_stop` is checked before each rule; the rest stay due for next time.
+    """
     now = now or datetime.now(timezone.utc)
     rules = db.scalars(
         select(AutomationRule).where(
@@ -335,6 +349,8 @@ def run_due_schedules(db: Session, now: datetime | None = None) -> list[dict]:
 
     results = []
     for rule in rules:
+        if should_stop is not None and should_stop():
+            break
         user = db.get(User, rule.user_id)
         if not user:
             continue

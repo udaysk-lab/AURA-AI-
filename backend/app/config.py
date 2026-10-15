@@ -94,7 +94,9 @@ class Settings(BaseSettings):
     # every request and widening the blast radius of a database leak for no gain.
     llm_provider: Literal["auto", "openai", "anthropic", "mock"] = "auto"
     anthropic_api_key: str = ""
-    anthropic_model: str = "claude-sonnet-5"
+    # Claude Sonnet 5.5: the best balance of speed and intelligence. For the
+    # background model, claude-haiku-5-5 is the cheap choice.
+    anthropic_model: str = "claude-sonnet-5-5"
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
 
@@ -201,11 +203,12 @@ class Settings(BaseSettings):
     # them however the path is written (.., symlinks, ~).
     device_allowed_roots: str = ""
 
-    # Directories that are always refused even inside an allowed root — secrets
-    # and the things that own this machine's trust.
+    # Directories that are always refused even inside an allowed root — keys
+    # and credentials. Startup items and AURA's own folder are protected on
+    # top of this list whatever it says (ALWAYS_PROTECTED, below), so an old
+    # .env that sets this can't quietly drop them.
     device_protected_paths: str = (
-        "~/.ssh,~/.aws,~/.gnupg,~/.config/gcloud,~/.kube,~/.docker/config.json,"
-        "~/.aura"
+        "~/.ssh,~/.aws,~/.gnupg,~/.config/gcloud,~/.kube,~/.docker/config.json"
     )
 
     # How shell command approval works, on top of the autonomy tier:
@@ -247,6 +250,61 @@ class Settings(BaseSettings):
     # Blank means "follow local_mode". A real server should run worker.py (or a
     # platform cron) separately instead and set this to off.
     run_embedded_worker: Literal["", "on", "off"] = ""
+
+    # Paths protected on top of device_protected_paths. The desktop app puts
+    # its own data folder and its install folder here, so the file tools can
+    # never rewrite AURA's settings (to widen its own limits) or its code.
+    device_extra_protected_paths: str = ""
+
+    # --- Desktop app / local install --------------------------------------
+    # Where a local install keeps its own files: the database, the settings
+    # file, logs and background-command output. Blank means ~/.aura, which is
+    # already on the protected list above.
+    aura_home: str = ""
+
+    # The exported web app this process serves at its own address. Only the
+    # desktop app sets it; the hosted site has Vercel serve the frontend.
+    aura_web_dir: str = ""
+
+    # The settings file that the in-app "AI model" and "Remote access" screens
+    # write to on a local install. Blank means the project's .env when running
+    # from source. Never writable from a hosted deployment.
+    aura_config_file: str = ""
+
+    # A secret only the person who launched AURA on this machine can know: the
+    # desktop app keeps it in their own settings file and puts it in the link
+    # it opens. When set, the owner sign-in requires it, so another account on
+    # a shared computer — which can reach 127.0.0.1 too — can't sign in as you.
+    aura_local_login_key: str = ""
+
+    # Host names a local install answers to. A web page can't make your
+    # browser talk to 127.0.0.1 under its own name (DNS rebinding) when the
+    # API refuses every Host header that isn't this machine's.
+    local_allowed_hosts: str = "localhost,127.0.0.1,::1"
+
+    # --- Remote access (local installs only) ------------------------------
+    # Lets a paired phone or laptop use this computer's AURA over your own
+    # network or a tunnel like Tailscale. Off by default; the desktop app only
+    # listens beyond 127.0.0.1 when this is on, and every request from another
+    # device must carry a token from pairing, which you start on this computer.
+    remote_access: bool = False
+    # Extra host names this computer is reached by, shown on the pairing
+    # screen (e.g. my-pc.tailnet-name.ts.net). Its network addresses are found
+    # automatically.
+    remote_hostnames: str = ""
+    # How long a paired device stays signed in before it must pair again.
+    remote_session_days: int = 30
+
+    # --- Platform cron ------------------------------------------------------
+    # Shared secret for /api/cron/tick, which runs the background worker's
+    # loops on platforms with no long-running process (Vercel). Vercel sends it
+    # automatically as "Authorization: Bearer <CRON_SECRET>" once it is set.
+    # Without it the endpoint only keeps the database awake.
+    cron_secret: str = ""
+    # A cron call is a request with a time limit (300 s on Vercel with fluid
+    # compute). The tick stops starting new work after this long and leaves
+    # the rest, still due, for the next call.
+    cron_budget_seconds: int = 240
 
     @model_validator(mode="before")
     @classmethod
@@ -295,9 +353,11 @@ class Settings(BaseSettings):
         failure is an opaque "Failed to fetch" with nothing in the UI to explain
         it. Pinning dev CORS to one port buys no security — an attacker who can
         run code on your loopback has already won — and costs an afternoon.
-        Production still uses the explicit allowlist only.
+        Production still uses the explicit allowlist only — and so does the
+        desktop app, which serves its own web app from its own address and
+        needs no other origin at all.
         """
-        if self.environment != "local":
+        if self.environment != "local" or self.aura_web_dir:
             return None
         return r"http://(localhost|127\.0\.0\.1)(:\d+)?"
 
@@ -363,17 +423,47 @@ class Settings(BaseSettings):
         raw = [r.strip() for r in self.device_allowed_roots.split(",") if r.strip()]
         if not raw:
             raw = ["~"]
-        return [os.path.abspath(os.path.expanduser(r)) for r in raw]
+        # Real paths, because that's what every path checked against them is:
+        # on macOS /tmp and /var are links into /private, and a root written
+        # the short way would otherwise refuse everything under itself.
+        return [os.path.realpath(os.path.expanduser(r)) for r in raw]
 
     @property
     def device_protected_path_list(self) -> list[str]:
         import os.path
 
-        return [
-            os.path.abspath(os.path.expanduser(p.strip()))
-            for p in self.device_protected_paths.split(",")
-            if p.strip()
-        ]
+        raw = ",".join(
+            [self.device_protected_paths, self.device_extra_protected_paths, *ALWAYS_PROTECTED]
+        )
+        out: list[str] = []
+        for p in raw.split(","):
+            if p.strip():
+                expanded = os.path.expanduser(p.strip())
+                # Both spellings: the real path is what resolved paths are
+                # compared with, and the plain one is what a person reads.
+                for path in (os.path.realpath(expanded), os.path.abspath(expanded)):
+                    if path not in out:
+                        out.append(path)
+        return out
+
+    @property
+    def aura_home_path(self) -> str:
+        import os.path
+
+        return os.path.abspath(os.path.expanduser(self.aura_home.strip() or "~/.aura"))
+
+    @property
+    def local_allowed_host_set(self) -> set[str]:
+        return {h.strip().lower() for h in self.local_allowed_hosts.split(",") if h.strip()}
+
+    @property
+    def remote_hostname_list(self) -> list[str]:
+        return [h.strip() for h in self.remote_hostnames.split(",") if h.strip()]
+
+    @property
+    def remote_access_enabled(self) -> bool:
+        """Remote access only means something on a local install."""
+        return self.local_mode and self.remote_access
 
     @property
     def device_exec_allow_list(self) -> list[str]:
@@ -393,6 +483,39 @@ class Settings(BaseSettings):
         if self.openai_api_key or self.openai_base_url:
             return "openai"
         return "mock"
+
+
+# Never touched by the file tools, whatever the settings say. Everything that
+# runs by itself — at login, in every new shell, on every git command — plus
+# AURA's own folder: a file tool that could write one of these could run any
+# program later, or widen its own limits, without the shell's approval card
+# ever appearing.
+ALWAYS_PROTECTED = (
+    "~/.aura",
+    # git settings can name commands it runs (core.fsmonitor, ! aliases)
+    "~/.gitconfig",
+    "~/.config/git",
+    # Windows: the Startup folder and PowerShell profiles (which live under
+    # OneDrive when it has taken over the Documents folder)
+    "~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup",
+    "~/Documents/WindowsPowerShell",
+    "~/Documents/PowerShell",
+    "~/OneDrive/Documents/WindowsPowerShell",
+    "~/OneDrive/Documents/PowerShell",
+    # macOS and Linux: login agents, autostart entries, shell start-up files
+    "~/Library/LaunchAgents",
+    "~/.config/autostart",
+    "~/.config/systemd",
+    "~/.bashrc",
+    "~/.bash_profile",
+    "~/.bash_login",
+    "~/.profile",
+    "~/.zshrc",
+    "~/.zprofile",
+    "~/.zshenv",
+    "~/.zlogin",
+    "~/.config/fish",
+)
 
 
 @lru_cache

@@ -85,14 +85,25 @@ def classify(command: str) -> Verdict:
     return Verdict(allowed=True, auto=auto, dangerous=dangerous, reason=why)
 
 
+# Characters that let a second command ride along behind an allowed one —
+# "git status && rm -rf ~", "git status; ...", "echo x > ~/.bashrc", a
+# PowerShell "(subexpression)" or "{ script block }", cmd's ^ and ! — so a
+# command containing any of them is never waved through, whatever it starts
+# with. It can still run; it just asks first.
+_CHAINING = set(";&|<>`$(){}[]^!\n\r")
+
+
 def _allowlisted(command: str) -> bool:
-    """True if the command starts with an allowlisted prefix.
+    """True if the command starts with an allowlisted prefix and does nothing more.
 
     Prefix match on whitespace boundaries, so "git status" allows "git status
     --short" but not "git stash". A lone "git" would allow all of git, which is
-    the operator's call to make.
+    the operator's call to make. Anything that chains, pipes, redirects or
+    substitutes is never allowlisted.
     """
     cmd = command.strip()
+    if any(ch in _CHAINING for ch in cmd):
+        return False
     for prefix in settings.device_exec_allow_list:
         p = prefix.strip()
         if not p:

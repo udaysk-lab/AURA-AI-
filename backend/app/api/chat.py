@@ -56,6 +56,36 @@ def _get_or_create(db, user, conversation_id: str | None) -> Conversation:
     return convo
 
 
+UNTITLED = ("", "New conversation")
+
+
+def _title_from(text: str) -> str:
+    return text.strip().split("\n")[0][:60]
+
+
+def _backfill_titles(db, rows: list[Conversation]) -> None:
+    """Name conversations that still carry the placeholder.
+
+    Streamed chats stayed "New conversation" until the September fix, and
+    those already saved kept the placeholder. A conversation is named from its
+    first message once, here, the next time the list is read.
+    """
+    untitled = [c for c in rows if c.title in UNTITLED]
+    changed = False
+    for convo in untitled:
+        first = db.scalars(
+            select(Message)
+            .where(Message.conversation_id == convo.id, Message.role == "user")
+            .order_by(Message.created_at)
+            .limit(1)
+        ).first()
+        if first and first.content.strip():
+            convo.title = _title_from(first.content)
+            changed = True
+    if changed:
+        db.commit()
+
+
 @router.get("/conversations", response_model=list[ConversationOut])
 def list_conversations(user: CurrentUser, db: DbSession) -> list[ConversationOut]:
     rows = db.scalars(
@@ -64,6 +94,7 @@ def list_conversations(user: CurrentUser, db: DbSession) -> list[ConversationOut
         .order_by(Conversation.pinned.desc(), Conversation.updated_at.desc())
         .limit(100)
     ).all()
+    _backfill_titles(db, list(rows))
     return [ConversationOut.model_validate(c) for c in rows]
 
 

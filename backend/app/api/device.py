@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.agent import skills as skill_registry
 from app.config import settings
@@ -27,7 +27,7 @@ from app.device import policy as device_policy
 from app.device import shell as device_shell
 from app.device import system as device_system
 from app.device.runtime import DeviceUnavailable, capabilities
-from app.deps import CurrentUser, DbSession
+from app.deps import CurrentUser, DbSession, is_remote_session
 from app.models import ActivityLog
 from app.schemas import (
     DeviceBackgroundOut,
@@ -81,14 +81,28 @@ def device_status(user: CurrentUser, db: DbSession) -> DeviceStatusOut:
 
 
 @router.post("/run", response_model=DeviceRunOut)
-def run_command(payload: DeviceRunIn, user: CurrentUser, db: DbSession) -> DeviceRunOut:
+def run_command(
+    payload: DeviceRunIn, request: Request, user: CurrentUser, db: DbSession
+) -> DeviceRunOut:
     """Run a command from the Device console.
 
     This is the user's own terminal inside their own app, so there's no
     approval card — they typed it. The denylist floor in the shell layer still
     applies, and it lands in the activity log either way.
+
+    Not from a paired phone: a lost phone shouldn't be a shell on this
+    computer. From there, ask AURA in chat, where commands go through the
+    trust tier and the approval cards like everything else.
     """
     _require_device()
+    if is_remote_session(request):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "The console only works on the computer itself. From another device, "
+                "ask AURA in chat — commands then come to you for approval."
+            ),
+        )
     try:
         result = device_shell.run(payload.command, payload.workdir or None, payload.timeout)
     except DeviceUnavailable as exc:

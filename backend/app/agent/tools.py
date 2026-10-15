@@ -91,9 +91,53 @@ def tool_specs() -> list[ToolSpec]:
 # two sources of truth for "is this dangerous" is how one of them ends up wrong.
 
 
-def build_preview(name: str, args: dict, tz: tzinfo | None = None) -> str:
+def _describe_record(
+    name: str, args: dict, tz: tzinfo | None, db: Session, user_id: str
+) -> str | None:
+    """Previews that need the database: what an id actually refers to.
+
+    An approval card reading "Delete task 5f2c…" asks you to approve something
+    you can't see. These name the thing — the email's sender and subject, the
+    event's title and time, the task's title — and say plainly when the id
+    doesn't belong to anything of yours.
+    """
+    if name == "archive_email":
+        email = db.get(EmailMessage, str(args.get("email_id") or ""))
+        if not email or email.user_id != user_id:
+            return "Archive an email — but no email of yours has that id, so nothing would happen."
+        sender = email.sender_name or email.sender or "someone"
+        return f"Archive the email from {sender}:\n“{email.subject or '(no subject)'}”"
+    if name == "delete_event":
+        event = db.get(CalendarEvent, str(args.get("event_id") or ""))
+        if not event or event.user_id != user_id:
+            return "Delete a calendar event — but no event of yours has that id, so nothing would happen."
+        when = timeutil.fmt_when(event.start_at, tz or timezone.utc) if event.start_at else ""
+        return f"Delete the calendar event “{event.title or 'Untitled'}”" + (f"\n{when}" if when else "")
+    if name == "delete_task":
+        task = db.get(Task, str(args.get("task_id") or ""))
+        if not task or task.user_id != user_id:
+            return "Delete a task — but no task of yours has that id, so nothing would happen."
+        return f"Delete the task “{task.title or 'Untitled'}” permanently"
+    return None
+
+
+def build_preview(
+    name: str,
+    args: dict,
+    tz: tzinfo | None = None,
+    db: Session | None = None,
+    user_id: str | None = None,
+) -> str:
     """What the approval card shows. Previews that talk about time get the
-    user's zone, so they can say when on the user's clock."""
+    user's zone, so they can say when on the user's clock; given the database,
+    previews of actions on a record say what that record is."""
+    if db is not None and user_id:
+        try:
+            described = _describe_record(name, args, tz, db, user_id)
+            if described:
+                return described
+        except Exception:
+            log.exception("Preview lookup for %s failed", name)
     t = REGISTRY.get(name)
     if t and t.preview:
         try:

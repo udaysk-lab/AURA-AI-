@@ -169,7 +169,11 @@ def test_vercel_crons_call_the_keepalive_daily():
         (Path(__file__).resolve().parents[2] / "vercel.json").read_text(encoding="utf-8")
     )
     crons = config.get("crons", [])
-    keepalives = [c for c in crons if c["path"] == "/api/health/keepalive"]
+    # /api/cron/tick keeps the database awake on every call (and, with
+    # CRON_SECRET set, runs the background worker too).
+    keepalives = [
+        c for c in crons if c["path"] in ("/api/health/keepalive", "/api/cron/tick")
+    ]
     assert len(keepalives) >= 2, "want a few touches a day, not one"
 
     for cron in keepalives:

@@ -84,11 +84,12 @@ EXTERNAL_WRITE = {
     "open_app",
     "close_app",
     "set_clipboard",
-    "mouse_click",
-    "type_text",
-    "press_keys",
     "scroll_screen",
-    "send_process_input",
+    # A request to a server AURA doesn't control is something the outside
+    # world sees — and the shortest way to carry what it just read out of the
+    # machine (https://somewhere/?data=...). Reading a file runs at any tier;
+    # sending anywhere asks below relaxed.
+    "fetch_url",
 }
 
 # Irreversible or seen by other people.
@@ -105,6 +106,14 @@ IRREVERSIBLE = {
     "stop_process",
     "kill_process",
     "delete_file",
+    # Driving the keyboard and mouse can do anything a person at the desk can —
+    # including typing a command into a terminal. Below full trust it asks,
+    # like the shell does; otherwise clicking would be a way round the shell's
+    # approval card. Typing into a running command is the shell too.
+    "mouse_click",
+    "type_text",
+    "press_keys",
+    "send_process_input",
 }
 
 # Device read-only tools: observing the machine, never changing it. Folded into
@@ -120,7 +129,6 @@ DEVICE_READ_ONLY = {
     "process_output",
     "read_clipboard",
     "take_screenshot",
-    "fetch_url",
 }
 READ_ONLY = READ_ONLY | DEVICE_READ_ONLY
 
@@ -150,7 +158,28 @@ def normalise_tier(value: str | None) -> str:
     return {"ask": "strict", "trusted": "relaxed"}.get(value or "", "conservative")
 
 
-def active_grant(db: Session, user_id: str, tool_name: str) -> ApprovalGrant | None:
+# Tools whose standing permission covers one target, not the tool as a whole.
+# "Always allow send_email" used to mean any recipient at all — including an
+# address planted in an email the assistant had just read. Now "always" means
+# "always, to this person", and a new recipient asks again.
+TARGETED = {"send_email": "to"}
+
+
+def grant_target(tool_name: str, args: dict | None) -> str:
+    """What a grant for this call would cover: a normalised recipient, or ''."""
+    field = TARGETED.get(tool_name)
+    if not field:
+        return ""
+    from email.utils import parseaddr
+
+    raw = str((args or {}).get(field) or "")
+    address = parseaddr(raw)[1] or raw
+    return address.strip().lower()[:320]
+
+
+def active_grant(
+    db: Session, user_id: str, tool_name: str, target: str = ""
+) -> ApprovalGrant | None:
     now = datetime.now(timezone.utc)
     grants = db.scalars(
         select(ApprovalGrant).where(
@@ -159,7 +188,12 @@ def active_grant(db: Session, user_id: str, tool_name: str) -> ApprovalGrant | N
             ApprovalGrant.revoked == False,  # noqa: E712
         )
     ).all()
+    targeted = tool_name in TARGETED
     for grant in grants:
+        if targeted and (not target or (grant.target or "") != target):
+            # Includes grants made before targets existed: they said "any
+            # recipient", which is exactly what no longer holds.
+            continue
         if grant.scope == "always":
             return grant
         expires = grant.expires_at
@@ -168,21 +202,57 @@ def active_grant(db: Session, user_id: str, tool_name: str) -> ApprovalGrant | N
     return None
 
 
-def requires_approval(db: Session, user_id: str, tool_name: str, tier: str) -> bool:
+SHELL_TOOLS = {"run_command", "run_in_background"}
+
+
+def _shell_policy_decides(tool_name: str, args: dict | None) -> bool:
+    """DEVICE_EXEC_MODE's say on one shell command: True when it skips approval.
+
+    `allowlist` lets listed commands run without asking at any tier; `full`
+    lets every command through. A command on the denylist skips the card too —
+    not to run, but because the shell refuses it outright, and asking you to
+    approve something that can't happen would only teach you to click Allow.
+    """
+    if tool_name not in SHELL_TOOLS:
+        return False
+    from app.config import settings
+
+    if not settings.device_control_enabled:
+        return False
+    from app.device import policy
+
+    verdict = policy.classify(str((args or {}).get("command") or ""))
+    return verdict.auto or not verdict.allowed
+
+
+def requires_approval(
+    db: Session, user_id: str, tool_name: str, tier: str, args: dict | None = None
+) -> bool:
     tier = normalise_tier(tier)
     if risk_class(tool_name) in _TIER_CEILING[tier]:
         return False
-    return active_grant(db, user_id, tool_name) is None
+    if _shell_policy_decides(tool_name, args):
+        return False
+    return active_grant(db, user_id, tool_name, grant_target(tool_name, args)) is None
 
 
 def grant(
-    db: Session, user_id: str, tool_name: str, scope: str, minutes: int = 10
-) -> ApprovalGrant:
-    """scope: 'always' | 'window'"""
+    db: Session,
+    user_id: str,
+    tool_name: str,
+    scope: str,
+    minutes: int = 10,
+    target: str = "",
+) -> ApprovalGrant | None:
+    """scope: 'always' | 'window'. None when there's nothing to grant —
+    a targeted tool called without a target can only ever be allowed once."""
+    if tool_name in TARGETED and not target:
+        return None
     row = ApprovalGrant(
         user_id=user_id,
         tool_name=tool_name,
         scope="always" if scope == "always" else "window",
+        target=target,
         expires_at=(
             None
             if scope == "always"
@@ -195,14 +265,16 @@ def grant(
     return row
 
 
-def revoke(db: Session, user_id: str, tool_name: str) -> int:
-    rows = db.scalars(
-        select(ApprovalGrant).where(
-            ApprovalGrant.user_id == user_id,
-            ApprovalGrant.tool_name == tool_name,
-            ApprovalGrant.revoked == False,  # noqa: E712
-        )
-    ).all()
+def revoke(db: Session, user_id: str, tool_name: str, target: str | None = None) -> int:
+    """Revoke a tool's grants — all of them, or only the one for `target`."""
+    query = select(ApprovalGrant).where(
+        ApprovalGrant.user_id == user_id,
+        ApprovalGrant.tool_name == tool_name,
+        ApprovalGrant.revoked == False,  # noqa: E712
+    )
+    if target is not None:
+        query = query.where(ApprovalGrant.target == target)
+    rows = db.scalars(query).all()
     for row in rows:
         row.revoked = True
     db.commit()

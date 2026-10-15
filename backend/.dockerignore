@@ -12,8 +12,8 @@ __pycache__/
 *.db-wal
 *.db-shm
 
-# Secrets. Render supplies configuration through the environment; a stray .env
-# inside the image would silently win over it.
+# Secrets. The host supplies configuration through the environment; a stray
+# .env inside the image would silently win over it.
 .env
 .env.*
 !.env.example

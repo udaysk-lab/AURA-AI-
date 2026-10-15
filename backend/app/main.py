@@ -10,16 +10,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
 
-from app import preflight
-from app.api import account, assistant, auth, chat, device, hub, intelligence, workspace
+from app import preflight, web
+from app.api import (
+    account,
+    assistant,
+    auth,
+    chat,
+    cron,
+    device,
+    hub,
+    intelligence,
+    local,
+    remote,
+    workspace,
+)
 from app.config import settings
 from app.db import init_db
 from app.llm import get_provider
 from app.middleware import (
+    LocalAccessMiddleware,
     RateLimitMiddleware,
     RequestContextMiddleware,
     SecurityHeadersMiddleware,
 )
+from app.version import __version__
 
 logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
@@ -79,7 +93,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="AURA AI",
     description="AI executive assistant — email, calendar, tasks, memory, skills, automation.",
-    version="1.0.0",
+    version=__version__,
     lifespan=lifespan,
     docs_url="/docs" if settings.environment != "production" else None,
     redoc_url=None,
@@ -91,6 +105,9 @@ app = FastAPI(
 app.add_middleware(RequestContextMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
+# Local installs only: answer to this computer by its own name, and to paired
+# devices. Does nothing on a hosted deployment.
+app.add_middleware(LocalAccessMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -111,6 +128,9 @@ app.include_router(intelligence.router)
 app.include_router(hub.router)
 app.include_router(account.router)
 app.include_router(assistant.router)
+app.include_router(cron.router)
+app.include_router(local.router)
+app.include_router(remote.router)
 
 
 def _first_line(exc: BaseException) -> str:
@@ -175,7 +195,7 @@ async def unhandled(request: Request, exc: Exception) -> JSONResponse:
 @app.get("/health")
 def health() -> dict:
     """Liveness. Deliberately cheap and unauthenticated — no DB call."""
-    return {"status": "ok", "app": settings.app_name, "version": "1.0.0"}
+    return {"status": "ok", "app": settings.app_name, "version": __version__}
 
 
 @app.get("/health/ready")
@@ -243,19 +263,31 @@ def preflight_report() -> JSONResponse:
     settings and never a value, so it leaks nothing an attacker couldn't infer
     by watching the app fail.
     """
-    report = preflight.run()
+    # This one also opens a real database connection: the Setup screen is
+    # where someone looks when sign-in fails, and "Postgres" said nothing
+    # about whether it could actually be reached.
+    report = preflight.run(probe_database=True)
     return JSONResponse(
-        status_code=200 if report.ready else 503, content=report.as_dict()
+        status_code=200 if report.ready else 503,
+        content=report.as_dict(),
+        headers={"Cache-Control": "no-store"},
     )
 
 
-@app.get("/")
-def root() -> dict:
-    return {
-        "name": "AURA AI",
-        "version": "1.0.0",
-        "health": "/health",
-        "readiness": "/health/ready",
-        "setup": "/api/health/preflight",
-        "docs": "/docs" if settings.environment != "production" else None,
-    }
+# The desktop app serves the web app from this same address, which owns "/".
+# Everywhere else "/" describes the API. Registered last: the web app's routes
+# catch every path the API doesn't claim.
+WEB_APP_SERVED = bool(settings.aura_web_dir) and web.install(app, settings.aura_web_dir)
+
+if not WEB_APP_SERVED:
+
+    @app.get("/")
+    def root() -> dict:
+        return {
+            "name": "AURA AI",
+            "version": __version__,
+            "health": "/health",
+            "readiness": "/health/ready",
+            "setup": "/api/health/preflight",
+            "docs": "/docs" if settings.environment != "production" else None,
+        }

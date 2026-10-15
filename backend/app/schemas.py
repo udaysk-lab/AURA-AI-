@@ -58,6 +58,20 @@ class LoginIn(BaseModel):
     password: str = Field(min_length=1, max_length=72)
 
 
+class LocalLoginIn(BaseModel):
+    # The desktop app's sign-in key, from the link its window opened.
+    key: str = Field(default="", max_length=200)
+
+
+class PasswordForgotIn(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetIn(BaseModel):
+    token: str = Field(min_length=10, max_length=2000)
+    password: str = Field(min_length=8, max_length=72)
+
+
 class SettingsOut(ORMModel):
     briefing_time: str
     briefing_enabled: bool
@@ -493,6 +507,8 @@ class GrantOut(ORMModel):
     id: str
     tool_name: str
     scope: str
+    # For send_email, the one recipient the grant covers. Empty: the whole tool.
+    target: str = ""
     expires_at: datetime | None
     created_at: datetime
 

@@ -229,11 +229,24 @@ def run(db: Session, user: User, tier: str, force: bool = False) -> HeartbeatRep
     return report
 
 
-def run_all_due(db: Session) -> list[HeartbeatReport]:
-    """Called once a minute by the worker."""
+def run_all_due(
+    db: Session, active_since: datetime | None = None, should_stop=None
+) -> list[HeartbeatReport]:
+    """Called once a minute by the worker.
+
+    `active_since` skips accounts nobody has signed into since then. A hosted
+    tick passes it, so years of one-off trial accounts aren't triaged forever.
+    `should_stop` is checked before each account; when it says so, the rest
+    wait for the next tick.
+    """
     reports: list[HeartbeatReport] = []
-    users = db.scalars(select(User).where(User.is_active == True)).all()  # noqa: E712
+    query = select(User).where(User.is_active == True)  # noqa: E712
+    if active_since is not None:
+        query = query.where(User.last_login_at >= active_since)
+    users = db.scalars(query).all()
     for user in users:
+        if should_stop is not None and should_stop():
+            break
         row = db.scalars(
             select(UserSettings).where(UserSettings.user_id == user.id)
         ).first()

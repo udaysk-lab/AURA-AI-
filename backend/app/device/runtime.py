@@ -35,6 +35,28 @@ def require_enabled() -> None:
         )
 
 
+def hidden_process() -> dict:
+    """Keyword arguments that keep a helper process from flashing a window.
+
+    The desktop app has no console of its own, so on Windows every console
+    program it starts — PowerShell, cmd, taskkill, clip — would otherwise pop
+    up a black window for as long as it runs. A GUI program started *through*
+    one of them (notepad, a browser) still shows its own window as usual.
+    """
+    if os.name == "nt":
+        import subprocess
+
+        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+    return {}
+
+
+def data_dir(*parts: str) -> str:
+    """A folder inside AURA's own data folder (~/.aura), created on demand."""
+    path = os.path.join(settings.aura_home_path, *parts)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def _has_module(name: str) -> bool:
     import importlib.util
 

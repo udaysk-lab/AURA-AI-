@@ -58,6 +58,17 @@ def _send_smtp(sender: str, to: str, subject: str, body: str) -> None:
         server.send_message(message)
 
 
+def send_system(to: str, subject: str, body: str) -> None:
+    """Mail from AURA itself rather than on a user's behalf — a password reset.
+
+    Only SMTP: a user's own Gmail can't be the route for proving they own
+    their address. Raises if it can't send, so the caller can say so.
+    """
+    if not settings.smtp_configured:
+        raise RuntimeError("SMTP is not configured")
+    _send_smtp(settings.smtp_from, to, subject, body)
+
+
 def send(db: Session, user: User, to: str, subject: str, body: str) -> dict:
     """Send an email. Returns a result the agent can report truthfully."""
     _, address = parseaddr(to)

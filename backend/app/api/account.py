@@ -32,6 +32,7 @@ from app.models import (
     Memory,
     Message,
     Notification,
+    PairedDevice,
     Schedule,
     SkillRun,
     Task,
@@ -104,6 +105,7 @@ EXPORTABLE = [
     ("activity", ActivityLog),
     ("usage", UsageRecord),
     ("channels", Channel),
+    ("paired_devices", PairedDevice),
 ]
 
 # Columns that must never appear in an export, even though they belong to the user.

@@ -109,11 +109,22 @@ def test_cost_estimate_uses_the_price_table():
     from app.llm import Usage
     from app.services.usage import estimate_cost
 
-    # 1M in + 1M out on Sonnet at (3, 15) per million.
+    # 1M in + 1M out on Sonnet 5.5 at (2, 10) per million.
     cost = estimate_cost(
-        Usage(input_tokens=1_000_000, output_tokens=1_000_000, model="claude-sonnet-5")
+        Usage(input_tokens=1_000_000, output_tokens=1_000_000, model="claude-sonnet-5-5")
     )
-    assert cost == pytest.approx(18.0)
+    assert cost == pytest.approx(12.0)
+
+
+def test_cost_estimate_follows_a_tiered_price():
+    """Haiku 5.5 costs five times as much once one prompt passes 100k tokens."""
+    from app.llm import Usage
+    from app.services.usage import estimate_cost
+
+    short = estimate_cost(Usage(input_tokens=50_000, output_tokens=0, model="claude-haiku-5-5"))
+    long = estimate_cost(Usage(input_tokens=200_000, output_tokens=0, model="claude-haiku-5-5"))
+    assert short == pytest.approx(50_000 / 1_000_000 * 0.10)
+    assert long == pytest.approx(200_000 / 1_000_000 * 0.50)
 
 
 def test_unknown_model_is_priced_pessimistically():
@@ -121,7 +132,11 @@ def test_unknown_model_is_priced_pessimistically():
 
     assert price_for("some-model-nobody-has-heard-of") == DEFAULT_PRICE
     # Versioned model names still resolve by prefix.
-    assert price_for("claude-sonnet-5-20260501") == (3.00, 15.00)
+    assert price_for("claude-sonnet-5-20260501") == (2.00, 10.00)
+    # The longest known prefix wins: Opus 5.5 is not priced as the older Opus 5.
+    assert price_for("claude-opus-5-5") == (4.00, 20.00)
+    assert price_for("claude-opus-5-5-20261001") == (4.00, 20.00)
+    assert price_for("claude-opus-5") == (15.00, 75.00)
 
 
 def test_zero_token_usage_records_nothing(client, auth):
@@ -180,7 +195,7 @@ def test_background_work_gets_a_smaller_budget(client, auth, monkeypatch):
         # $0.50 spent: half the cap, but above the 40% background allowance.
         usage_service.record(
             db, user.id,
-            Usage(input_tokens=0, output_tokens=33_333, model="claude-sonnet-5"),
+            Usage(input_tokens=0, output_tokens=50_000, model="claude-sonnet-5"),
         )
         state = usage_service.spend_today(db, user.id)
         assert 0.4 < state.spent_usd < 0.6

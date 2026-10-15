@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from app.agent import autonomy
@@ -101,6 +102,37 @@ def _skill_view(db, user, code: str) -> SkillOut:
 @router.get("/skills/categories", response_model=list[str])
 def skill_categories() -> list[str]:
     return skill_registry.CATEGORIES
+
+
+@router.get("/skills/catalog")
+def skill_catalog() -> JSONResponse:
+    """Every skill AURA has, for the landing page. Public; nothing per-user.
+
+    The landing page used to keep its own hardcoded list, which drifted from
+    this catalogue twice. Reading it from here means it can't drift again.
+    Device skills are listed too, flagged, because they're what the desktop
+    app adds.
+    """
+    skills = [
+        {
+            "code": s.code,
+            "name": s.name,
+            "category": s.category,
+            "description": s.description,
+            "device": skill_registry.is_device_skill(s.code),
+            "tools": len(s.tools),
+        }
+        for s in skill_registry.CATALOG.values()
+    ]
+    body = {
+        "skills": skills,
+        "counts": {
+            "skills": len(skills),
+            "device_skills": sum(1 for s in skills if s["device"]),
+            "tools": len(skill_registry.TOOL_TO_SKILL),
+        },
+    }
+    return JSONResponse(content=body, headers={"Cache-Control": "public, max-age=3600"})
 
 
 @router.get("/skills/stats", response_model=SkillStatsOut)
@@ -277,8 +309,14 @@ def list_grants(user: CurrentUser, db: DbSession) -> list[GrantOut]:
 
 
 @router.delete("/grants/{tool_name}")
-def revoke_grant(tool_name: str, user: CurrentUser, db: DbSession) -> dict:
-    count = autonomy.revoke(db, user.id, tool_name)
+def revoke_grant(
+    tool_name: str,
+    user: CurrentUser,
+    db: DbSession,
+    target: str | None = Query(default=None, max_length=320),
+) -> dict:
+    """Revoke a tool's standing permission — or, with ?target=, one recipient's."""
+    count = autonomy.revoke(db, user.id, tool_name, target=target)
     return {"revoked": count}
 
 

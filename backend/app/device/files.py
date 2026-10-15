@@ -12,7 +12,9 @@ that reaches `/etc/shadow` or `~/.ssh` from a tool call.
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import sys
 from dataclasses import dataclass
 
 from app.config import settings
@@ -32,12 +34,63 @@ class FileEntry:
     modified: float
 
 
-def _within(path: str, root: str) -> bool:
-    """True if `path` is `root` or sits underneath it. Both absolute real paths."""
+# Windows and macOS (by default) don't care about letter case in paths, so
+# ~/.SSH is ~/.ssh there. Comparing as written would let a different spelling
+# walk straight past a protected folder.
+_CASE_INSENSITIVE = os.name == "nt" or sys.platform == "darwin"
+
+
+def _fold(path: str) -> str:
+    return os.path.normcase(path).casefold()
+
+
+def _under(path: str, root: str) -> bool:
     try:
         return os.path.commonpath([path, root]) == root
     except ValueError:
         return False  # different drives on Windows
+
+
+def _within(path: str, root: str) -> bool:
+    """True if `path` is `root` or sits underneath it. Both absolute real paths."""
+    if _CASE_INSENSITIVE:
+        return _under(_fold(path), _fold(root))
+    return _under(path, root)
+
+
+def _protected(real: str) -> bool:
+    """Inside a protected path — compared without case everywhere, because
+    refusing a lookalike folder on Linux costs nothing and missing the real
+    one on a Mac costs a key."""
+    folded = _fold(real)
+    return any(_under(folded, _fold(p)) for p in settings.device_protected_path_list)
+
+
+def _holds_protected(real: str) -> bool:
+    """A folder with a protected path somewhere inside it.
+
+    Moving or deleting it would take the protected path along — move
+    ~/Library aside, write into its LaunchAgents, move it back.
+    """
+    folded = _fold(real)
+    return any(
+        _under(_fold(p), folded) and _fold(p) != folded
+        for p in settings.device_protected_path_list
+    )
+
+
+# Files that make git run a program: hooks run on commit/checkout, and the
+# config can name a command (core.fsmonitor, core.hooksPath, aliases with !).
+# Writing one is running code with extra steps, so it takes the shell's gate.
+_GIT_EXECUTABLE = re.compile(r"(^|[\\/])\.git[\\/](hooks([\\/]|$)|config$)", re.IGNORECASE)
+
+
+def _guard_write(real: str, path: str) -> None:
+    if _GIT_EXECUTABLE.search(real):
+        raise PathNotAllowed(
+            f"{path!r} is a git hook or git config — files that make git run commands. "
+            "Change it with run_command (which asks first), or edit it yourself."
+        )
 
 
 def resolve(path: str, *, must_exist: bool = False) -> str:
@@ -66,12 +119,11 @@ def resolve(path: str, *, must_exist: bool = False) -> str:
             + ". Widen DEVICE_ALLOWED_ROOTS to change this."
         )
 
-    for protected in settings.device_protected_path_list:
-        if real == protected or _within(real, protected):
-            raise PathNotAllowed(
-                f"{path!r} is in a protected location AURA won't touch "
-                "(keys, credentials, its own config)."
-            )
+    if _protected(real):
+        raise PathNotAllowed(
+            f"{path!r} is in a protected location AURA won't touch "
+            "(keys, credentials, startup items, its own config)."
+        )
 
     if must_exist and not os.path.exists(real):
         raise PathNotAllowed(f"No such file or directory: {path}")
@@ -201,6 +253,7 @@ def _grep(path: str, needle: str) -> str | None:
 
 def write_text(path: str, content: str, *, append: bool = False) -> dict:
     real = resolve(path)
+    _guard_write(real, path)
     os.makedirs(os.path.dirname(real) or ".", exist_ok=True)
     existed = os.path.exists(real)
     with open(real, "a" if append else "w", encoding="utf-8") as fh:
@@ -216,6 +269,7 @@ def write_text(path: str, content: str, *, append: bool = False) -> dict:
 def edit_text(path: str, find: str, replace: str, *, count: int = 0) -> dict:
     """Replace exact text in a file. count=0 replaces every occurrence."""
     real = resolve(path, must_exist=True)
+    _guard_write(real, path)
     with open(real, "r", encoding="utf-8", errors="replace") as fh:
         original = fh.read()
     occurrences = original.count(find)
@@ -236,6 +290,12 @@ def edit_text(path: str, find: str, replace: str, *, count: int = 0) -> dict:
 def move_path(src: str, dst: str) -> dict:
     real_src = resolve(src, must_exist=True)
     real_dst = resolve(dst)
+    _guard_write(real_dst, dst)
+    if _holds_protected(real_src):
+        raise PathNotAllowed(
+            f"{src!r} holds protected folders (keys, startup items or AURA's own "
+            "config), so AURA won't move it."
+        )
     os.makedirs(os.path.dirname(real_dst) or ".", exist_ok=True)
     shutil.move(real_src, real_dst)
     return {"from": _rel(real_src), "to": _rel(real_dst)}
@@ -243,6 +303,11 @@ def move_path(src: str, dst: str) -> dict:
 
 def delete_path(path: str) -> dict:
     real = resolve(path, must_exist=True)
+    if _holds_protected(real):
+        raise PathNotAllowed(
+            f"{path!r} holds protected folders (keys, startup items or AURA's own "
+            "config), so AURA won't delete it — even with approval."
+        )
     if os.path.isdir(real):
         shutil.rmtree(real)
         return {"path": _rel(real), "deleted": "directory"}

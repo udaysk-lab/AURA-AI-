@@ -23,6 +23,9 @@ pypdf==5.1.0
 # Shared rate-limit counters across workers. Optional — falls back to in-memory.
 redis==5.2.1
 
+# Schema migrations, for when AUTO_CREATE_SCHEMA=false (see alembic/versions).
+alembic==1.19.2
+
 # Tests
 pytest==8.3.4
 

@@ -14,7 +14,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -135,7 +135,7 @@ def _queue_action(
         tool_name=call.name,
         arguments=call.arguments,
         preview=tool_registry.build_preview(
-            call.name, call.arguments, timeutil.user_zone(user)
+            call.name, call.arguments, timeutil.user_zone(user), db=db, user_id=user.id
         ),
         skill_code=skill.code if skill else "",
     )
@@ -150,6 +150,52 @@ def _queue_action(
 # ---------------------------------------------------------------------------
 
 
+# How much of an earlier turn's tool work is replayed into the next turn.
+REPLAY_CALLS = 6
+REPLAY_ARGS = 160
+
+
+def _replay_note(meta: dict | None) -> str:
+    """A compact record of what an earlier answer did, for the next turn.
+
+    Earlier turns used to reach the model as their final text only. So after
+    "add a task to call Priya" the model had no idea a task now existed, or
+    what it was called, and "actually make that urgent" had nothing to refer
+    to. The calls and their one-line outcomes ride along with the answer they
+    produced — as text, which every provider accepts in any position.
+    """
+    if not meta:
+        return ""
+    calls = meta.get("tool_calls") or []
+    runs = meta.get("skill_runs") or []
+    pending = meta.get("pending_action_ids") or []
+    if not calls:
+        return ""
+    runs = [r for r in runs if isinstance(r, dict)]
+    # Runs name their tool (newer messages); older ones line up by position
+    # only when every call produced a run.
+    by_position = len(runs) == len(calls) and not any("tool" in r for r in runs)
+    lines = []
+    for i, call in enumerate(calls[:REPLAY_CALLS]):
+        args = json.dumps(call.get("arguments") or {}, default=str, ensure_ascii=False)
+        if len(args) > REPLAY_ARGS:
+            args = args[:REPLAY_ARGS] + "…"
+        outcome = ""
+        if by_position:
+            outcome = runs[i].get("summary", "")
+        else:
+            for j, run in enumerate(runs):
+                if run.get("tool") == call.get("name"):
+                    outcome = runs.pop(j).get("summary", "")
+                    break
+        lines.append(f"- {call.get('name')}({args})" + (f" → {outcome}" if outcome else ""))
+    if len(calls) > REPLAY_CALLS:
+        lines.append(f"- …and {len(calls) - REPLAY_CALLS} more")
+    if pending:
+        lines.append(f"- {len(pending)} action(s) were queued for the user's approval")
+    return "\n\n[Tools I used for this answer:\n" + "\n".join(lines) + "]"
+
+
 def _history(db: Session, conversation: Conversation) -> list[dict]:
     rows = db.scalars(
         select(Message)
@@ -157,11 +203,15 @@ def _history(db: Session, conversation: Conversation) -> list[dict]:
         .order_by(Message.created_at.desc())
         .limit(HISTORY_LIMIT)
     ).all()
-    return [
-        {"role": m.role, "content": m.content}
-        for m in reversed(rows)
-        if m.role in ("user", "assistant") and m.content
-    ]
+    out = []
+    for m in reversed(rows):
+        if m.role not in ("user", "assistant") or not m.content:
+            continue
+        content = m.content
+        if m.role == "assistant":
+            content += _replay_note(m.meta)
+        out.append({"role": m.role, "content": content})
+    return out
 
 
 def _last_assistant_message(db: Session, conversation: Conversation) -> str:
@@ -261,24 +311,38 @@ def maybe_learn(db: Session, user: User, conversation: Conversation, message: st
 # ---------------------------------------------------------------------------
 
 
-def run_agent(
+def iter_agent(
     db: Session,
     user: User,
     conversation: Conversation,
     user_message: str,
     autonomy_level: str = "conservative",
     trigger: str = "chat",
-) -> AgentResult:
-    """`trigger` drives both the skill-run log and the spend budget: background
+) -> Generator[dict, None, AgentResult]:
+    """The agent loop, reporting as it goes.
+
+    Yields progress events while it works — which tool is running now, what a
+    finished one found, what was queued for approval — and returns the
+    AgentResult when it's done. `run_agent` drains it; `stream_agent` forwards
+    every event to the browser as it happens, so a turn that takes sixteen
+    steps (look at the screen, click, look again) shows each one live instead
+    of a spinner and then everything at once.
+
+    `trigger` drives both the skill-run log and the spend budget: background
     work is capped at a fraction of the daily allowance so it can never starve
-    the interactive budget the user actually notices."""
+    the interactive budget the user actually notices.
+    """
     started = time.perf_counter()
     tier = autonomy.normalise_tier(autonomy_level)
     result = AgentResult()
 
     result.learned = maybe_learn(db, user, conversation, user_message)
+    if result.learned:
+        yield {"type": "learned", "value": result.learned}
 
     messages, result.memories_used = _prelude(db, user, user_message, tier)
+    if result.memories_used:
+        yield {"type": "memory", "count": len(result.memories_used)}
     messages += _history(db, conversation)
     messages.append({"role": "user", "content": user_message})
 
@@ -300,6 +364,7 @@ def run_agent(
         except usage_service.SpendCapReached as capped:
             log.warning("Spend cap hit for %s (%s)", user.email, trigger)
             result.capped = True
+            yield {"type": "capped", "value": True}
             result.text = (
                 f"I've stopped here — today's spend cap of "
                 f"${capped.state.cap_usd:.2f} has been reached "
@@ -309,6 +374,7 @@ def run_agent(
             )
             break
 
+        yield {"type": "status", "value": "thinking", "step": step + 1}
         try:
             # Background work runs orders of magnitude more often than anyone
             # chats and needs far less judgement, so it gets the cheap model
@@ -338,9 +404,16 @@ def run_agent(
         for call in response.tool_calls:
             skill = skill_registry.skill_for_tool(call.name)
 
-            if autonomy.requires_approval(db, user.id, call.name, tier):
+            if autonomy.requires_approval(db, user.id, call.name, tier, call.arguments):
                 action = _queue_action(db, user, conversation.id, call)
                 result.pending_actions.append(action)
+                yield {
+                    "type": "pending_action",
+                    "id": action.id,
+                    "tool_name": action.tool_name,
+                    "skill_code": action.skill_code,
+                    "preview": action.preview,
+                }
                 payload: Any = {
                     "status": "awaiting_approval",
                     "message": (
@@ -351,16 +424,23 @@ def run_agent(
                     "pending_action_id": action.id,
                 }
             else:
+                yield {
+                    "type": "tool_start",
+                    "name": call.name,
+                    "code": skill.code if skill else "",
+                    "label": skill_registry.activity_label(call.name, call.arguments),
+                }
                 payload = execute_tool(db, user, call.name, call.arguments, trigger=trigger)
                 if skill:
-                    result.skill_runs.append(
-                        {
-                            "code": skill.code,
-                            "name": skill.name,
-                            "summary": skill_registry.summarise(call.name, payload),
-                            "ok": not (isinstance(payload, dict) and payload.get("error")),
-                        }
-                    )
+                    run = {
+                        "code": skill.code,
+                        "name": skill.name,
+                        "summary": skill_registry.summarise(call.name, payload),
+                        "ok": not (isinstance(payload, dict) and payload.get("error")),
+                        "tool": call.name,
+                    }
+                    result.skill_runs.append(run)
+                    yield {"type": "skill", **run}
 
             # An image a tool produced (a screenshot) travels separately from
             # its tool result: both providers take an image on a user turn,
@@ -417,6 +497,26 @@ def run_agent(
     return result
 
 
+def run_agent(
+    db: Session,
+    user: User,
+    conversation: Conversation,
+    user_message: str,
+    autonomy_level: str = "conservative",
+    trigger: str = "chat",
+) -> AgentResult:
+    """The whole turn, without the running commentary."""
+    events = iter_agent(
+        db, user, conversation, user_message,
+        autonomy_level=autonomy_level, trigger=trigger,
+    )
+    while True:
+        try:
+            next(events)
+        except StopIteration as finished:
+            return finished.value
+
+
 def persist_exchange(
     db: Session,
     conversation: Conversation,
@@ -471,40 +571,30 @@ def stream_agent(
     autonomy_level: str = "conservative",
     trigger: str = "chat",
 ) -> Iterator[dict]:
-    """Yield progress events for SSE.
+    """Yield progress events for SSE, as they happen.
 
-    Note: this streams *skill activity* and then the final text in chunks. It is
-    not token-level streaming — the provider adapters use non-streaming calls so
-    tool-calling stays identical across providers. Swapping in token streaming
-    means changing only OpenAIProvider/AnthropicProvider.
+    Each tool call is announced when it starts (`tool_start`, with a plain
+    label like "Reading your inbox") and reported when it finishes (`skill`).
+    The answer itself still arrives in chunks once it's complete: the provider
+    adapters make non-streaming calls so tool use behaves identically across
+    providers. Token streaming would only change OpenAIProvider and
+    AnthropicProvider.
     """
     yield {"type": "status", "value": "thinking"}
 
-    result = run_agent(
+    events = iter_agent(
         db, user, conversation, user_message,
         autonomy_level=autonomy_level, trigger=trigger,
     )
-
-    if result.capped:
-        yield {"type": "capped", "value": True}
-
-    if result.learned:
-        yield {"type": "learned", "value": result.learned}
-
-    for run in result.skill_runs:
-        yield {"type": "skill", **run}
-
-    if result.memories_used:
-        yield {"type": "memory", "count": len(result.memories_used)}
-
-    for action in result.pending_actions:
-        yield {
-            "type": "pending_action",
-            "id": action.id,
-            "tool_name": action.tool_name,
-            "skill_code": action.skill_code,
-            "preview": action.preview,
-        }
+    while True:
+        try:
+            event = next(events)
+        except StopIteration as finished:
+            result: AgentResult = finished.value
+            break
+        if event.get("type") == "status" and event.get("step") == 1:
+            continue  # already said "thinking" above
+        yield event
 
     text = result.text
     chunk = 48
@@ -565,6 +655,7 @@ def resolve_pending(
             db, user.id, action.tool_name,
             scope="always" if decision == "always" else "window",
             minutes=minutes,
+            target=autonomy.grant_target(action.tool_name, action.arguments),
         )
 
     outcome = execute_tool(db, user, action.tool_name, action.arguments, trigger="manual")
@@ -582,6 +673,7 @@ def resolve_pending(
         payload["grant"] = {
             "tool_name": granted.tool_name,
             "scope": granted.scope,
+            "target": granted.target,
             "expires_at": granted.expires_at.isoformat() if granted.expires_at else None,
         }
     return payload

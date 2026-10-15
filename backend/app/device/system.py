@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 
-from app.device.runtime import DeviceUnavailable, require_enabled
+from app.device.runtime import DeviceUnavailable, hidden_process, require_enabled
 
 
 def _psutil():
@@ -49,7 +49,8 @@ def system_info() -> dict:
         }
 
     vm = psutil.virtual_memory()
-    disk = psutil.disk_usage(os.path.expanduser("~"))
+    home = os.path.expanduser("~")
+    disk = psutil.disk_usage(home if os.path.isdir(home) else os.path.abspath(os.sep))
     info = {
         "cpu_percent": psutil.cpu_percent(interval=0.3),
         "cpu_count": psutil.cpu_count(),
@@ -173,8 +174,8 @@ def _clipboard_get() -> str:
         return subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
     if os.name == "nt":
         return subprocess.run(
-            ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
-            capture_output=True, text=True,
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard"],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, **hidden_process(),
         ).stdout.rstrip("\n")
     raise DeviceUnavailable(_no_clipboard())
 
@@ -191,7 +192,7 @@ def _clipboard_set(text: str) -> None:
         subprocess.run(["pbcopy"], input=text, text=True)
         return
     if os.name == "nt":
-        subprocess.run(["clip"], input=text, text=True)
+        subprocess.run(["clip"], input=text, text=True, **hidden_process())
         return
     raise DeviceUnavailable(_no_clipboard())
 
@@ -201,25 +202,60 @@ def _clipboard_set(text: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _plain(text: str) -> str:
+    """One line of printable text: a notification has no use for control characters."""
+    return " ".join("".join(ch if ch.isprintable() else " " for ch in text).split())
+
+
+# PowerShell treats the typographic single quotes as quotes too, so all of them
+# are doubled — the only escape a single-quoted PowerShell string has.
+_PS_QUOTES = "'\u2018\u2019\u201a\u201b"
+
+
+def ps_quote(text: str) -> str:
+    """A PowerShell single-quoted string literal: nothing inside it is evaluated."""
+    return "'" + "".join(ch * 2 if ch in _PS_QUOTES else ch for ch in text) + "'"
+
+
 def desktop_notification(title: str, message: str = "") -> dict:
-    """A native OS notification (not the in-app one). Best effort per platform."""
+    """A native OS notification (not the in-app one). Best effort per platform.
+
+    The title and message come from the model, so they are passed as data,
+    never spliced into a script: as arguments to AppleScript, and as literal
+    strings to PowerShell. A title like `$(Remove-Item ...)` or `" & do shell
+    script "..."` is shown as written and runs nothing.
+    """
     require_enabled()
-    title = (title or "AURA")[:200]
-    message = (message or "")[:500]
+    title = _plain(title or "AURA")[:200] or "AURA"
+    message = _plain(message or "")[:500]
     try:
         if sys.platform == "darwin":
-            script = f'display notification {message!r} with title {title!r}'
-            subprocess.run(["osascript", "-e", script], check=False)
+            subprocess.run(
+                [
+                    "osascript",
+                    "-e", "on run argv",
+                    "-e", "display notification (item 2 of argv) with title (item 1 of argv)",
+                    "-e", "end run",
+                    title,
+                    message,
+                ],
+                check=False,
+            )
         elif os.name == "nt":
             ps = (
-                "[reflection.assembly]::LoadWithPartialName('System.Windows.Forms')>$null;"
+                "Add-Type -AssemblyName System.Windows.Forms;"
                 "$n=New-Object System.Windows.Forms.NotifyIcon;"
                 "$n.Icon=[System.Drawing.SystemIcons]::Information;$n.Visible=$true;"
-                f"$n.ShowBalloonTip(5000,{title!r},{message!r},'Info')"
+                f"$n.ShowBalloonTip(5000,{ps_quote(title)},{ps_quote(message or ' ')},'Info');"
+                "Start-Sleep -Seconds 6;$n.Dispose()"
             )
-            subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=False)
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                **hidden_process(),
+            )
         elif shutil.which("notify-send"):
-            subprocess.run(["notify-send", title, message], check=False)
+            subprocess.run(["notify-send", "--", title, message], check=False)
         else:
             raise DeviceUnavailable("No desktop notifier found (install libnotify's notify-send).")
     except DeviceUnavailable:

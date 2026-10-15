@@ -167,7 +167,45 @@ def _check_demo_login() -> Check:
     return Check("demo_login", "Demo login", "ok", "Disabled.")
 
 
-def _check_database() -> Check:
+def probe_database(timeout_seconds: int = 4) -> Check | None:
+    """Open one real connection, quickly. None when it worked.
+
+    A separate throwaway engine, so a short connect timeout applies here
+    without changing how the app's own connections behave.
+    """
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    connect_args: dict = {}
+    if settings.is_sqlite:
+        connect_args["timeout"] = timeout_seconds
+    else:
+        connect_args["connect_timeout"] = timeout_seconds
+        connect_args["prepare_threshold"] = None
+    probe = create_engine(settings.database_url, poolclass=NullPool, connect_args=connect_args)
+    try:
+        with probe.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return None
+    except Exception as exc:
+        first = (str(getattr(exc, "orig", None) or exc).strip().splitlines() or [type(exc).__name__])[0]
+        return Check(
+            "database", "Database", "warn",
+            f"Couldn't connect: {first[:200]}",
+            fix=(
+                "Check DATABASE_URL and that the database is running. A Supabase "
+                "project that was paused needs Restore project in its dashboard."
+            ),
+        )
+    finally:
+        probe.dispose()
+
+
+def _check_database(probe: bool = False) -> Check:
+    if probe:
+        failed = probe_database()
+        if failed is not None:
+            return failed
     if settings.is_sqlite:
         level: Level = "fail" if settings.environment == "production" else "ok"
         detail = (
@@ -180,7 +218,10 @@ def _check_database() -> Check:
             "database", "Database", level, detail,
             fix="Set DATABASE_URL to a Postgres URL for production.",
         )
-    return Check("database", "Database", "ok", "Postgres.")
+    return Check(
+        "database", "Database", "ok",
+        "Postgres, reachable." if probe else "Postgres.",
+    )
 
 
 def _check_cors() -> Check:
@@ -397,11 +438,19 @@ CHECKS = [
 ]
 
 
-def run() -> Report:
-    return Report(
-        environment=settings.environment,
-        checks=[check() for check in CHECKS],
-    )
+def run(probe_database: bool = False) -> Report:
+    """`probe_database` opens a real connection for the database check.
+
+    Off at startup, where init_db has just connected anyway and every extra
+    handshake lengthens a cold start; on for the Setup screen.
+    """
+    checks = []
+    for check in CHECKS:
+        if check is _check_database:
+            checks.append(_check_database(probe=probe_database))
+        else:
+            checks.append(check())
+    return Report(environment=settings.environment, checks=checks)
 
 
 def log_report(logger) -> Report:

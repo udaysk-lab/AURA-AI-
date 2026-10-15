@@ -12,6 +12,7 @@ the effective limit is N times what you configured, which preflight warns about.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import time
 import uuid
@@ -174,6 +175,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if request.url.path in EXEMPT_PATHS:
             return await call_next(request)
+        # The desktop app serves its own web pages from this process. Loading
+        # one fetches a dozen script files without a session, which would
+        # exhaust the anonymous allowance before the sign-in screen appeared.
+        # Static files cost nothing to serve; the limit is for the API.
+        if settings.aura_web_dir and is_web_asset(request):
+            return await call_next(request)
 
         key, limit = self._classify(request)
         allowed, retry_after = buckets().hit(key, limit)
@@ -216,3 +223,115 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 return f"user:{payload['sub']}", settings.rate_limit_per_minute
 
         return f"ip:{self._client_ip(request)}", settings.rate_limit_anon_per_minute
+
+
+# ---------------------------------------------------------------------------
+# Local installs: answer to this machine, and to paired devices only
+# ---------------------------------------------------------------------------
+
+LOOPBACK_NAMES = {"localhost", "::1", "127.0.0.1", "::ffff:127.0.0.1"}
+
+
+def is_loopback(host: str | None) -> bool:
+    """Is this peer address this computer?"""
+    if not host:
+        return False
+    if host in LOOPBACK_NAMES:
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return addr.is_loopback or bool(mapped and mapped.is_loopback)
+
+
+def host_name(header: str | None) -> str:
+    """The name part of a Host header: '127.0.0.1:8765' → '127.0.0.1', '[::1]:8765' → '::1'."""
+    value = (header or "").strip().lower()
+    if value.startswith("["):
+        end = value.find("]")
+        return value[1:end] if end > 0 else value
+    if value.count(":") == 1:
+        return value.split(":", 1)[0]
+    return value
+
+
+def is_web_asset(request: Request) -> bool:
+    """A request for the web app's own files rather than the API."""
+    if request.method not in ("GET", "HEAD"):
+        return False
+    first = request.url.path.strip("/").split("/", 1)[0]
+    return first not in ("api", "health", "docs", "redoc", "openapi.json")
+
+
+# What a device that hasn't paired yet may reach: the app's pages (so it can
+# show the pairing form), the sign-in config (so the page knows to show it),
+# and the pairing endpoint itself. Everything else needs a paired token.
+REMOTE_OPEN_PATHS = {"/health", "/api/auth/config", "/api/remote/pair"}
+
+
+def remote_token_claims(request: Request) -> dict | None:
+    """The claims of a paired-device token on this request, if it carries one."""
+    authorization = request.headers.get("authorization", "")
+    if not authorization.lower().startswith("bearer "):
+        return None
+    payload = decode_access_token(authorization[7:])
+    if payload and payload.get("sub") and payload.get("typ") == "remote":
+        return payload
+    return None
+
+
+def _refuse(status: int, detail: str) -> JSONResponse:
+    return JSONResponse(status_code=status, content={"detail": detail})
+
+
+class LocalAccessMiddleware(BaseHTTPMiddleware):
+    """Who may talk to AURA when it operates the computer it runs on.
+
+    Does nothing on a hosted deployment. On a local install it enforces two
+    rules no route can forget:
+
+    * A request from this computer must also *name* this computer. A web page
+      can rebind its own domain to 127.0.0.1 (DNS rebinding) and then reach
+      the API as "same origin" — but its requests still say Host: its-domain,
+      and those are refused.
+    * A request from anywhere else is refused unless remote access is on, and
+      then it may only reach the pairing screen until it presents a token from
+      pairing. A normal session token is not enough from the network.
+    """
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        if not settings.local_mode:
+            return await call_next(request)
+
+        peer = request.client.host if request.client else ""
+        if is_loopback(peer):
+            name = host_name(request.headers.get("host"))
+            # No Host at all names nothing, so it doesn't name this computer.
+            if name not in settings.local_allowed_host_set:
+                log.warning("Refused a local request for host %r (possible DNS rebinding)", name)
+                return _refuse(
+                    421,
+                    "AURA on this computer only answers to its own address "
+                    "(127.0.0.1 or localhost).",
+                )
+            return await call_next(request)
+
+        # From another device.
+        if not settings.remote_access_enabled:
+            return _refuse(
+                403,
+                "AURA on this computer only answers to this computer. To use it from "
+                "another device, turn on remote access in its Settings.",
+            )
+        if request.method == "OPTIONS" or is_web_asset(request):
+            return await call_next(request)
+        if request.url.path in REMOTE_OPEN_PATHS:
+            return await call_next(request)
+        if remote_token_claims(request) is None:
+            return _refuse(
+                401,
+                "This device isn't paired with AURA yet. Pair it from the sign-in screen.",
+            )
+        return await call_next(request)

@@ -587,7 +587,9 @@ CATALOG: dict[str, Skill] = {
             category="Device",
             description="Fetches a specific URL — a page, a feed, an API — and reads what comes back.",
             tools=("fetch_url",),
-            autonomy_floor="strict",
+            # A request leaves the machine, so it asks below relaxed trust
+            # (fetch_url is "external" in autonomy.py).
+            autonomy_floor="relaxed",
             summarize=_sum_web,
         ),
     ]
@@ -638,6 +640,91 @@ def search_result_summarizer(tool_name: str) -> Callable[[Any], str] | None:
         "summarize_inbox": _sum_inbox,
     }
     return overrides.get(tool_name)
+
+
+# What the chat shows while a tool is running — present tense, plain words.
+_LABELS: dict[str, str] = {
+    "summarize_inbox": "Reading your inbox",
+    "search_emails": "Searching your email",
+    "get_email": "Opening an email",
+    "draft_reply": "Drafting a reply",
+    "send_email": "Sending an email",
+    "archive_email": "Archiving an email",
+    "list_events": "Checking your calendar",
+    "create_event": "Adding it to your calendar",
+    "delete_event": "Removing a calendar event",
+    "find_free_time": "Looking for free time",
+    "detect_conflicts": "Checking for double-bookings",
+    "prepare_meeting": "Preparing a meeting brief",
+    "list_tasks": "Going through your tasks",
+    "create_task": "Adding a task",
+    "complete_task": "Ticking off a task",
+    "delete_task": "Deleting a task",
+    "save_memory": "Remembering that",
+    "search_memory": "Searching what I know",
+    "list_contacts": "Looking through your contacts",
+    "notify": "Sending you a notification",
+    "get_daily_briefing": "Putting your day together",
+    "sync_google": "Syncing with Google",
+    "web_research": "Researching on the web",
+    "brief_subject": "Building a briefing",
+    "search_documents": "Searching your documents",
+    "summarize_document": "Reading the document",
+    "compare_documents": "Comparing documents",
+    "delegate_task": "Delegating it",
+    "list_delegations": "Checking delegated work",
+    "chase_delegation": "Drafting a nudge",
+    "check_focus_blocks": "Checking your focus time",
+    "run_in_background": "Starting a background command",
+    "process_output": "Checking on a background command",
+    "send_process_input": "Typing into a background command",
+    "stop_process": "Stopping a background command",
+    "list_background_commands": "Listing background commands",
+    "write_file": "Writing a file",
+    "edit_file": "Editing a file",
+    "list_directory": "Looking in a folder",
+    "search_files": "Searching files",
+    "move_file": "Moving a file",
+    "delete_file": "Deleting a file",
+    "make_directory": "Making a folder",
+    "list_applications": "Listing your apps",
+    "system_info": "Checking the system",
+    "list_processes": "Looking at running programs",
+    "kill_process": "Stopping a program",
+    "take_screenshot": "Looking at the screen",
+    "mouse_click": "Clicking",
+    "type_text": "Typing",
+    "press_keys": "Pressing keys",
+    "scroll_screen": "Scrolling",
+    "read_clipboard": "Reading the clipboard",
+    "set_clipboard": "Copying to the clipboard",
+    "desktop_notify": "Showing a notification",
+}
+
+
+def _short(value: Any, limit: int = 60) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def activity_label(tool_name: str, args: dict | None = None) -> str:
+    """'Running `git status`', 'Reading notes.md' — what the live chat shows."""
+    args = args or {}
+    if tool_name == "run_command" and args.get("command"):
+        return f"Running `{_short(args['command'])}`"
+    if tool_name == "read_file" and args.get("path"):
+        return f"Reading {_short(args['path'])}"
+    if tool_name in ("open_app", "close_app") and (args.get("name") or args.get("app")):
+        verb = "Opening" if tool_name == "open_app" else "Closing"
+        return f"{verb} {_short(args.get('name') or args.get('app'), 40)}"
+    if tool_name == "fetch_url" and args.get("url"):
+        return f"Opening {_short(args['url'])}"
+    if tool_name == "web_research" and args.get("query"):
+        return f"Researching “{_short(args['query'], 50)}”"
+    if tool_name in _LABELS:
+        return _LABELS[tool_name]
+    skill = skill_for_tool(tool_name)
+    return skill.name if skill else tool_name.replace("_", " ").capitalize()
 
 
 def summarise(tool_name: str, result: Any) -> str:

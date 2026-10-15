@@ -59,6 +59,9 @@ class User(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When a password-reset link was last emailed, so the form can't be used
+    # to flood someone's inbox.
+    password_reset_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     oauth_accounts: Mapped[list[OAuthAccount]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
@@ -436,6 +439,10 @@ class ApprovalGrant(Base, TimestampMixin):
     scope: Mapped[str] = mapped_column(String(20), default="always")  # always | window
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # What the permission covers, for tools where "always" must not mean
+    # "anything": a grant for send_email names one recipient. Empty means the
+    # tool as a whole, which is how every other tool's grants work.
+    target: Mapped[str] = mapped_column(String(320), default="")
 
 
 class HeartbeatReport(Base, TimestampMixin):
@@ -609,3 +616,35 @@ class SampleRow(Base, TimestampMixin):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     kind: Mapped[str] = mapped_column(String(40))  # emails | events | tasks | …
     row_id: Mapped[str] = mapped_column(String(36))
+
+
+class PairedDevice(Base, TimestampMixin):
+    """A phone or laptop allowed to use this computer's AURA remotely.
+
+    Local installs only. A device is added by pairing — a short code shown on
+    this computer and typed on the other device — and holds a token that names
+    this row, so unpairing it here signs it out everywhere at once.
+    """
+
+    __tablename__ = "paired_devices"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(120), default="")
+    user_agent: Mapped[str] = mapped_column(String(300), default="")
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_address: Mapped[str] = mapped_column(String(64), default="")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PairingCode(Base, TimestampMixin):
+    """A one-time code for pairing a device. Only its hash is stored."""
+
+    __tablename__ = "pairing_codes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

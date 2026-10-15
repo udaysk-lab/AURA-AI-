@@ -35,9 +35,14 @@ log = logging.getLogger("aura.usage")
 # PRICE_OVERRIDES_JSON if they drift. An unknown model falls back to DEFAULT_PRICE,
 # which is deliberately pessimistic so an unrecognised model can't spend freely.
 PRICES: dict[str, tuple[float, float]] = {
-    # Anthropic
+    # Anthropic — current models (platform.claude.com/docs/en/about-claude/pricing)
+    "claude-fable-5-1": (10.00, 50.00),
+    "claude-opus-5-5": (4.00, 20.00),
+    "claude-sonnet-5-5": (2.00, 10.00),
+    "claude-haiku-5-5": (0.10, 0.50),  # prompts up to 100k tokens; see TIERED
+    # Anthropic — earlier models still in use
     "claude-opus-5": (15.00, 75.00),
-    "claude-sonnet-5": (3.00, 15.00),
+    "claude-sonnet-5": (2.00, 10.00),
     "claude-sonnet-4-5": (3.00, 15.00),
     "claude-haiku-4-5-20251001": (1.00, 5.00),
     # OpenAI
@@ -50,6 +55,14 @@ PRICES: dict[str, tuple[float, float]] = {
     "llama-3.1-8b-instant": (0.05, 0.08),
 }
 DEFAULT_PRICE = (15.00, 75.00)
+
+# Models whose price steps up with prompt length: (threshold in input tokens,
+# price per million above it). Haiku 5.5 costs five times as much once a
+# single prompt passes 100k tokens, and a cap that ignored that could be
+# overrun five times over.
+TIERED: dict[str, tuple[int, tuple[float, float]]] = {
+    "claude-haiku-5-5": (100_000, (0.50, 2.50)),
+}
 
 # Anything served from your own machine costs nothing per token. Matched by
 # prefix so `llama3.1:8b`, `qwen2.5:14b` and friends all resolve to free.
@@ -108,13 +121,25 @@ class SpendCapReached(Exception):
         )
 
 
-def price_for(model: str) -> tuple[float, float]:
+def _known(model: str) -> str | None:
+    """The price-table entry for a model id, allowing dated snapshots."""
     if model in PRICES:
-        return PRICES[model]
+        return model
     # Prefix match so "claude-sonnet-5-20260501" resolves to "claude-sonnet-5".
-    for known, price in PRICES.items():
+    # Longest first: "claude-sonnet-5-5" must not be priced as "claude-sonnet-5".
+    for known in sorted(PRICES, key=len, reverse=True):
         if model.startswith(known):
-            return price
+            return known
+    return None
+
+
+def price_for(model: str, input_tokens: int = 0) -> tuple[float, float]:
+    known = _known(model)
+    if known:
+        tier = TIERED.get(known)
+        if tier and input_tokens > tier[0]:
+            return tier[1]
+        return PRICES[known]
 
     # Self-hosted models cost nothing per token, so charging them against the
     # cap would stop a free setup working for no reason.
@@ -129,7 +154,7 @@ def price_for(model: str) -> tuple[float, float]:
 def estimate_cost(usage: Usage) -> float:
     if not usage.total:
         return 0.0
-    input_price, output_price = price_for(usage.model)
+    input_price, output_price = price_for(usage.model, usage.input_tokens)
     return (
         usage.input_tokens / 1_000_000 * input_price
         + usage.output_tokens / 1_000_000 * output_price

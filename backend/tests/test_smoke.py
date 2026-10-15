@@ -247,14 +247,57 @@ def test_always_allow_creates_a_standing_grant(client, auth):
     )
     assert resp.status_code == 200
     assert resp.json().get("grant", {}).get("scope") == "always"
+    assert resp.json()["grant"]["target"] == "a@b.com"
 
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == "test@aura.ai").one()
-        # The grant now overrides the tier — that's the point.
-        assert autonomy.requires_approval(db, user.id, "send_email", "conservative") is False
-        autonomy.revoke(db, user.id, "send_email")
+        to_same = {"to": "A <A@B.com>", "subject": "Again", "body": "Hello"}
+        to_other = {"to": "someone@else.com", "subject": "Hi", "body": "Hello"}
+        # The grant now overrides the tier — that's the point…
+        assert autonomy.requires_approval(db, user.id, "send_email", "conservative", to_same) is False
+        # …for that recipient only. "Always" never meant "anyone an email suggests".
+        assert autonomy.requires_approval(db, user.id, "send_email", "conservative", to_other) is True
         assert autonomy.requires_approval(db, user.id, "send_email", "conservative") is True
+        autonomy.revoke(db, user.id, "send_email")
+        assert autonomy.requires_approval(db, user.id, "send_email", "conservative", to_same) is True
+    finally:
+        db.close()
+
+
+def test_an_old_any_recipient_grant_no_longer_covers_send_email(client, auth):
+    """Grants from before recipients were recorded said "anyone"; they're ignored."""
+    from app.agent import autonomy
+    from app.models import ApprovalGrant, User
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == "test@aura.ai").one()
+        db.add(ApprovalGrant(user_id=user.id, tool_name="send_email", scope="always"))
+        db.commit()
+        args = {"to": "x@y.com", "subject": "s", "body": "b"}
+        assert autonomy.requires_approval(db, user.id, "send_email", "conservative", args) is True
+        autonomy.revoke(db, user.id, "send_email")
+    finally:
+        db.close()
+
+
+def test_approval_cards_name_the_record_not_its_id(client, auth):
+    from app.agent.tools import build_preview
+    from app.models import Task, User
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == "test@aura.ai").one()
+        task = Task(user_id=user.id, title="Renew the domain")
+        db.add(task)
+        db.commit()
+        preview = build_preview("delete_task", {"task_id": task.id}, db=db, user_id=user.id)
+        assert "Renew the domain" in preview and task.id not in preview
+        missing = build_preview("delete_event", {"event_id": "nope"}, db=db, user_id=user.id)
+        assert "nothing would happen" in missing
+        db.delete(task)
+        db.commit()
     finally:
         db.close()
 

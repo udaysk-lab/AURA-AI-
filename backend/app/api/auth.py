@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -13,12 +15,16 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select, update
 
 from app.config import settings
-from app.deps import CurrentUser, DbSession
+from app.deps import CurrentUser, DbSession, is_local_owner, local_os_user, local_owner_email
+from app.version import __version__
 from app.models import OAuthAccount, Schedule, User, UserSettings, utcnow
 from app.schemas import (
     DemoLoginIn,
     IntegrationStatus,
+    LocalLoginIn,
     LoginIn,
+    PasswordForgotIn,
+    PasswordResetIn,
     ProfilePatch,
     RegisterIn,
     SyncResultOut,
@@ -101,6 +107,24 @@ def _zone_or_utc(name: str | None) -> str:
     return name if name and timeutil.is_valid_zone(name) else "UTC"
 
 
+LOCAL_INSTALL_ONLY_OWNER = (
+    "This is AURA on someone's own computer, and it has one account: theirs. "
+    "Sign in with “Open AURA on this computer”."
+)
+
+
+def _no_other_accounts_here() -> None:
+    """A local install has exactly one account, its owner's, and one way in.
+
+    Anything that can reach 127.0.0.1 — another user of a shared computer, any
+    program running on it — could otherwise make an account of its own here
+    and use the shell through it. The owner sign-in needs the key from the
+    desktop app's link; signing up, passwords and demo sign-in need nothing.
+    """
+    if settings.local_mode:
+        raise HTTPException(status_code=403, detail=LOCAL_INSTALL_ONLY_OWNER)
+
+
 def _issue(db, user: User) -> TokenOut:
     user.last_login_at = utcnow()
     existing = db.scalars(
@@ -122,16 +146,32 @@ def _issue(db, user: User) -> TokenOut:
 
 
 @router.get("/config")
-def auth_config() -> dict:
+def auth_config(request: Request) -> dict:
+    from app.middleware import is_loopback
+
+    remote_client = settings.local_mode and not is_loopback(
+        request.client.host if request.client else ""
+    )
     return {
+        # Passwords and demo sign-in make accounts, and a local install has
+        # only its owner's. (Google can still be connected to it in Settings.)
         "google_enabled": settings.google_oauth_configured,
-        "demo_login_enabled": settings.allow_demo_login,
-        "password_login_enabled": True,
+        "demo_login_enabled": settings.allow_demo_login and not settings.local_mode,
+        "password_login_enabled": not settings.local_mode,
+        # "Forgot password?" is only offered where a reset link can be sent.
+        "password_reset_enabled": settings.smtp_configured and not settings.local_mode,
         "llm_provider": settings.resolved_provider(),
         # A local install is one person on one machine: the login screen offers
         # a single "open" button instead of asking them to invent an account.
         "local_mode": settings.local_mode,
         "device_control": settings.device_control_enabled,
+        # The desktop app's sign-in needs the key from the link it opened.
+        "local_login_key_required": bool(settings.local_mode and settings.aura_local_login_key),
+        # A browser on another device, reaching this computer's AURA. Its
+        # sign-in screen is the pairing form.
+        "remote_client": remote_client,
+        "remote_access": settings.remote_access_enabled,
+        "version": __version__,
     }
 
 
@@ -139,7 +179,9 @@ LOOPBACK = {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
 
 
 @router.post("/local", response_model=TokenOut)
-def local_login(request: Request, db: DbSession) -> TokenOut:
+def local_login(
+    request: Request, db: DbSession, payload: LocalLoginIn | None = None
+) -> TokenOut:
     """Sign in as this machine's owner. Local installs only, loopback only.
 
     On a local install there is exactly one person — whoever is sitting at the
@@ -147,11 +189,12 @@ def local_login(request: Request, db: DbSession) -> TokenOut:
     is friction for nothing. So LOCAL_MODE grants a single owner account keyed
     to the OS user.
 
-    Two things keep that honest. The request must come from loopback, so the
-    door doesn't open to the network if someone binds AURA to 0.0.0.0. And it
-    requires LOCAL_MODE, which is off on every hosted deployment. Anyone who
-    can reach loopback on this machine can already run commands as this user,
-    so this grants no authority they didn't have.
+    Three things keep that honest. The request must come from loopback, so the
+    door doesn't open to the network if someone binds AURA to 0.0.0.0. It
+    requires LOCAL_MODE, which is off on every hosted deployment. And on the
+    desktop app it requires the key from the link the app opened: every
+    account on a shared computer can reach 127.0.0.1, but only the person who
+    started AURA can read the settings file the key lives in.
     """
     if not settings.local_mode:
         raise HTTPException(
@@ -171,13 +214,20 @@ def local_login(request: Request, db: DbSession) -> TokenOut:
             ),
         )
 
-    import getpass
+    expected = settings.aura_local_login_key
+    if expected:
+        offered = (payload.key if payload else "") or ""
+        if not offered or not hmac.compare_digest(offered.encode(), expected.encode()):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Open AURA from its app window (the \"Open AURA\" button) to sign in "
+                    "on this computer."
+                ),
+            )
 
-    try:
-        os_user = getpass.getuser()
-    except Exception:
-        os_user = "owner"
-    email = f"{os_user.lower().replace(' ', '-')}@localhost"
+    os_user = local_os_user()
+    email = local_owner_email()
 
     user = db.scalars(select(User).where(User.email == email)).first()
     if not user:
@@ -192,6 +242,13 @@ def local_login(request: Request, db: DbSession) -> TokenOut:
         db.add(UserSettings(user_id=user.id))
         db.commit()
         log.info("Created the local owner account for %s", email)
+        # The same first look every other sign-up gets: a populated workspace
+        # to explore, removable in Settings once real accounts are connected.
+        try:
+            demo_service.seed_user(db, user)
+        except Exception:
+            log.exception("Seeding sample data for the local owner failed")
+            db.rollback()
 
     return _issue(db, user)
 
@@ -199,6 +256,7 @@ def local_login(request: Request, db: DbSession) -> TokenOut:
 @router.post("/register", response_model=TokenOut, status_code=201)
 def register(payload: RegisterIn, db: DbSession) -> TokenOut:
     """Create an account with an email and password, and sign it in."""
+    _no_other_accounts_here()
     email = payload.email.lower().strip()
     existing = db.scalars(select(User).where(User.email == email)).first()
     if existing:
@@ -238,6 +296,7 @@ def register(payload: RegisterIn, db: DbSession) -> TokenOut:
 @router.post("/login", response_model=TokenOut)
 def login(payload: LoginIn, db: DbSession) -> TokenOut:
     """Email and password sign-in."""
+    _no_other_accounts_here()
     email = payload.email.lower().strip()
     user = db.scalars(select(User).where(User.email == email)).first()
 
@@ -251,9 +310,136 @@ def login(payload: LoginIn, db: DbSession) -> TokenOut:
     return _issue(db, user)
 
 
+# ---------------------------------------------------------------------------
+# Password reset
+# ---------------------------------------------------------------------------
+#
+# The link carries a token signed with SECRET_KEY that names the account and a
+# fingerprint of its current password hash. Setting a new password changes the
+# hash, so a link works once and dies with the old password; it also expires
+# after RESET_TTL. Nothing about it is stored.
+
+_RESET_TYPE = "password_reset"
+RESET_TTL = timedelta(minutes=30)
+RESET_RESEND_AFTER = timedelta(minutes=2)
+_FORGOT_REPLY = {
+    "message": (
+        "If an account uses that address, a link to set a new password is on its "
+        "way. It works once, for 30 minutes."
+    )
+}
+
+
+def _password_fingerprint(user: User) -> str:
+    return hashlib.sha256(f"{user.id}:{user.password_hash}".encode()).hexdigest()[:24]
+
+
+def issue_reset_token(user: User) -> str:
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {
+            "typ": _RESET_TYPE,
+            "sub": user.id,
+            "pfp": _password_fingerprint(user),
+            "iat": int(now.timestamp()),
+            "exp": int((now + RESET_TTL).timestamp()),
+        },
+        settings.secret_key,
+        algorithm=settings.jwt_algorithm,
+    )
+
+
+def _reset_email(user: User, link: str) -> tuple[str, str]:
+    subject = "Set a new password for AURA"
+    body = (
+        f"Hi {user.name or 'there'},\n\n"
+        "Someone (hopefully you) asked to set a new password for your AURA account.\n"
+        f"Open this link to choose one. It works once, for {int(RESET_TTL.total_seconds() // 60)} minutes:\n\n"
+        f"{link}\n\n"
+        "If you didn't ask for this, ignore this email — your password stays as it is.\n"
+    )
+    return subject, body
+
+
+@router.post("/password/forgot")
+def password_forgot(payload: PasswordForgotIn, db: DbSession) -> dict:
+    """Email a link to set a new password.
+
+    The reply is the same whether or not the address has an account, so the
+    form can't be used to find out who uses AURA.
+    """
+    from app.services import mailer
+
+    if settings.local_mode or not settings.smtp_configured:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Password reset by email isn't set up on this server. "
+                "Ask whoever runs it to configure SMTP_HOST and SMTP_FROM."
+            ),
+        )
+
+    email = payload.email.lower().strip()
+    user = db.scalars(select(User).where(User.email == email)).first()
+    if not user or not user.is_active or user.is_demo:
+        return _FORGOT_REPLY
+
+    now = datetime.now(timezone.utc)
+    last = user.password_reset_sent_at
+    if last is not None:
+        last = last if last.tzinfo else last.replace(tzinfo=timezone.utc)
+        if now - last < RESET_RESEND_AFTER:
+            return _FORGOT_REPLY  # one email per address every couple of minutes
+
+    link = f"{settings.frontend_url.rstrip('/')}/reset-password#token={issue_reset_token(user)}"
+    subject, body = _reset_email(user, link)
+    try:
+        mailer.send_system(user.email, subject, body)
+    except Exception:
+        log.exception("Couldn't send a password reset email for %s", user.id)
+        raise HTTPException(
+            status_code=503,
+            detail="The reset email couldn't be sent just now. Please try again in a few minutes.",
+        )
+    user.password_reset_sent_at = now
+    db.commit()
+    log.info("Password reset link sent for %s", user.id)
+    return _FORGOT_REPLY
+
+
+@router.post("/password/reset", response_model=TokenOut)
+def password_reset(payload: PasswordResetIn, db: DbSession) -> TokenOut:
+    """Set a new password from an emailed link, and sign in."""
+    _no_other_accounts_here()
+    invalid = HTTPException(
+        status_code=400,
+        detail="That link has expired or has already been used. Ask for a new one.",
+    )
+    try:
+        claims = jwt.decode(
+            payload.token, settings.secret_key, algorithms=[settings.jwt_algorithm]
+        )
+    except JWTError:
+        raise invalid
+    if claims.get("typ") != _RESET_TYPE:
+        raise invalid
+    user = db.get(User, str(claims.get("sub") or ""))
+    if not user or not user.is_active:
+        raise invalid
+    if not hmac.compare_digest(str(claims.get("pfp") or ""), _password_fingerprint(user)):
+        raise invalid
+
+    user.password_hash = hash_password(payload.password)
+    user.password_reset_sent_at = None
+    db.commit()
+    log.info("Password reset for %s", user.id)
+    return _issue(db, user)
+
+
 @router.post("/demo", response_model=TokenOut)
 def demo_login(payload: DemoLoginIn, db: DbSession) -> TokenOut:
     """Password-free local login. Disable with ALLOW_DEMO_LOGIN=false."""
+    _no_other_accounts_here()
     if not settings.allow_demo_login:
         raise HTTPException(status_code=403, detail="Demo login is disabled")
 
@@ -311,8 +497,23 @@ def google_start(
     user_id: str | None = None
     if authorization and authorization.lower().startswith("bearer "):
         payload = decode_access_token(authorization[7:])
-        if payload and payload.get("sub") and db.get(User, payload["sub"]):
+        # A session token, not a reset link or another signed token that
+        # happens to name an account.
+        if payload and payload.get("sub") and not payload.get("typ") and db.get(User, payload["sub"]):
             user_id = payload["sub"]
+
+    if settings.local_mode:
+        # One account here, the owner's: Google can be connected to it, but it
+        # can't sign anyone in or make a second account.
+        owner = db.get(User, user_id) if user_id else None
+        if owner is None or not is_local_owner(owner):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "On your own computer, sign in with “Open AURA on this computer”, "
+                    "then connect Google from Settings."
+                ),
+            )
 
     mode = "connect" if user_id else "signin"
     # The browser's zone rides along, for an account this sign-in creates.
@@ -343,6 +544,9 @@ def google_callback(
     if entry is None:
         # Expired (10 min), already used, or forged.
         return _fail(mode, "bad_state")
+    if settings.local_mode and mode == "signin":
+        # google_start never begins one here; a state from elsewhere can't either.
+        return _fail(mode, "local_install")
 
     try:
         tokens = google_service.exchange_code(code)
@@ -359,7 +563,7 @@ def google_callback(
     is_new = False
     if mode == "connect":
         user = db.get(User, entry.get("user_id") or "")
-        if not user:
+        if not user or (settings.local_mode and not is_local_owner(user)):
             return _fail("connect", "session_expired")
 
         # One mailbox, one account. Otherwise two AURA users would both be

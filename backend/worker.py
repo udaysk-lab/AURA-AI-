@@ -7,8 +7,9 @@ Four loops on one timer:
   * memory compaction                    — once a day
 
 Run alongside the API:  python worker.py
-In production replace with Celery beat / APScheduler, or a platform cron hitting
-POST /api/automations/tick and POST /api/heartbeat/run.
+On a platform with no long-running process (Vercel), the platform's cron calls
+GET /api/cron/tick instead, which runs one pass of the same loops — see
+app/api/cron.py. On a local install the loops run in-process.
 """
 
 from __future__ import annotations
@@ -33,9 +34,14 @@ TICK_SECONDS = 60
 COMPACTION_INTERVAL = timedelta(hours=24)
 
 
-def compact_all(db) -> None:
-    users = db.scalars(select(User).where(User.is_active == True)).all()  # noqa: E712
+def compact_all(db, active_since: datetime | None = None, should_stop=None) -> None:
+    query = select(User).where(User.is_active == True)  # noqa: E712
+    if active_since is not None:
+        query = query.where(User.last_login_at >= active_since)
+    users = db.scalars(query).all()
     for user in users:
+        if should_stop is not None and should_stop():
+            break
         try:
             result = memory_service.compact(db, user.id)
             if result["merged"] or result["dropped"] or result["promoted"]:
@@ -48,30 +54,63 @@ def compact_all(db) -> None:
             db.rollback()
 
 
-def tick(compact: bool = False) -> None:
+def tick(
+    compact: bool = False,
+    active_since: datetime | None = None,
+    budget_seconds: float | None = None,
+) -> dict:
     """One pass over all four loops. Never raises — a bad tick must not kill the
-    process, and on a cron platform a non-zero exit reads as a failed job."""
+    process, and on a cron platform a non-zero exit reads as a failed job.
+
+    `active_since` limits the heartbeat and compaction to accounts used since
+    then; the hosted cron passes it. `budget_seconds` stops it starting new
+    work once that long has passed — a cron call is a request with a time
+    limit, and whatever didn't fit is still due on the next one. Returns what
+    ran, for the cron's log.
+    """
+    summary = {"automations": 0, "schedules": 0, "heartbeats": 0, "compacted": False, "ok": True}
+    deadline = time.monotonic() + budget_seconds if budget_seconds is not None else None
+
+    def out_of_time() -> bool:
+        if deadline is None or time.monotonic() < deadline:
+            return False
+        summary["stopped_early"] = True
+        return True
+
     db = SessionLocal()
     try:
-        fired = engine.run_due_schedules(db)
-        if fired:
-            log.info("Fired %d automation rule(s)", len(fired))
+        if not out_of_time():
+            fired = engine.run_due_schedules(db, should_stop=out_of_time)
+            summary["automations"] = len(fired)
+            if fired:
+                log.info("Fired %d automation rule(s)", len(fired))
 
-        ran = schedule_service.run_due(db)
-        if ran:
-            log.info("Ran %d schedule(s): %s", len(ran), ", ".join(r["schedule"] for r in ran))
+        if not out_of_time():
+            ran = schedule_service.run_due(db, should_stop=out_of_time)
+            summary["schedules"] = len(ran)
+            if ran:
+                log.info("Ran %d schedule(s): %s", len(ran), ", ".join(r["schedule"] for r in ran))
 
-        reports = heartbeat_service.run_all_due(db)
-        if reports:
-            log.info("Ran %d heartbeat(s)", len(reports))
+        if not out_of_time():
+            reports = heartbeat_service.run_all_due(
+                db, active_since=active_since, should_stop=out_of_time
+            )
+            summary["heartbeats"] = len(reports)
+            if reports:
+                log.info("Ran %d heartbeat(s)", len(reports))
 
-        if compact:
-            compact_all(db)
+        if compact and not out_of_time():
+            compact_all(db, active_since=active_since, should_stop=out_of_time)
+            summary["compacted"] = True
+        if summary.get("stopped_early"):
+            log.info("Tick stopped early to stay inside its time budget; the rest runs next tick")
     except Exception:
         log.exception("Worker tick failed")
         db.rollback()
+        summary["ok"] = False
     finally:
         db.close()
+    return summary
 
 
 def run_once() -> None:

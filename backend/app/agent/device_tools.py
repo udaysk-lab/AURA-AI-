@@ -501,22 +501,23 @@ def _scroll_screen(ctx: ToolContext, args: dict) -> dict:
     "use web_research to search.",
     {
         "type": "object",
-        "properties": {
-            "url": {"type": "string"},
-            "method": {"type": "string", "enum": ["GET", "POST"]},
-        },
+        "properties": {"url": {"type": "string"}},
         "required": ["url"],
     },
 )
 @_safe
 def _fetch_url(ctx: ToolContext, args: dict) -> dict:
+    """GET only. This tool runs without asking at every trust tier because it
+    only reads; a POST can change things somewhere, so it isn't offered."""
     import httpx
 
-    url = args["url"]
+    url = str(args.get("url") or "")
     if not url.startswith(("http://", "https://")):
         return {"error": "Only http(s) URLs are supported."}
+    if (args.get("method") or "GET").upper() != "GET":
+        return {"error": "fetch_url only reads pages (GET)."}
     try:
-        resp = httpx.request(args.get("method") or "GET", url, timeout=20, follow_redirects=True)
+        resp = httpx.get(url, timeout=20, follow_redirects=True)
     except httpx.HTTPError as exc:
         return {"error": f"Couldn't fetch the URL: {exc}"}
     body = resp.text

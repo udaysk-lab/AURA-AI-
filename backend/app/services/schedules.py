@@ -243,13 +243,22 @@ def run_one(db: Session, user: User, schedule: Schedule) -> dict:
     schedule.last_result = result.text[:4000]
     schedule.run_count += 1
 
+    body = result.text[:1500]
+    emailed: dict | None = None
+    if schedule.deliver_to == "email":
+        emailed = _email_result(db, user, schedule, result.text)
+        if not emailed.get("sent"):
+            # It used to report nothing and send nothing. Now the result still
+            # arrives, in the app, with the reason it didn't arrive by email.
+            body = f"{body}\n\n— Not emailed: {emailed.get('explanation')}"
+
     if schedule.deliver_to in ("notification", "email"):
         db.add(
             Notification(
                 user_id=user.id,
                 title=schedule.name[:300],
-                body=result.text[:1500],
-                level="urgent" if result.pending_actions else "info",
+                body=body[:2000],
+                level="urgent" if result.pending_actions or (emailed and not emailed.get("sent")) else "info",
                 link=f"/chat?c={convo.id}",
             )
         )
@@ -261,11 +270,40 @@ def run_one(db: Session, user: User, schedule: Schedule) -> dict:
         "skills": [r["code"] for r in result.skill_runs],
         "pending": len(result.pending_actions),
         "conversation_id": convo.id,
+        "emailed": bool(emailed and emailed.get("sent")),
     }
 
 
-def run_due(db: Session, now: datetime | None = None) -> list[dict]:
-    """Called once a minute by the worker."""
+_NOT_SENT = {
+    "no_route": (
+        "there's no way to send email yet. Connect Google in Settings, or set SMTP_HOST "
+        "and SMTP_FROM on the server."
+    ),
+    "invalid_recipient": "your account has no email address mail can be sent to.",
+    "smtp_error": "the mail server refused it.",
+}
+
+
+def _email_result(db: Session, user: User, schedule: Schedule, text: str) -> dict:
+    """Send a schedule's result to its owner. Says why, when it can't."""
+    from app.services import mailer
+
+    address = (user.email or "").strip()
+    if not address or address.endswith("@localhost"):
+        return {"sent": False, "explanation": _NOT_SENT["invalid_recipient"]}
+    try:
+        outcome = mailer.send(db, user, address, f"AURA · {schedule.name}"[:200], text)
+    except Exception as exc:  # a delivery problem must never lose the result
+        log.exception("Emailing schedule %s failed", schedule.name)
+        return {"sent": False, "explanation": f"sending failed ({str(exc)[:120]})."}
+    if outcome.get("sent"):
+        return outcome
+    return {**outcome, "explanation": _NOT_SENT.get(outcome.get("reason", ""), "it couldn't be sent.")}
+
+
+def run_due(db: Session, now: datetime | None = None, should_stop=None) -> list[dict]:
+    """Called once a minute by the worker. `should_stop` is checked before each
+    schedule; one that doesn't get its turn is still due on the next tick."""
     now = now or datetime.now(timezone.utc)
     rows = db.scalars(
         select(Schedule).where(Schedule.enabled == True)  # noqa: E712
@@ -273,6 +311,8 @@ def run_due(db: Session, now: datetime | None = None) -> list[dict]:
 
     results: list[dict] = []
     for schedule in rows:
+        if should_stop is not None and should_stop():
+            break
         # "every weekday at 7:30am" means 7:30 on the owner's clock. Matching
         # the cron against UTC ran it at 13:00 for someone in India.
         since = schedule.last_run_at or schedule.created_at
