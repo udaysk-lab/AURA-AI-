@@ -1,0 +1,187 @@
+# Builds the AURA AI desktop app for Windows, macOS and Linux, checks each
+# build actually starts and answers, and publishes them as a GitHub release.
+#
+# Runs when a version tag is pushed (v1.0.0 — it must match
+# backend/app/version.py), or by hand from the Actions tab to try a build
+# without publishing it.
+#
+# The website's download buttons point at
+#   https://github.com/udaysk-lab/AURA-AI-/releases/latest/download/<file>
+# so the file names below are a contract with frontend/lib/downloads.ts.
+name: Desktop release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a release (only from a tag)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  web:
+    name: Web app (static export)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Tag matches the app's version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          app=$(python3 -c "import re;print(re.search(r'__version__ = \"(.+?)\"', open('backend/app/version.py').read()).group(1))")
+          tag="${GITHUB_REF_NAME#v}"
+          echo "app $app, tag $tag"
+          test "$app" = "$tag"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: frontend
+      - run: npm run build:desktop
+        working-directory: frontend
+      - uses: actions/upload-artifact@v6
+        with:
+          name: web
+          path: frontend/out
+          if-no-files-found: error
+
+  build:
+    name: ${{ matrix.name }}
+    needs: web
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            asset: AURA-AI-Windows-x64-portable.zip
+          - name: macOS (Apple silicon)
+            os: macos-latest
+            asset: AURA-AI-macOS-AppleSilicon.zip
+          - name: macOS (Intel)
+            os: macos-15-intel
+            asset: AURA-AI-macOS-Intel.zip
+          - name: Linux
+            # The oldest supported image, so the build runs on older distros
+            # too (a binary needs at least the glibc it was built against).
+            os: ubuntu-22.04
+            asset: AURA-AI-Linux-x64.tar.gz
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: web
+          path: frontend/out
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-device.txt
+      - name: Install
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-device.txt "pyinstaller==6.22.3"
+      - name: Build
+        run: python desktop/build.py --skip-web
+
+      - name: Smoke test (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          ./build/desktop/aura-ai/aura-ai --smoke-test --smoke-report smoke.json
+      - name: Smoke test (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          "./build/desktop/AURA AI.app/Contents/MacOS/AURA AI" --smoke-test --smoke-report smoke.json
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # The app has no console window, so its results come back in a file.
+          $p = Start-Process -FilePath "build\desktop\AURA AI\AURA AI.exe" `
+                -ArgumentList "--smoke-test","--smoke-report","smoke.json" -Wait -PassThru
+          Get-Content smoke.json
+          exit $p.ExitCode
+      - name: Smoke report
+        if: always()
+        shell: bash
+        run: cat smoke.json 2>/dev/null || echo "no report"
+
+      - name: Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y | Out-Null
+          }
+          $version = (python -c "import sys; sys.path.insert(0, 'backend'); from app.version import __version__; print(__version__)").Trim()
+          & $iscc "/DAppVersion=$version" "/DSourceDir=$PWD\build\desktop\AURA AI" "/DOutputDir=$PWD\build\desktop" desktop\windows\aura.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Installer installs, and what it installed starts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Start-Process -FilePath "build\desktop\AURA-AI-Setup-Windows-x64.exe" `
+                    -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { exit $setup.ExitCode }
+          $exe = "$env:LOCALAPPDATA\Programs\AURA AI\AURA AI.exe"
+          if (-not (Test-Path $exe)) { Write-Error "Not installed at $exe"; exit 1 }
+          $p = Start-Process -FilePath $exe -ArgumentList "--smoke-test","--smoke-report","installed-smoke.json" -Wait -PassThru
+          Get-Content installed-smoke.json
+          exit $p.ExitCode
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            build/desktop/${{ matrix.asset }}
+            build/desktop/AURA-AI-Setup-Windows-x64.exe
+          if-no-files-found: error
+
+  release:
+    name: Publish the release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          pattern: AURA-AI-*
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: |
+          ls -la
+          sha256sum AURA-AI-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* \
+              --title "AURA AI ${tag}" \
+              --notes-file desktop/RELEASE_NOTES.md \
+              --latest
+          fi
