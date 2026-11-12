@@ -311,6 +311,22 @@ def installed_ids(db: Session, user_id: str) -> set[str]:
     }
 
 
+def assigned_systems(db: Session, user_id: str) -> set[str]:
+    """Systems (plugin ids) assigned to the user: installed and enabled."""
+    return installed_ids(db, user_id)
+
+
+def plugin_for_tool(tool_name: str) -> Plugin | None:
+    """The plugin (system) that owns a tool, or None for a tool no skill lists."""
+    from app.agent import skills as skill_registry
+
+    skill = skill_registry.skill_for_tool(tool_name)
+    if skill is None:
+        return None
+    plugin_id = SKILL_TO_PLUGIN.get(skill.code)
+    return CATALOG.get(plugin_id) if plugin_id else None
+
+
 def unlocked_skill_codes(db: Session, user_id: str) -> set[str]:
     """Skill codes the user's installed plugins make available."""
     codes: set[str] = set()

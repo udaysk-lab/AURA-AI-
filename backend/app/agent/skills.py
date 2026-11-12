@@ -797,7 +797,10 @@ def enabled_tools(db: Session, user_id: str) -> set[str]:
     codes = enabled_codes(db, user_id)
     if not settings.device_control_enabled:
         codes = {c for c in codes if not is_device_skill(c)}
-    return {tool for code in codes for tool in CATALOG[code].tools}
+    from app.permissions import catalogue
+
+    # Fail closed: a tool with no permission catalogue entry is never offered.
+    return {tool for code in codes for tool in CATALOG[code].tools if tool in catalogue.CATALOGUE}
 
 
 def get_user_skill(db: Session, user_id: str, code: str) -> UserSkill | None:

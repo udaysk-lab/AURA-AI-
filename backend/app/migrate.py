@@ -36,7 +36,7 @@ from app.migrate_legacy import LEGACY_1_0_0
 
 log = logging.getLogger("aura.migrate")
 
-EXPECTED_HEAD = "0002_legacy_defaults"  # bumped by every revision; a test asserts it equals the scripts' head
+EXPECTED_HEAD = "pm01_permissions"  # bumped by every revision; a test asserts it equals the scripts' head
 BASE_REVISION = "0001_initial"
 LOCK_KEY = 0x41555241  # "AURA"
 BACKUPS_TO_KEEP = 3

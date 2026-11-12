@@ -14,11 +14,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -113,6 +115,11 @@ class UserSettings(Base, TimestampMixin):
     heartbeat_interval_minutes: Mapped[int] = mapped_column(Integer, default=30)
     quiet_hours: Mapped[str] = mapped_column(String(20), default="22:00-07:00")
     extra: Mapped[dict] = mapped_column(JSON, default=dict)
+    # ask | auto | skip. Only the signed-in user sets it (spec 10-permissions 2.1).
+    # Validated in code: no CHECK constraint, so SQLite batch mode stays simple.
+    permission_mode: Mapped[str] = mapped_column(String(8), default="ask", server_default="ask")
+    # The user's own limits for the auto reviewer, at most 2000 characters.
+    reviewer_boundaries: Mapped[str] = mapped_column(Text, default="", server_default="")
 
     user: Mapped[User] = relationship(back_populates="settings")
 
@@ -304,6 +311,8 @@ class AutomationRule(Base, TimestampMixin):
     actions: Mapped[list] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     requires_confirmation: Mapped[bool] = mapped_column(Boolean, default=True)
+    # ask | auto: what an approval needed during an unattended run does (spec 10, 2.4)
+    approval_mode: Mapped[str] = mapped_column(String(8), default="ask", server_default="ask")
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     run_count: Mapped[int] = mapped_column(Integer, default=0)
 
@@ -335,9 +344,13 @@ class ActivityLog(Base, TimestampMixin):
 
 
 class PendingAction(Base, TimestampMixin):
-    """A destructive tool call parked awaiting explicit user approval."""
+    """A tool call parked awaiting the user's answer (spec 10-permissions 2.3).
+
+    Status: pending | approved | rejected | expired | refused | resolving.
+    """
 
     __tablename__ = "pending_actions"
+    __table_args__ = (Index("ix_pa_user_status", "user_id", "status"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
@@ -345,9 +358,31 @@ class PendingAction(Base, TimestampMixin):
     tool_name: Mapped[str] = mapped_column(String(120))
     arguments: Mapped[dict] = mapped_column(JSON, default=dict)
     preview: Mapped[str] = mapped_column(Text, default="")
-    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|approved|rejected
+    status: Mapped[str] = mapped_column(String(20), default="pending")
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     skill_code: Mapped[str] = mapped_column(String(12), default="")
+    # The task-loop run this belongs to. No foreign key yet: the work_items table
+    # arrives with the task-loop revision (tl01), which may add the constraint.
+    work_item_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # chat | schedule | automation | inbound
+    origin: Mapped[str] = mapped_column(String(20), default="chat", server_default="chat")
+    origin_id: Mapped[str] = mapped_column(String(36), default="", server_default="")
+    # tool | folder_access | app_grant | delete_permission
+    card: Mapped[str] = mapped_column(String(20), default="tool", server_default="tool")
+    card_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Subset of once, window, always, reject.
+    options: Mapped[list] = mapped_column(JSON, default=list)
+    always_user: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    reason_code: Mapped[str] = mapped_column(String(40), default="", server_default="")
+    reason: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # sha256 of the canonical JSON arguments (sorted keys, no spaces).
+    args_digest: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    # once | window | always | reject, as answered.
+    decision: Mapped[str] = mapped_column(String(10), default="", server_default="")
+    # session | remote:<device id> | local-open | system
+    resolved_by: Mapped[str] = mapped_column(String(40), default="", server_default="")
+    rule_id: Mapped[str | None] = mapped_column(String(36))
 
 
 # ---------------------------------------------------------------------------
@@ -555,6 +590,8 @@ class Schedule(Base, TimestampMixin):
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_result: Mapped[str] = mapped_column(Text, default="")
     run_count: Mapped[int] = mapped_column(Integer, default=0)
+    # ask | auto: what an approval needed during a run does (spec 10, 2.4)
+    approval_mode: Mapped[str] = mapped_column(String(8), default="ask", server_default="ask")
 
 
 class UsageRecord(Base, TimestampMixin):
@@ -640,3 +677,105 @@ class PairingCode(Base, TimestampMixin):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# ---------------------------------------------------------------------------
+# Permissions (spec 10-permissions 2.2, 2.5, 2.6)
+# ---------------------------------------------------------------------------
+
+
+class PermissionRule(Base, TimestampMixin):
+    """One block / ask / allow rule for a system or a single tool, optionally
+    limited to a target (a recipient, path, command, domain or app)."""
+
+    __tablename__ = "permission_rules"
+    __table_args__ = (
+        Index("ix_prules_user_tool", "user_id", "tool"),
+        Index("ix_prules_user_system", "user_id", "system"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    effect: Mapped[str] = mapped_column(String(8))  # block | ask | allow
+    system: Mapped[str] = mapped_column(String(60))  # plugin id or "*"
+    tool: Mapped[str | None] = mapped_column(String(120))  # NULL = every tool of the system
+    # "" | path | command | recipient | domain | app
+    target_kind: Mapped[str] = mapped_column(String(12), default="", server_default="")
+    pattern: Mapped[str] = mapped_column(String(1024), default="", server_default="")
+    # "" everywhere | schedule:<id> | automation:<id>
+    applies_to: Mapped[str] = mapped_column(String(80), default="", server_default="")
+    source: Mapped[str] = mapped_column(String(12), default="user", server_default="user")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    note: Mapped[str] = mapped_column(String(300), default="", server_default="")
+
+
+class DeviceFolder(Base, TimestampMixin):
+    """A folder the user connected to AURA. Rows exist only on local installs."""
+
+    __tablename__ = "device_folders"
+    __table_args__ = (UniqueConstraint("user_id", "path_key", name="uq_device_folders_user_key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    path: Mapped[str] = mapped_column(Text)  # realpath as stored
+    path_key: Mapped[str] = mapped_column(String(64))  # sha256 of the folded realpath
+    can_delete: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    source: Mapped[str] = mapped_column(String(12), default="user", server_default="user")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DeviceAppGrant(Base, TimestampMixin):
+    """Screen-control access the user granted to one application."""
+
+    __tablename__ = "device_app_grants"
+    __table_args__ = (UniqueConstraint("user_id", "app_id", name="uq_device_app_grants_user_app"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    app_id: Mapped[str] = mapped_column(String(120))  # canonical id (device/appnames.py)
+    display_name: Mapped[str] = mapped_column(String(200), default="", server_default="")
+    tier: Mapped[str] = mapped_column(String(8))  # view | click | full
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DeviceAppBlock(Base, TimestampMixin):
+    """An application AURA must never operate (banking, trading, password managers...)."""
+
+    __tablename__ = "device_app_blocks"
+    __table_args__ = (UniqueConstraint("user_id", "app_id", name="uq_device_app_blocks_user_app"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    app_id: Mapped[str] = mapped_column(String(120))
+    match: Mapped[str] = mapped_column(String(8), default="app", server_default="app")  # app | keyword
+    source: Mapped[str] = mapped_column(String(12), default="user", server_default="user")  # default | user
+
+
+class PermissionEvent(Base, TimestampMixin):
+    """Tamper-evident log of permission decisions and changes.
+
+    Each row's `hash` covers the previous row's, and `mac` signs the hash with a
+    key derived from the server secret. Rows are never updated or deleted by code.
+    """
+
+    __tablename__ = "permission_events"
+    __table_args__ = (
+        UniqueConstraint("user_id", "seq", name="uq_permission_events_user_seq"),
+        Index("ix_permission_events_user_run", "user_id", "run_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    seq: Mapped[int] = mapped_column(Integer)  # per user, starts at 1
+    actor: Mapped[str] = mapped_column(String(12))  # user | aura | system | migration
+    kind: Mapped[str] = mapped_column(String(30))
+    tool: Mapped[str] = mapped_column(String(120), default="", server_default="")
+    target: Mapped[str] = mapped_column(String(500), default="", server_default="")
+    outcome: Mapped[str] = mapped_column(String(8), default="", server_default="")
+    reason_code: Mapped[str] = mapped_column(String(40), default="", server_default="")
+    run_key: Mapped[str] = mapped_column(String(36), default="", server_default="")
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    prev_hash: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    hash: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    mac: Mapped[str] = mapped_column(String(64), default="", server_default="")
