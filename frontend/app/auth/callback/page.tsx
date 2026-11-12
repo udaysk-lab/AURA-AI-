@@ -30,7 +30,7 @@ export default function AuthCallback() {
       setBusy(true);
       setToken(token);
       await refresh();
-      router.replace("/dashboard");
+      router.replace("/chat");
     },
     [refresh, router]
   );
@@ -84,7 +84,7 @@ export default function AuthCallback() {
           </p>
           <div className="flex justify-center gap-2">
             <button
-              onClick={() => router.replace(user ? "/dashboard" : "/login?reason=cancelled")}
+              onClick={() => router.replace(user ? "/chat" : "/login?reason=cancelled")}
               disabled={busy}
               className="btn-ghost"
             >

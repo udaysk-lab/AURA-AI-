@@ -139,7 +139,7 @@ export default function GetAura() {
             <p className="mb-6 max-w-xl text-[14px] leading-relaxed text-muted">
               The whole of AURA, running on your machine. Your chats, memory and files stay
               there. It can run commands, find and edit files, open apps and read the screen
-              for you — and below the trust level you choose, it asks first.
+              for you — and in the default Ask first mode, it asks before changing anything.
             </p>
 
             <div className="mb-3 flex flex-wrap items-center gap-3">
@@ -249,7 +249,7 @@ export default function GetAura() {
             {[
               "Email, calendar, tasks, memory and documents",
               "Schedules and automations that run while you're away",
-              "The same skills and trust levels as the desktop app",
+              "The same skills and permission modes as the desktop app",
             ].map((line) => (
               <li key={line} className="flex items-start gap-2.5">
                 <Check size={14} className="mt-0.5 shrink-0 text-sage" />

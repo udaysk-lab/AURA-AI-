@@ -1,76 +1,71 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Bell,
   Calendar,
+  ChevronDown,
   CheckSquare,
   FileText,
   Laptop,
   LayoutDashboard,
   LogOut,
   Mail,
-  MessageSquare,
+  Pin,
+  Plus,
   Puzzle,
   Radio,
   Search,
   Settings,
   Sparkles,
+  Trash2,
   Timer,
   Wand2,
   Workflow,
   X,
 } from "lucide-react";
-import { PendingAction, api } from "@/lib/api";
+import { Conversation, PendingAction, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useAssistant } from "@/lib/assistant";
 import Mascot from "./Mascot";
-import { BADGES_EVENT, Progress, initials, progressHint, useShortcutLabel } from "./ui";
+import {
+  BADGES_EVENT,
+  CONVERSATIONS_EVENT,
+  initials,
+  sendChatEvent,
+  useShortcutLabel,
+} from "./ui";
+import { useToast } from "./Toast";
 
-const NAV = [
-  {
-    group: "",
-    items: [
-      { href: "/dashboard", label: "Today", icon: LayoutDashboard },
-      { href: "/chat", label: "Chat", icon: MessageSquare },
-    ],
-  },
-  {
-    group: "Work",
-    items: [
-      { href: "/emails", label: "Email", icon: Mail },
-      { href: "/calendar", label: "Calendar", icon: Calendar },
-      { href: "/tasks", label: "Tasks", icon: CheckSquare },
-      { href: "/documents", label: "Documents", icon: FileText },
-    ],
-  },
-  {
-    group: "Assistant",
-    items: [
-      { href: "/skills", label: "Skills", icon: Wand2 },
-      { href: "/hub", label: "Plugin hub", icon: Puzzle },
-      { href: "/memory", label: "Memory", icon: Sparkles },
-      { href: "/channels", label: "Channels", icon: Radio },
-    ],
-  },
-  {
-    group: "Running",
-    items: [
-      { href: "/schedules", label: "Schedules", icon: Timer },
-      { href: "/automations", label: "Automations", icon: Workflow },
-      { href: "/notifications", label: "Notifications", icon: Bell },
-    ],
-  },
+// The everyday links, always visible under the Recent list.
+const MAIN_LINKS = [
+  { href: "/schedules", label: "Scheduled", icon: Timer },
+  { href: "/skills", label: "Systems", icon: Wand2 },
+  { href: "/memory", label: "Memory", icon: Sparkles },
+  { href: "/settings", label: "Settings", icon: Settings },
+];
+
+// Existing screens, re-housed in a collapsible group.
+const WORKSPACE_LINKS = [
+  { href: "/dashboard", label: "Today", icon: LayoutDashboard },
+  { href: "/emails", label: "Inbox", icon: Mail },
+  { href: "/calendar", label: "Calendar", icon: Calendar },
+  { href: "/tasks", label: "Tasks", icon: CheckSquare },
+  { href: "/documents", label: "Documents", icon: FileText },
+  { href: "/automations", label: "Automations", icon: Workflow },
+  { href: "/hub", label: "Plugin hub", icon: Puzzle },
+  { href: "/channels", label: "Channels", icon: Radio },
+  { href: "/notifications", label: "Notifications", icon: Bell },
 ];
 
 // Only on a local install: the screen for the computer AURA is running on.
 // Hidden entirely on a hosted instance, where there is no device to operate.
-const DEVICE_SECTION = {
-  group: "This computer",
-  items: [{ href: "/device", label: "Device", icon: Laptop }],
-};
+const DEVICE_LINK = { href: "/device", label: "This computer", icon: Laptop };
+
+const WORKSPACE_KEY = "aura_workspace_open";
+const RECENT_LIMIT = 12;
 
 export default function Sidebar({
   onOpenPalette,
@@ -140,8 +135,105 @@ export default function Sidebar({
     };
   }, [load]);
 
-  const hint = assistant?.progress ? progressHint(assistant.progress) : "";
   const searchShortcut = useShortcutLabel("K");
+  const router = useRouter();
+  const toast = useToast();
+
+  // Recent conversations come from the existing conversations endpoint.
+  const [recent, setRecent] = useState<Conversation[]>([]);
+  const loadRecent = useCallback(async () => {
+    try {
+      setRecent(await api.conversations());
+    } catch {
+      /* the list just stays as it was */
+    }
+  }, []);
+  useEffect(() => {
+    void loadRecent();
+  }, [pathname, loadRecent]);
+  useEffect(() => {
+    window.addEventListener(CONVERSATIONS_EVENT, loadRecent);
+    return () => window.removeEventListener(CONVERSATIONS_EVENT, loadRecent);
+  }, [loadRecent]);
+
+  const onChat = pathname === "/chat" || pathname.startsWith("/chat/");
+  const newTask = () => {
+    onNavigate?.();
+    if (onChat) sendChatEvent({ type: "new" });
+    else router.push("/chat");
+  };
+  const openConversation = (id: string) => {
+    onNavigate?.();
+    if (onChat) sendChatEvent({ type: "open", id });
+    else router.push(`/chat?c=${encodeURIComponent(id)}`);
+  };
+  const removeConversation = async (c: Conversation) => {
+    if (!window.confirm(`Delete "${c.title}"? This can't be undone.`)) return;
+    try {
+      await api.deleteConversation(c.id);
+      sendChatEvent({ type: "deleted", id: c.id });
+      setRecent((list) => list.filter((x) => x.id !== c.id));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't delete that conversation");
+    }
+  };
+
+  // Workspace group: remembered, and forced open while you are inside it.
+  const workspaceLinks = [...WORKSPACE_LINKS, ...(deviceControl ? [DEVICE_LINK] : [])];
+  const inWorkspace = workspaceLinks.some(
+    (l) => pathname === l.href || pathname.startsWith(`${l.href}/`)
+  );
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  useEffect(() => {
+    try {
+      setWorkspaceOpen(localStorage.getItem(WORKSPACE_KEY) === "1");
+    } catch {
+      /* private mode: stays collapsed */
+    }
+  }, []);
+  const toggleWorkspace = () => {
+    const next = !workspaceOpen;
+    setWorkspaceOpen(next);
+    try {
+      localStorage.setItem(WORKSPACE_KEY, next ? "1" : "0");
+    } catch {
+      /* not fatal */
+    }
+  };
+  const showWorkspace = workspaceOpen || inWorkspace;
+
+  const linkClass = (active: boolean) =>
+    `group relative flex items-center gap-2.5 rounded-xl px-2.5 py-[7px] text-[13px] transition-all ${
+      active
+        ? "border border-accent/25 bg-accent/12 font-medium text-ink shadow-glow-sm"
+        : "border border-transparent text-muted hover:bg-raised/60 hover:text-ink"
+    }`;
+
+  const renderLink = ({ href, label, icon: Icon }: (typeof MAIN_LINKS)[number]) => {
+    const active = pathname === href || pathname.startsWith(`${href}/`);
+    const badge = href === "/notifications" && unread ? unread : undefined;
+    return (
+      <Link
+        key={href}
+        href={href}
+        onClick={onNavigate}
+        aria-current={active ? "page" : undefined}
+        className={linkClass(active)}
+      >
+        {active && <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-accent-soft" />}
+        <Icon size={15} className={active ? "text-accent-soft" : ""} />
+        <span className="flex-1">{label}</span>
+        {badge ? (
+          <span
+            className="rounded-full bg-accent px-1.5 text-[10px] font-semibold text-white shadow-glow-sm"
+            aria-label={`${badge} unread`}
+          >
+            {badge}
+          </span>
+        ) : null}
+      </Link>
+    );
+  };
 
   return (
     <aside
@@ -154,33 +246,18 @@ export default function Sidebar({
       />
 
       <Link
-        href="/settings#assistant"
+        href="/chat"
         onClick={onNavigate}
-        className="relative mb-2.5 flex items-center gap-3 rounded-2xl px-2 py-1.5 transition hover:bg-raised/70"
+        className="relative mb-3 flex items-center gap-3 rounded-2xl px-2 py-1.5 transition hover:bg-raised/70"
+        title={assistant?.name ?? "AURA"}
       >
-        <Mascot
-          colourway={assistant?.avatar ?? "teal"}
-          stage={assistant?.stage ?? "stranger"}
-          size={36}
-        />
-        <div className="min-w-0 leading-tight">
-          <div className="truncate text-[15px] font-semibold tracking-tight">
-            {assistant?.name ?? "Aura"}
-          </div>
-          <div className="truncate text-[10.5px] uppercase tracking-[0.14em] text-faint">
-            {assistant?.stage_label ?? "Assistant"}
-          </div>
-        </div>
+        <Mascot colourway={assistant?.avatar ?? "teal"} size={32} />
+        <span className="text-[16px] font-semibold tracking-tight">AURA</span>
       </Link>
 
-      {assistant?.progress && (
-        <div className="relative mb-3 px-2" title={hint}>
-          <Progress value={assistant.progress.percent} />
-          <div className="mt-1.5 text-[10.5px] text-faint">
-            {assistant.progress.percent}% to {assistant.progress.next_label}
-          </div>
-        </div>
-      )}
+      <button onClick={newTask} className="btn-primary relative mb-2 w-full justify-center">
+        <Plus size={14} /> New task
+      </button>
 
       {onOpenPalette && (
         <button
@@ -194,43 +271,54 @@ export default function Sidebar({
       )}
 
       <nav className="relative -mx-1 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1">
-        {[...NAV, ...(deviceControl ? [DEVICE_SECTION] : [])].map((section) => (
-          <div key={section.group || "main"}>
-            {section.group && <div className="label px-2.5 pb-0.5 pt-2.5">{section.group}</div>}
-            {section.items.map(({ href, label, icon: Icon }) => {
-              const active = pathname === href || pathname.startsWith(`${href}/`);
-              const badge =
-                href === "/notifications" && unread ? unread : undefined;
-              return (
-                <Link
-                  key={href}
-                  href={href}
-                  onClick={onNavigate}
-                  aria-current={active ? "page" : undefined}
-                  className={`group relative flex items-center gap-2.5 rounded-xl px-2.5 py-[7px] text-[13px] transition-all ${
-                    active
-                      ? "border border-accent/25 bg-accent/12 font-medium text-ink shadow-glow-sm"
-                      : "border border-transparent text-muted hover:bg-raised/60 hover:text-ink"
-                  }`}
-                >
-                  {active && (
-                    <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-accent-soft" />
-                  )}
-                  <Icon size={15} className={active ? "text-accent-soft" : ""} />
-                  <span className="flex-1">{label}</span>
-                  {badge ? (
-                    <span
-                      className="rounded-full bg-accent px-1.5 text-[10px] font-semibold text-white shadow-glow-sm"
-                      aria-label={`${badge} unread`}
-                    >
-                      {badge}
-                    </span>
-                  ) : null}
-                </Link>
-              );
-            })}
+        <div className="label px-2.5 pb-0.5 pt-2.5">Recent</div>
+        {recent.length === 0 && (
+          <p className="px-2.5 py-1.5 text-[12px] text-faint">Your tasks and chats appear here.</p>
+        )}
+        {recent.slice(0, RECENT_LIMIT).map((c) => (
+          <div
+            key={c.id}
+            className="group flex items-center gap-1.5 rounded-xl border border-transparent px-2.5 py-[7px] text-[12.5px] text-muted transition hover:bg-raised/60 hover:text-ink"
+          >
+            <button
+              onClick={() => openConversation(c.id)}
+              className="min-w-0 flex-1 truncate text-left"
+              title={c.title}
+            >
+              {c.pinned && <Pin size={10} className="mr-1 inline text-accent-soft" />}
+              {c.title}
+            </button>
+            <button
+              onClick={() => removeConversation(c)}
+              aria-label={`Delete conversation ${c.title}`}
+              title="Delete conversation"
+              className="rounded p-0.5 opacity-0 transition focus-visible:opacity-100 group-hover:opacity-100"
+            >
+              <Trash2 size={12} className="text-faint hover:text-rose" />
+            </button>
           </div>
         ))}
+
+        <div className="mt-2 flex flex-col gap-px border-t border-line pt-2">
+          {MAIN_LINKS.map(renderLink)}
+        </div>
+
+        <div className="mt-1">
+          <button
+            onClick={toggleWorkspace}
+            aria-expanded={showWorkspace}
+            className="label flex w-full items-center gap-1.5 px-2.5 pb-0.5 pt-2.5 text-left hover:text-ink"
+          >
+            <ChevronDown
+              size={12}
+              className={`transition-transform ${showWorkspace ? "" : "-rotate-90"}`}
+            />
+            Workspace
+          </button>
+          {showWorkspace && (
+            <div className="flex flex-col gap-px">{workspaceLinks.map(renderLink)}</div>
+          )}
+        </div>
       </nav>
 
       {pending.length > 0 && (
@@ -255,15 +343,6 @@ export default function Sidebar({
               {user?.email}
             </div>
           </div>
-          <Link
-            href="/settings"
-            onClick={onNavigate}
-            className="rounded-lg p-1.5 text-faint transition hover:bg-raised hover:text-ink"
-            title="Settings"
-            aria-label="Settings"
-          >
-            <Settings size={14} />
-          </Link>
           <button
             onClick={logout}
             title="Sign out"
@@ -291,7 +370,6 @@ export function MobileTopBar({
       <button onClick={onOpenNav} className="btn-quiet px-2 py-1.5" aria-label="Open navigation">
         <Mascot
           colourway={assistant?.avatar ?? "teal"}
-          stage={assistant?.stage ?? "stranger"}
           size={28}
         />
       </button>

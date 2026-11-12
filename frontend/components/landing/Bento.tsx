@@ -196,21 +196,21 @@ export default function Bento() {
               <span className="flex h-8 w-8 items-center justify-center rounded-xl border border-line bg-raised/70 text-amber">
                 <ShieldCheck size={15} />
               </span>
-              <span className="label">Autonomy</span>
+              <span className="label">Permissions</span>
             </div>
             <h3 className="mb-2 text-[17px] font-semibold tracking-tight">
-              Trust is earned, not assumed
+              You decide what it may do
             </h3>
             <p className="mb-5 text-[13.5px] leading-relaxed text-muted">
-              Four levels of freedom. Below the top one, anything irreversible waits
-              for you.
+              Pick a permission mode and add your own rules. Only you can change them;
+              AURA never can.
             </p>
             <div className="space-y-2">
               {[
                 { l: "Ask first", on: true },
-                { l: "Act on small things", on: true },
-                { l: "Act, then tell me", on: true },
-                { l: "Full autonomy", on: false },
+                { l: "Auto", on: true },
+                { l: "Skip approvals", on: true },
+                { l: "Your rules: block, ask, allow", on: true },
               ].map((lvl, i) => (
                 <div key={lvl.l} className="flex items-center gap-2.5">
                   <span

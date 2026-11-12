@@ -5,12 +5,12 @@ import { Plus } from "lucide-react";
 
 const ITEMS = [
   {
-    q: "What does “raising” an assistant actually mean?",
-    a: "Its relationship stage is computed, not cosmetic — from how much you've talked to it, how much it has learned about you, and how much work it has genuinely completed. A stranger asks about everything. A colleague acts and tells you afterwards.",
+    q: "What does AURA do differently from a chatbot?",
+    a: "It works through tasks. You describe what you need; it plans the steps, does them with the systems you have assigned, checks the result and reports back. It asks you only when a task is unclear or risky. There is no training period: it starts working from your first message.",
   },
   {
     q: "Can it send email or delete things without asking?",
-    a: "Only if you let it. There are four trust levels. Below the top one, anything irreversible — sending mail, deleting an event, spending money — waits for your approval. You can grant an exception once, for ten minutes, or permanently.",
+    a: "Only if you let it. You choose a permission mode. In Ask first, anything that changes something waits for your approval. In Auto, each such action goes to a separate safety check instead. In Skip approvals, nothing waits except actions that always need you. Rules let you block, ask about or allow specific tools, and a block holds in every mode. Only you can change the mode or the rules; AURA cannot.",
   },
   {
     q: "What are skills, and why can I switch them off?",
@@ -18,11 +18,11 @@ const ITEMS = [
   },
   {
     q: "What does the desktop app add?",
-    a: "Everything in the browser version, running on your own machine — plus the ability to work the computer itself: run commands, find and edit files, open apps, check the system and, for programs with no command line, see the screen and use the mouse and keyboard. Your chats and memory stay on your computer.",
+    a: "Everything in the browser version, running on your own machine — plus the ability to work on the computer itself, in the folders and apps you allow: run commands, find and edit files, open apps, check the system and, for programs with no command line, see the screen and use the mouse and keyboard. Your chats and memory stay on your computer.",
   },
   {
     q: "Is it safe to let an assistant use my computer?",
-    a: "It's built to ask. Below full trust, running a command or using the mouse and keyboard waits for your approval, showing exactly what it will do. File tools are fenced to the folders you allow, and never touch the folders that hold your keys and credentials, or anything that runs at startup. Commands you never want run can be refused outright, and only your computer — and phones you pair — can reach it.",
+    a: "It's built to ask. In the default mode, running a command or using the mouse and keyboard waits for your approval, showing exactly what it will do. File tools are fenced to the folders you allow, and never touch the folders that hold your keys and credentials, or anything that runs at startup. Commands you never want run can be refused outright, and only your computer — and phones you pair — can reach it.",
   },
   {
     q: "Why does Windows or macOS warn me when I open it?",
@@ -38,11 +38,11 @@ const ITEMS = [
   },
   {
     q: "How does the memory work?",
-    a: "Preferences, projects, people and decisions are stored and retrieved by meaning rather than keyword, then periodically consolidated — duplicates merged, stale facts retired — so it gets sharper over time instead of just bigger.",
+    a: "AURA keeps a record of each task you assign, and remembers how you like each kind of task done. Before it starts something similar, it looks back at both. You can view, edit and delete what it remembers.",
   },
   {
     q: "Do I need to connect anything to try it?",
-    a: "No. It boots with realistic sample data so you can see a full day's work immediately. Connect Gmail, Calendar and the rest whenever you want it operating on the real thing.",
+    a: "No. You can start with sample data and see how it works straight away. Assign Gmail, Calendar and the other systems whenever you want it operating on the real thing.",
   },
 ];
 

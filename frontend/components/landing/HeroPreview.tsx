@@ -48,19 +48,13 @@ export default function HeroPreview() {
           {/* Mini sidebar */}
           <div className="hidden w-[168px] shrink-0 border-r border-line p-3 sm:block">
             <div className="mb-4 flex items-center gap-2 px-1">
-              <Mascot colourway="violet" stage="colleague" size={26} />
+              <Mascot colourway="violet" size={26} />
               <div className="min-w-0">
                 <div className="truncate text-[12px] font-semibold">Aura</div>
                 <div className="truncate text-[9px] uppercase tracking-[0.14em] text-faint">
-                  Colleague
+                  Personal employee
                 </div>
               </div>
-            </div>
-            <div className="mb-4 px-1">
-              <div className="h-1 w-full overflow-hidden rounded-full bg-raised">
-                <div className="h-full w-[68%] rounded-full bg-accent" />
-              </div>
-              <div className="mt-1 text-[9px] text-faint">68% to Chief of staff</div>
             </div>
             <div className="space-y-0.5">
               {RAIL.map(({ icon: Icon, label, active }) => (

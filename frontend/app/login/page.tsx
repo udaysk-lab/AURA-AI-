@@ -106,7 +106,7 @@ export default function LoginPage() {
   }, []);
 
   useEffect(() => {
-    if (!loading && user) router.replace("/dashboard");
+    if (!loading && user) router.replace("/chat");
   }, [loading, user, router]);
 
   /**
@@ -180,7 +180,7 @@ export default function LoginPage() {
           : await api.login(email, password);
       setToken(res.access_token);
       await refresh();
-      router.push("/dashboard");
+      router.push("/chat");
     } catch (e) {
       setError(describeFailure(e));
       setBusy(false);
@@ -194,7 +194,7 @@ export default function LoginPage() {
       const res = await api.demoLogin(email || "demo@aura.ai", name || "Demo User");
       setToken(res.access_token);
       await refresh();
-      router.push("/dashboard");
+      router.push("/chat");
     } catch (e) {
       setError(describeFailure(e));
       setBusy(false);
@@ -213,7 +213,7 @@ export default function LoginPage() {
       const res = await api.localLogin(localKey);
       setToken(res.access_token);
       await refresh();
-      router.push("/dashboard");
+      router.push("/chat");
     } catch (e) {
       setError(describeFailure(e));
       setBusy(false);
@@ -239,7 +239,7 @@ export default function LoginPage() {
       const res = await api.remotePair(pairCode, deviceName.trim() || defaultDeviceName());
       setToken(res.access_token);
       await refresh();
-      router.push("/dashboard");
+      router.push("/chat");
     } catch (e) {
       setError(describeFailure(e));
       setBusy(false);
@@ -292,7 +292,7 @@ export default function LoginPage() {
 
       <div className="relative w-full max-w-sm animate-fade-up py-16">
         <div className="mb-8 flex flex-col items-center text-center">
-          <Mascot colourway="violet" stage="acquaintance" size={76} className="mb-5" />
+          <Mascot colourway="violet" size={76} className="mb-5" />
           <h1 className="display text-shine text-[26px]">
             {config?.remote_client
               ? "Pair this device"

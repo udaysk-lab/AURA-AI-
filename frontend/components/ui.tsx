@@ -62,26 +62,31 @@ export function initials(name: string, fallback = "?") {
   return (parts[0][0] + (parts[1]?.[0] ?? "")).toUpperCase();
 }
 
-/** What's still missing before the next relationship stage, in words. */
-export function progressHint(progress: {
-  next_label: string;
-  needs: { interactions: number; memories: number; actions: number };
-}) {
-  const { interactions, memories, actions } = progress.needs;
-  const bits = [
-    interactions > 0 && `${interactions} more conversation${interactions === 1 ? "" : "s"}`,
-    memories > 0 && `${memories} more thing${memories === 1 ? "" : "s"} to learn about you`,
-    actions > 0 && `${actions} more action${actions === 1 ? "" : "s"}`,
-  ].filter(Boolean);
-  return bits.length ? `${bits.join(" · ")} to reach ${progress.next_label}` : "";
-}
-
 /**
  * Screens that change what the sidebar badges count (approving an action,
  * marking notifications read) announce it with this event, so the sidebar
  * doesn't sit on a stale "3 waiting on you" until its next poll.
  */
 export const BADGES_EVENT = "aura:refresh-badges";
+
+/**
+ * The sidebar's "New task" and "Recent" list talk to the chat screen through
+ * this event (the chat is already mounted when you are on /chat). `open` and
+ * `new` go to Chat; `deleted` tells Chat a conversation is gone.
+ */
+export const CHAT_EVENT = "aura:chat";
+export type ChatEventDetail =
+  | { type: "open"; id: string }
+  | { type: "new" }
+  | { type: "deleted"; id: string };
+export function sendChatEvent(detail: ChatEventDetail) {
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(CHAT_EVENT, { detail }));
+}
+/** Chat announces a changed conversation list so the sidebar can refetch it. */
+export const CONVERSATIONS_EVENT = "aura:refresh-conversations";
+export function refreshConversations() {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(CONVERSATIONS_EVENT));
+}
 export function refreshBadges() {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(BADGES_EVENT));
 }

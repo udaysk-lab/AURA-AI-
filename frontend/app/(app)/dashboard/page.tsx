@@ -29,14 +29,12 @@ import {
   Badge,
   Card,
   EmptyState,
-  Progress,
   SectionTitle,
   SkillLine,
   Skeleton,
   Spinner,
   fmtRelative,
   fmtTime,
-  progressHint,
   refreshBadges,
 } from "@/components/ui";
 
@@ -172,7 +170,6 @@ export default function DashboardPage() {
           <div className="flex items-start gap-4">
             <Mascot
               colourway={assistant?.avatar ?? "violet"}
-              stage={assistant?.stage ?? "stranger"}
               size={62}
               active={working}
             />
@@ -181,8 +178,7 @@ export default function DashboardPage() {
               <p className="mt-1 text-[14px] text-muted">{brief?.headline}</p>
               {assistant && (
                 <p className="mt-2 text-[12.5px] text-faint">
-                  {assistant.name} · {assistant.stage_label} · day{" "}
-                  {assistant.days_together + 1} together
+                  {assistant.name}
                 </p>
               )}
             </div>
@@ -429,41 +425,6 @@ export default function DashboardPage() {
             />
           )}
         </Card>
-
-        {/* Growth */}
-        {assistant && (
-          <Card className="h-fit">
-            <SectionTitle>Getting to know you</SectionTitle>
-            <div className="mb-4 flex items-center gap-3">
-              <Mascot colourway={assistant.avatar} stage={assistant.stage} size={44} />
-              <div>
-                <div className="text-[14px] font-medium">{assistant.stage_label}</div>
-                <div className="text-[11.5px] text-faint">
-                  {assistant.signals.interactions} conversation
-                  {assistant.signals.interactions === 1 ? "" : "s"} ·{" "}
-                  {assistant.signals.memories} thing{assistant.signals.memories === 1 ? "" : "s"}{" "}
-                  known · {assistant.signals.actions} action
-                  {assistant.signals.actions === 1 ? "" : "s"}
-                </div>
-              </div>
-            </div>
-            <p className="mb-4 text-[12.5px] leading-relaxed text-muted">
-              {assistant.stage_blurb}
-            </p>
-            {assistant.progress ? (
-              <>
-                <Progress value={assistant.progress.percent} />
-                <div className="mt-2 text-[11.5px] leading-relaxed text-faint">
-                  {assistant.progress.percent}% to {assistant.progress.next_label}
-                  {progressHint(assistant.progress) &&
-                    ` · ${progressHint(assistant.progress).replace(/ to reach .*$/, "")}`}
-                </div>
-              </>
-            ) : (
-              <Badge tone="success">Fully grown</Badge>
-            )}
-          </Card>
-        )}
       </div>
     </div>
   );

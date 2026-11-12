@@ -423,7 +423,6 @@ export interface AppSettings {
 }
 
 export type Colourway = "teal" | "amber" | "rose" | "violet" | "sage";
-export type Stage = "stranger" | "acquaintance" | "colleague" | "chief_of_staff";
 
 export interface Assistant {
   id: string;
@@ -432,19 +431,6 @@ export interface Assistant {
   avatar: Colourway;
   pronoun: string;
   goals: string[];
-  onboarded: boolean;
-  hatched_at: string;
-  stage: Stage;
-  stage_label: string;
-  stage_blurb: string;
-  signals: { interactions: number; memories: number; actions: number };
-  progress: {
-    next: Stage;
-    next_label: string;
-    percent: number;
-    needs: { interactions: number; memories: number; actions: number };
-  } | null;
-  days_together: number;
 }
 
 export interface SkillItem {
@@ -997,16 +983,6 @@ export const api = {
   // --- Identity -----------------------------------------------------------
   assistant: () => get<Assistant>("/api/assistant"),
   updateAssistant: (body: Partial<Assistant>) => patch<Assistant>("/api/assistant", body),
-  hatch: (body: {
-    name: string;
-    personality: string;
-    avatar: string;
-    pronoun: string;
-    goals: string[];
-    role: string;
-    about: string;
-    autonomy_level: AutonomyTier;
-  }) => post<Assistant>("/api/assistant/hatch", body),
 
   // --- Heartbeat ----------------------------------------------------------
   heartbeats: (limit = 10) => get<Heartbeat[]>(`/api/heartbeat?limit=${limit}`),

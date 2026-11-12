@@ -7,7 +7,7 @@ import Mascot from "@/components/Mascot";
 import { useAuth } from "@/lib/auth";
 
 const LINKS = [
-  { href: "#stages", label: "How it grows" },
+  { href: "#how", label: "How it works" },
   { href: "#skills", label: "Skills" },
   { href: "#computer", label: "On your computer" },
   { href: "#pricing", label: "Pricing" },
@@ -48,7 +48,7 @@ export default function LandingNav() {
         }`}
       >
         <Link href="/" className="flex items-center gap-2.5 pr-2" aria-label="AURA home">
-          <Mascot colourway="violet" stage="colleague" size={30} />
+          <Mascot colourway="violet" size={30} />
           <span className="text-[15px] font-semibold tracking-tight">AURA</span>
         </Link>
 
@@ -67,7 +67,7 @@ export default function LandingNav() {
         <div className="ml-auto flex items-center gap-2 md:ml-0">
           {user ? (
             // Signed-in visitors were offered "Sign in" and "Get started".
-            <Link href="/dashboard" className="btn-primary !px-4 !py-1.5 text-[13px]">
+            <Link href="/chat" className="btn-primary !px-4 !py-1.5 text-[13px]">
               Open AURA <ArrowRight size={13} />
             </Link>
           ) : (

@@ -27,7 +27,7 @@ const CAN = [
 ];
 
 const LIMITS = [
-  { icon: ShieldCheck, title: "Your trust level", body: "Below full trust, a command, a click or a keystroke waits for your yes." },
+  { icon: ShieldCheck, title: "Your permission mode", body: "In Ask first, a command, a click or a keystroke waits for your yes." },
   { icon: FolderOpen, title: "A folder fence", body: "File tools stay in the folders you allow, away from keys, credentials and startup items." },
   { icon: Ban, title: "A blocklist", body: "Commands you never want run are refused, even after approval." },
   { icon: Lock, title: "Only you", body: "It answers to this computer alone, unless you pair your phone." },

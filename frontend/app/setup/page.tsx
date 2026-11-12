@@ -55,7 +55,7 @@ export default function SetupPage() {
       />
 
       <div className="relative mb-8 flex items-center gap-4">
-        <Mascot colourway="violet" stage="acquaintance" size={52} />
+        <Mascot colourway="violet" size={52} />
         <div>
           <h1 className="display text-shine text-[24px]">Setup check</h1>
           <p className="text-[13px] text-muted">

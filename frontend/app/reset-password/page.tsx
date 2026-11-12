@@ -46,7 +46,7 @@ export default function ResetPasswordPage() {
       const res = await api.resetPassword(token || "", password);
       setToken(res.access_token);
       await refresh();
-      router.push("/dashboard");
+      router.push("/chat");
     } catch (e) {
       setError(e instanceof Error ? e.message : "That didn't work. Ask for a new link.");
       setBusy(false);
@@ -68,7 +68,7 @@ export default function ResetPasswordPage() {
 
       <div className="relative w-full max-w-sm animate-fade-up py-16">
         <div className="mb-8 flex flex-col items-center text-center">
-          <Mascot colourway="violet" stage="acquaintance" size={68} className="mb-5" />
+          <Mascot colourway="violet" size={68} className="mb-5" />
           <h1 className="display text-shine text-[26px]">Choose a new password</h1>
         </div>
 

@@ -46,7 +46,7 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
 
   // Follow whoever is signed in. This used to load once, when the page first
   // mounted — before sign-in on the login page — so after signing up the app
-  // still thought there was no assistant, skipped onboarding, and showed
+  // still thought there was no assistant and showed
   // "Aura · Assistant" until the next full reload.
   const userId = user?.id ?? null;
   useEffect(() => {

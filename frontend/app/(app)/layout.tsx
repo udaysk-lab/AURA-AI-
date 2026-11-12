@@ -35,11 +35,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       router.replace("/login");
       return;
     }
-    // First run: hatch an assistant before anything else.
-    if (!assistantLoading && assistant && !assistant.onboarded) {
-      router.replace("/onboarding");
-    }
-  }, [loading, unreachable, user, assistant, assistantLoading, router]);
+  }, [loading, unreachable, user, router]);
 
   // Close the mobile drawer whenever the route changes.
   useEffect(() => setNavOpen(false), [pathname]);

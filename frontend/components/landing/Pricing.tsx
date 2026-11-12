@@ -25,14 +25,14 @@ const TIERS: Tier[] = [
     name: "Solo",
     tagline: "Free forever",
     monthly: 0,
-    blurb: "For anyone who wants to see what a raised assistant feels like.",
+    blurb: "For anyone who wants to see what a personal employee feels like.",
     cta: "Start free",
     features: [
       "6 core skills",
       "Email triage and drafting",
       "Calendar with conflict detection",
       "Memory up to 500 facts",
-      "Ask-before-acting trust level",
+      "Ask first permission mode",
     ],
   },
   {
@@ -46,7 +46,7 @@ const TIERS: Tier[] = [
       "Every skill in the browser",
       "Overnight heartbeat and briefings",
       "Unlimited memory with consolidation",
-      "All four trust levels",
+      "All permission modes and rules",
       "Automations and schedules",
       "Plugin hub access",
     ],
@@ -91,7 +91,7 @@ export default function Pricing() {
           Choose your plan
         </h2>
         <p className="mx-auto max-w-md text-[14.5px] leading-relaxed text-muted">
-          For AURA in your browser. Start free and keep the assistant you raised; upgrade
+          For AURA in your browser. Start free and keep everything it has done and remembered; upgrade
           when you want it working through the night. The desktop app is free.
         </p>
 

@@ -9,12 +9,8 @@ import {
   Check,
   Clock4,
   GraduationCap,
-  History,
-  Pin,
-  Plus,
   RotateCcw,
   Sparkles,
-  Trash2,
   X,
   Zap,
 } from "lucide-react";
@@ -36,9 +32,12 @@ import {
   SkillBadge,
   SkillLine,
   ASK_EVENT,
+  CHAT_EVENT,
+  ChatEventDetail,
   Spinner,
   fmtRelative,
   refreshBadges,
+  refreshConversations,
   takeHandedOffQuestion,
 } from "@/components/ui";
 
@@ -136,8 +135,9 @@ export default function ChatPage() {
   const loadConversations = useCallback(async () => {
     try {
       setConversations(await api.conversations());
+      refreshConversations();
     } catch {
-      /* the rail just stays as it was */
+      /* the sidebar list just stays as it was */
     }
   }, []);
 
@@ -231,16 +231,20 @@ export default function ChatPage() {
     textareaRef.current?.focus();
   };
 
-  const removeConversation = async (c: Conversation) => {
-    if (!window.confirm(`Delete "${c.title}"? This can't be undone.`)) return;
-    try {
-      await api.deleteConversation(c.id);
-      if (activeId === c.id) newChat();
-      await loadConversations();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Couldn't delete that conversation");
-    }
-  };
+  // The sidebar's "New task" and "Recent" list drive this screen by event.
+  const shellRef = useRef({ open: openConversation, fresh: newChat, activeId });
+  shellRef.current = { open: openConversation, fresh: newChat, activeId };
+  useEffect(() => {
+    const onShell = (ev: Event) => {
+      const d = (ev as CustomEvent<ChatEventDetail>).detail;
+      if (!d) return;
+      if (d.type === "open") void shellRef.current.open(d.id);
+      else if (d.type === "new") shellRef.current.fresh();
+      else if (d.type === "deleted" && shellRef.current.activeId === d.id) shellRef.current.fresh();
+    };
+    window.addEventListener(CHAT_EVENT, onShell);
+    return () => window.removeEventListener(CHAT_EVENT, onShell);
+  }, []);
 
   const send = async (text?: string) => {
     const content = (text ?? input).trim();
@@ -378,84 +382,8 @@ export default function ChatPage() {
 
   return (
     <div className="flex h-full min-h-0">
-      {/* Conversation rail */}
-      <div className="hidden w-[218px] shrink-0 flex-col border-r border-line bg-panel/30 p-3 backdrop-blur-xl lg:flex">
-        <button
-          onClick={newChat}
-          disabled={streaming}
-          title={streaming ? "Wait for the reply to finish" : undefined}
-          className="btn-ghost mb-3 w-full justify-start"
-        >
-          <Plus size={14} /> New chat
-        </button>
-        <div className="flex-1 space-y-0.5 overflow-y-auto">
-          {conversations.length === 0 && (
-            <p className="px-2.5 py-2 text-[12px] text-faint">Past conversations appear here.</p>
-          )}
-          {conversations.map((c) => (
-            <div
-              key={c.id}
-              className={`group flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-[12.5px] transition ${
-                activeId === c.id
-                  ? "border border-accent/25 bg-accent/12 font-medium text-ink"
-                  : "border border-transparent text-muted hover:bg-raised/60 hover:text-ink"
-              }`}
-            >
-              <button
-                onClick={() => openConversation(c.id)}
-                disabled={streaming}
-                className="min-w-0 flex-1 truncate text-left disabled:cursor-not-allowed"
-                title={streaming ? "Wait for the reply to finish" : c.title}
-              >
-                {c.pinned && <Pin size={10} className="mr-1 inline text-accent-soft" />}
-                {c.title}
-              </button>
-              <button
-                onClick={() => removeConversation(c)}
-                disabled={streaming}
-                aria-label={`Delete conversation ${c.title}`}
-                title="Delete conversation"
-                className="rounded p-0.5 opacity-0 transition focus-visible:opacity-100 group-hover:opacity-100"
-              >
-                <Trash2 size={12} className="text-faint hover:text-rose" />
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
-
       {/* Thread */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Below lg the rail is hidden, so history and "new chat" live here.
-            Without this there was no way to start over or reopen a
-            conversation on a phone. */}
-        <div className="flex items-center gap-2 border-b border-line px-4 py-2 lg:hidden">
-          <History size={14} className="shrink-0 text-faint" />
-          <select
-            className="min-w-0 flex-1 truncate bg-transparent py-1 text-[13px] text-muted outline-none"
-            value={activeId ?? ""}
-            onChange={(e) => (e.target.value ? void openConversation(e.target.value) : newChat())}
-            disabled={streaming}
-            aria-label="Conversation"
-          >
-            <option value="" className="bg-panel">
-              {activeId ? "New conversation" : "Past conversations…"}
-            </option>
-            {conversations.map((c) => (
-              <option key={c.id} value={c.id} className="bg-panel">
-                {c.title}
-              </option>
-            ))}
-          </select>
-          <button
-            onClick={newChat}
-            disabled={streaming}
-            className="btn-ghost shrink-0 px-3 py-1.5 text-[12.5px]"
-          >
-            <Plus size={13} /> New
-          </button>
-        </div>
-
         <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 sm:py-8">
           <div className="mx-auto max-w-2xl space-y-5">
             {activeTitle && messages.length > 0 && (
@@ -466,7 +394,6 @@ export default function ChatPage() {
                 <div className="mb-5 flex justify-center">
                   <Mascot
                     colourway={assistant?.avatar ?? "violet"}
-                    stage={assistant?.stage ?? "stranger"}
                     size={82}
                   />
                 </div>
@@ -474,9 +401,7 @@ export default function ChatPage() {
                   What do you need?
                 </h2>
                 <p className="mb-7 text-[13px] text-muted">
-                  {assistant?.stage === "stranger"
-                    ? `${assistant.name} is new here — tell them how you work and it'll stick.`
-                    : `${assistant?.name ?? "Aura"} can read your inbox, hold your calendar and act for you.`}
+                  {`${assistant?.name ?? "Aura"} gets to work as soon as you ask: describe the task and it plans, acts, checks and reports back.`}
                 </p>
                 <div className="mx-auto flex max-w-md flex-wrap justify-center gap-2">
                   {SUGGESTIONS.map((s) => (

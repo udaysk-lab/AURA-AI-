@@ -19,13 +19,13 @@ import { REPO_URL } from "@/lib/downloads";
 // These are claims about the product, so they have to stay true. Sources:
 //   skills   → GET /api/skills/catalog (backend/app/agent/skills.py CATALOG)
 //   channels → backend/app/services/channels.py KINDS, available ones only
-//   trust    → backend/app/agent/autonomy.py TIERS
+//   modes    → the three permission modes: Ask first, Auto, Skip approvals
 const STATS = [
   { value: <SkillCount />, label: "Named skills", edge: "" },
   { value: "5", label: "Ways to reach it", edge: "border-l border-line" },
   {
-    value: "4",
-    label: "Levels of trust",
+    value: "3",
+    label: "Permission modes",
     edge: "border-t border-line sm:border-t-0 sm:border-l",
   },
   {
@@ -35,33 +35,26 @@ const STATS = [
   },
 ];
 
-// Thresholds mirror backend/app/services/identity.py STAGES — all three must
-// be met. They used to be labelled "Day 1/2/3", which the product never did,
-// and the fourth stage (the one the hero's progress bar points at) was missing.
-const STAGES = [
+const PILLARS = [
   {
-    stage: "stranger" as const,
-    need: "From the first hello",
-    title: "Stranger",
-    body: "It just met you. Eager, clueless. Tell it your role, your style, how you like things done.",
+    tag: "Systems",
+    title: "You assign the systems",
+    body: "Mail, calendar, files, the web: AURA only uses the systems you have assigned to it, and nothing else.",
   },
   {
-    stage: "acquaintance" as const,
-    need: "5 chats, 3 things learned, 2 actions",
-    title: "Acquaintance",
-    body: "It's picking up patterns. Gets things half-right, asks better questions. Correct it and the correction sticks.",
+    tag: "Control",
+    title: "You set the permission mode",
+    body: "Choose Ask first, Auto or Skip approvals, and add rules for what to block, ask about or allow. Only you can change them. AURA can never change its own.",
   },
   {
-    stage: "colleague" as const,
-    need: "25 chats, 12 things learned, 15 actions",
-    title: "Colleague",
-    body: "It finishes your thought. Acts before you ask. You stop managing it and start relying on it.",
+    tag: "Follow-through",
+    title: "It carries tasks through",
+    body: "Give it a task and it plans, acts, checks its own work and reports back. It asks only when something is unclear or risky.",
   },
   {
-    stage: "chief_of_staff" as const,
-    need: "80 chats, 30 things learned, 60 actions",
-    title: "Chief of Staff",
-    body: "It runs your day without checking in, and surfaces only what genuinely needs your judgement.",
+    tag: "Memory",
+    title: "It remembers how you like it done",
+    body: "AURA keeps a record of past tasks and how you like each kind of task handled, and uses both the next time something similar comes up.",
   },
 ];
 
@@ -97,18 +90,18 @@ export default function Landing() {
             className="display text-shine mb-6 animate-fade-up text-[46px] sm:text-[76px]"
             style={{ animationDelay: "60ms" }}
           >
-            An assistant
+            Your senior hire,
             <br />
-            <span className="text-accent-gradient">you raise.</span>
+            <span className="text-accent-gradient">working from day one.</span>
           </h1>
 
           <p
             className="mx-auto mb-9 max-w-xl animate-fade-up text-[16px] leading-relaxed text-muted"
             style={{ animationDelay: "120ms" }}
           >
-            AURA reads your inbox, holds your calendar, tracks what you owe people and
-            learns how you like things done. On your own computer it can work the computer
-            too, asking first.
+            Give AURA a task and it plans, acts, checks and reports back, using only the
+            systems you assign and the permission mode you choose. The desktop app can also
+            work on your computer, in the folders and apps you allow.
           </p>
 
           <div className="animate-fade-up" style={{ animationDelay: "180ms" }}>
@@ -144,36 +137,34 @@ export default function Landing() {
         <LogoMarquee />
       </section>
 
-      {/* -------------------------------------------------------------- Stages */}
-      <section id="stages" className="relative mx-auto max-w-6xl scroll-mt-24 px-6 py-24">
+      {/* ------------------------------------------------------------ How it works */}
+      <section id="how" className="relative mx-auto max-w-6xl scroll-mt-24 px-6 py-24">
         <div
           className="aurora-spot left-0 top-20 h-[380px] w-[380px]"
           style={{ background: "rgb(var(--c-violet) / 0.24)" }}
         />
 
         <div className="relative mb-12 max-w-2xl">
-          <span className="pill mb-5">The relationship</span>
+          <span className="pill mb-5">How it works</span>
           <h2 className="display text-shine mb-4 text-[34px] sm:text-[46px]">
-            You raise them.
+            You stay in charge.
             <br />
-            They grow with you.
+            It does the work.
           </h2>
           <p className="text-[15px] leading-relaxed text-muted">
-            The stage isn&apos;t decorative. It&apos;s computed from how much
-            you&apos;ve talked, how much it knows about you, and how much it has
-            actually done — and it only moves up when all three have.
+            There is no setup phase and nothing to train first. AURA starts working from
+            your first message, inside the limits you set.
           </p>
         </div>
 
         <ol className="relative grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {STAGES.map((s, i) => (
-            <li key={s.stage} className="glass group">
+          {PILLARS.map((s, i) => (
+            <li key={s.tag} className="glass group">
               <div className="p-7">
                 <div className="mb-5 flex items-center justify-between">
-                  <Mascot colourway="violet" stage={s.stage} size={56} />
+                  <span className="chip">{s.tag}</span>
                   <span className="font-mono text-[11px] text-faint">0{i + 1}</span>
                 </div>
-                <div className="mb-2 text-[11px] font-medium tracking-wide text-faint">{s.need}</div>
                 <h3 className="mb-2 text-[17px] font-semibold tracking-tight">{s.title}</h3>
                 <p className="text-[13.5px] leading-relaxed text-muted">{s.body}</p>
                 <div className="mt-6 h-px w-full bg-gradient-to-r from-accent/50 via-accent/10 to-transparent" />
@@ -206,15 +197,15 @@ export default function Landing() {
             style={{ background: "rgb(var(--accent) / 0.45)" }}
           />
           <div className="relative px-8 py-16">
-            <Mascot colourway="violet" stage="chief_of_staff" size={64} className="mx-auto mb-6" />
+            <Mascot colourway="violet" size={64} className="mx-auto mb-6" />
             <h2 className="display text-shine mx-auto mb-4 max-w-lg text-[30px] sm:text-[40px]">
-              Wake one up tonight.
+              Hand it the first task today.
               <br />
-              Rely on it by Friday.
+              Get the result back, checked.
             </h2>
             <p className="mx-auto mb-8 max-w-md text-[14.5px] leading-relaxed text-muted">
-              It starts as a stranger with sample data. By the end of the week it knows how
-              you work — and it will have already done some of it.
+              No onboarding and no training period. Describe what you need, and AURA gets to
+              work.
             </p>
             <DownloadCta compact />
           </div>
@@ -225,12 +216,12 @@ export default function Landing() {
       <footer className="relative border-t border-line px-6 pb-[max(2.5rem,env(safe-area-inset-bottom))] pt-10">
         <div className="mx-auto flex max-w-6xl flex-col items-center gap-5 text-center sm:flex-row sm:justify-between sm:text-left">
           <div className="flex items-center gap-2.5">
-            <Mascot colourway="violet" stage="colleague" size={26} />
+            <Mascot colourway="violet" size={26} />
             <span className="text-[14px] font-semibold tracking-tight">AURA</span>
           </div>
           <p className="max-w-md text-[12.5px] leading-relaxed text-faint">
-            Email, calendar, tasks, memory and automation — in one assistant that remembers,
-            in your browser or on your own computer.
+            A personal employee that works from your first message, in your browser or on
+            your own computer.
           </p>
           <nav aria-label="Footer" className="flex flex-wrap items-center justify-center gap-5 text-[12.5px] text-faint">
             <a href="#download" className="transition hover:text-muted">

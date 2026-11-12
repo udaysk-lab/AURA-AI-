@@ -5,13 +5,11 @@ import { useId } from "react";
 /**
  * The assistant's face.
  *
- * A soft blob that shifts with the relationship stage — rounder and wider-eyed
- * early on, steadier and more level once it knows you. Original artwork, drawn
+ * A single static soft blob in the chosen colourway. Original artwork, drawn
  * from primitives so it scales cleanly and themes with the palette.
  */
 
 export type Colourway = "teal" | "amber" | "rose" | "violet" | "sage";
-export type Stage = "stranger" | "acquaintance" | "colleague" | "chief_of_staff";
 
 const FILL: Record<Colourway, string> = {
   teal: "rgb(var(--c-teal))",
@@ -21,35 +19,17 @@ const FILL: Record<Colourway, string> = {
   sage: "rgb(var(--c-sage))",
 };
 
-// Silhouettes get calmer as the assistant matures.
-const SHAPE: Record<Stage, string> = {
-  stranger:
-    "M50 6c26 0 40 18 40 42 0 26-16 46-40 46S10 74 10 48C10 24 24 6 50 6Z",
-  acquaintance:
-    "M50 5c27 0 42 17 42 43s-15 46-42 46S8 74 8 48 23 5 50 5Z",
-  colleague:
-    "M50 7c28 0 44 16 44 41 0 27-17 45-44 45S6 75 6 48C6 23 22 7 50 7Z",
-  chief_of_staff:
-    "M50 8c29 0 46 15 46 40s-17 44-46 44S4 73 4 48 21 8 50 8Z",
-};
-
-const EYE: Record<Stage, { r: number; dy: number; gap: number }> = {
-  stranger: { r: 7.5, dy: -2, gap: 15 },
-  acquaintance: { r: 7, dy: 0, gap: 15 },
-  colleague: { r: 6, dy: 1, gap: 16 },
-  chief_of_staff: { r: 5, dy: 2, gap: 17 },
-};
+const SHAPE = "M50 7c28 0 44 16 44 41 0 27-17 45-44 45S6 75 6 48C6 23 22 7 50 7Z";
+const EYE = { r: 6, dy: 1, gap: 16 };
 
 export default function Mascot({
   colourway = "teal",
-  stage = "stranger",
   size = 64,
   active = false,
   className = "",
   label,
 }: {
   colourway?: Colourway;
-  stage?: Stage;
   size?: number;
   /** Adds a working pulse — use while the heartbeat or agent is running. */
   active?: boolean;
@@ -58,11 +38,10 @@ export default function Mascot({
   label?: string;
 }) {
   const fill = FILL[colourway] ?? FILL.teal;
-  const eye = EYE[stage] ?? EYE.stranger;
-  // Unique per instance. Gradient ids were `${colourway}-${stage}`, shared by
-  // every mascot of that look on the page; url(#id) resolves to the first one,
-  // and when that one was hidden (display:none on mobile) the others lost
-  // their shading.
+  const eye = EYE;
+  // Unique per instance: url(#id) resolves to the first element with that id,
+  // and when that one is hidden (display:none on mobile) the others would
+  // lose their shading.
   const uid = useId().replace(/:/g, "");
 
   // Fixed rather than themed: the face sits on a saturated blob, so the sclera
@@ -104,37 +83,16 @@ export default function Mascot({
           </linearGradient>
         </defs>
 
-        <path d={SHAPE[stage] ?? SHAPE.stranger} fill={fill} />
-        <path d={SHAPE[stage] ?? SHAPE.stranger} fill={`url(#m-sh-${uid})`} />
-        <path d={SHAPE[stage] ?? SHAPE.stranger} fill={`url(#m-hi-${uid})`} />
+        <path d={SHAPE} fill={fill} />
+        <path d={SHAPE} fill={`url(#m-sh-${uid})`} />
+        <path d={SHAPE} fill={`url(#m-hi-${uid})`} />
 
         <g className="animate-blink" style={{ transformOrigin: "50px 50px" }}>
           <circle cx={50 - eye.gap} cy={48 + eye.dy} r={eye.r} fill={SCLERA} />
           <circle cx={50 + eye.gap} cy={48 + eye.dy} r={eye.r} fill={SCLERA} />
-          <circle
-            cx={50 - eye.gap + 1.5}
-            cy={49 + eye.dy}
-            r={eye.r * 0.42}
-            fill={PUPIL}
-          />
-          <circle
-            cx={50 + eye.gap + 1.5}
-            cy={49 + eye.dy}
-            r={eye.r * 0.42}
-            fill={PUPIL}
-          />
+          <circle cx={50 - eye.gap + 1.5} cy={49 + eye.dy} r={eye.r * 0.42} fill={PUPIL} />
+          <circle cx={50 + eye.gap + 1.5} cy={49 + eye.dy} r={eye.r * 0.42} fill={PUPIL} />
         </g>
-
-        {stage === "chief_of_staff" && (
-          <path
-            d="M36 68q14 9 28 0"
-            stroke={SCLERA}
-            strokeWidth="3"
-            strokeLinecap="round"
-            fill="none"
-            opacity="0.85"
-          />
-        )}
       </svg>
     </span>
   );

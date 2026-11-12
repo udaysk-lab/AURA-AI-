@@ -405,7 +405,7 @@ export default function SettingsPage() {
         {assistant && (
           <>
             <div className="mb-5 flex items-center gap-4">
-              <Mascot colourway={assistant.avatar} stage={assistant.stage} size={58} />
+              <Mascot colourway={assistant.avatar} size={58} />
               <div className="min-w-0 flex-1">
                 <input
                   className="input mb-2 text-[15px] font-medium"
@@ -420,10 +420,6 @@ export default function SettingsPage() {
                     else if (next !== assistant.name) void updateAssistant({ name: next });
                   }}
                 />
-                <div className="text-[12px] text-faint">
-                  {assistant.stage_label} · {assistant.signals.interactions} conversations ·{" "}
-                  {assistant.signals.memories} things known · day {assistant.days_together + 1}
-                </div>
               </div>
             </div>
 
@@ -442,7 +438,7 @@ export default function SettingsPage() {
                         : ""
                     }`}
                   >
-                    <Mascot colourway={c} stage={assistant.stage} size={34} />
+                    <Mascot colourway={c} size={34} />
                   </button>
                 ))}
               </div>
