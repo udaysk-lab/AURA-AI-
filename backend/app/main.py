@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
 
-from app import preflight, web
+from app import migrate, preflight, web
 from app.api import (
     account,
     assistant,
@@ -25,12 +25,12 @@ from app.api import (
     workspace,
 )
 from app.config import settings
-from app.db import init_db
 from app.llm import get_provider
 from app.middleware import (
     LocalAccessMiddleware,
     RateLimitMiddleware,
     RequestContextMiddleware,
+    SchemaGuardMiddleware,
     SecurityHeadersMiddleware,
 )
 from app.version import __version__
@@ -44,7 +44,9 @@ log = logging.getLogger("aura")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    init_db()
+    # Never raises: a failed upgrade is recorded, SchemaGuardMiddleware answers
+    # /api with 503, and preflight/logs carry the cause (spec 30, 1.5).
+    schema = migrate.ensure_schema("api")
 
     report = preflight.log_report(log)
     # In production a blocking failure means an insecure or non-functional
@@ -78,7 +80,9 @@ async def lifespan(_: FastAPI):
     # this process instead of needing a second terminal. A server sets
     # RUN_EMBEDDED_WORKER=off and runs worker.py separately.
     stop_worker = None
-    if settings.embedded_worker_enabled:
+    if settings.embedded_worker_enabled and not schema.ok:
+        log.error("Not starting the in-process worker: the database schema is not ready.")
+    elif settings.embedded_worker_enabled:
         import worker
 
         stop_worker = worker.start_embedded()
@@ -100,6 +104,9 @@ app = FastAPI(
     openapi_url="/openapi.json" if settings.environment != "production" else None,
 )
 
+# Added first, so innermost: its 503 still carries the request ID, security
+# headers and CORS headers added by the layers around it.
+app.add_middleware(SchemaGuardMiddleware)
 # Order matters: outermost first. Request context wraps everything so even a
 # rate-limited response carries a request ID.
 app.add_middleware(RequestContextMiddleware)
@@ -194,8 +201,12 @@ async def unhandled(request: Request, exc: Exception) -> JSONResponse:
 
 @app.get("/health")
 def health() -> dict:
-    """Liveness. Deliberately cheap and unauthenticated — no DB call."""
-    return {"status": "ok", "app": settings.app_name, "version": __version__}
+    """Liveness. Deliberately cheap and unauthenticated — no DB call.
+
+    `schema` is the revision this process last confirmed, from memory."""
+    last = migrate.status()
+    schema = (last.revision_after if last is not None and last.ok else None) or "not_ready"
+    return {"status": "ok", "app": settings.app_name, "version": __version__, "schema": schema}
 
 
 @app.get("/health/ready")

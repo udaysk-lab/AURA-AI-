@@ -15,13 +15,15 @@ app/api/cron.py. On a local install the loops run in-process.
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
 from app.automation import engine
-from app.db import SessionLocal, init_db
+from app.db import SessionLocal
+from app.migrate import ensure_schema
 from app.models import User
 from app.services import heartbeat as heartbeat_service
 from app.services import memory as memory_service
@@ -113,6 +115,16 @@ def tick(
     return summary
 
 
+def _ensure_schema_or_exit() -> None:
+    """A worker never ticks against an unknown schema: log and exit non-zero so a
+    supervisor (docker restart policy, cron) retries."""
+    try:
+        ensure_schema("worker")
+    except Exception:
+        log.exception("Database schema is not ready; the worker will not start")
+        sys.exit(1)
+
+
 def run_once() -> None:
     """A single pass, for platform cron.
 
@@ -121,7 +133,7 @@ def run_once() -> None:
     makes the schedule real. Compaction is cheap and idempotent, so it just runs
     on every invocation rather than needing state to track the last run.
     """
-    init_db()
+    _ensure_schema_or_exit()
     log.info("Worker: single pass")
     tick(compact=True)
     log.info("Worker: done")
@@ -182,14 +194,12 @@ def start_embedded():
 
 
 def main() -> None:
-    init_db()
+    _ensure_schema_or_exit()
     log.info("Worker started — schedules + heartbeat every %ss, compaction daily", TICK_SECONDS)
     _loop()
 
 
 if __name__ == "__main__":
-    import sys
-
     if "--once" in sys.argv:
         run_once()
     else:

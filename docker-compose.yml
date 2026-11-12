@@ -36,11 +36,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
-    # Migrate before serving. With AUTO_CREATE_SCHEMA unset the app would also
-    # create tables itself; running alembic first keeps one owner of the schema.
-    command: >
-      sh -c "alembic upgrade head 2>/dev/null || echo 'no migrations yet — falling back to auto-create';
-             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    # The app applies schema migrations itself at start-up, under a database
+    # lock, so the worker starting at the same time is safe.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
 
   # Exactly one worker. Schedule de-duplication is per-process, so scaling this
   # to 2 replicas double-fires every schedule.

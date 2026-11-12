@@ -43,8 +43,9 @@ os.environ.setdefault("ALLOW_DEMO_LOGIN", "true")
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.db import Base, SessionLocal, engine  # noqa: E402
+from app.db import SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
+from tests.schema import ensure_test_schema  # noqa: E402
 from app.security import hash_password, verify_password  # noqa: E402
 
 
@@ -80,7 +81,7 @@ def client():
     because the database file survives between runs, and a leftover row from a
     previous run would otherwise collide with the unique index on email.
     """
-    Base.metadata.create_all(bind=engine)
+    ensure_test_schema(engine)
     _purge()
     # No `with`. The context manager fires the app's startup and shutdown
     # events, and test_smoke.py already does that in the same process — running

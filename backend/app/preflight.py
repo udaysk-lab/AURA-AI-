@@ -224,6 +224,29 @@ def _check_database(probe: bool = False) -> Check:
     )
 
 
+def _check_schema() -> Check:
+    """Never "fail": a production preflight failure raises in the lifespan and
+    would hide the very cause this check exists to show."""
+    from app import migrate
+
+    report = migrate.status()
+    if report is None:
+        return Check("schema", "Database schema", "ok", "Not checked in this process yet.")
+    if not report.ok:
+        return Check(
+            "schema", "Database schema", "warn",
+            f"{report.state_before or 'unknown'}: {report.error}",
+            fix="Redeploy; if it persists, roll back (DEPLOY.md, Migrations).",
+        )
+    if report.state_before == migrate.State.AHEAD:
+        return Check(
+            "schema", "Database schema", "warn",
+            f"AHEAD: database is at {report.revision_after}; this build expects {migrate.EXPECTED_HEAD}.",
+            fix="Redeploy; if it persists, roll back (DEPLOY.md, Migrations).",
+        )
+    return Check("schema", "Database schema", "ok", str(report.revision_after))
+
+
 def _check_cors() -> Check:
     origins = settings.cors_origin_list
     if "*" in origins:
@@ -425,6 +448,7 @@ CHECKS = [
     _check_encryption_key,
     _check_demo_login,
     _check_database,
+    _check_schema,
     _check_cors,
     _check_debug,
     _check_rate_limit,
@@ -441,7 +465,7 @@ CHECKS = [
 def run(probe_database: bool = False) -> Report:
     """`probe_database` opens a real connection for the database check.
 
-    Off at startup, where init_db has just connected anyway and every extra
+    Off at startup, where the schema check has just connected anyway and every extra
     handshake lengthens a cold start; on for the Setup screen.
     """
     checks = []

@@ -1,12 +1,13 @@
-"""Cold-start cost of the schema check in init_db.
+"""Cold-start cost of the schema check in ensure_schema.
 
 Behind a transaction pooler the engine uses NullPool, so every connection
 checkout is a brand-new TCP + TLS + auth handshake. Measured from Vercel iad1
-to Supabase Tokyo, one handshake plus one query took about 1.3 s. The additive
-migration check used an engine-bound inspector, which checks out a new
-connection per call: 29 handshakes on every cold start.
+to Supabase Tokyo, one handshake plus one query took about 1.3 s. The old
+create_all + add-missing-columns check opened one connection per table: 29
+handshakes on every cold start. At the migration head the runner needs one
+connection and one query, and once confirmed in a process, none.
 
-These tests count real DBAPI connections on a NullPool engine.
+These tests count real DBAPI connections and statements on a NullPool engine.
 
 Run from backend/:  pytest -q tests/test_cold_start.py
 """
@@ -21,53 +22,59 @@ os.environ.setdefault("LLM_PROVIDER", "mock")
 os.environ.setdefault("ALLOW_DEMO_LOGIN", "true")
 
 import pytest  # noqa: E402
-from sqlalchemy import create_engine, event, inspect, text  # noqa: E402
+from sqlalchemy import create_engine, event  # noqa: E402
 from sqlalchemy.pool import NullPool  # noqa: E402
 
 import app.db as db_module  # noqa: E402
 import app.models  # noqa: E402,F401  (registers every table on Base.metadata)
+from app import migrate  # noqa: E402
+from tests.schema import ensure_test_schema  # noqa: E402
 
 
 @pytest.fixture()
 def nullpool_engine(tmp_path, monkeypatch):
-    """A NullPool engine like production's, with the full schema, counting
-    every new DBAPI connection it opens."""
+    """A NullPool engine like production's, at the migration head, counting
+    every new DBAPI connection it opens and every statement it runs."""
     engine = create_engine(f"sqlite:///{tmp_path / 'coldstart.db'}", poolclass=NullPool)
-    db_module.Base.metadata.create_all(engine)
+    ensure_test_schema(engine)
 
     connects: list[int] = []
+    statements: list[str] = []
     event.listen(engine, "connect", lambda *_: connects.append(1))
+    event.listen(
+        engine, "before_cursor_execute", lambda conn, cur, stmt, *a: statements.append(stmt)
+    )
     monkeypatch.setattr(db_module, "engine", engine)
-    yield engine, connects
+    monkeypatch.setattr(migrate, "_CACHE", {})
+    yield engine, connects, statements
     engine.dispose()
 
 
-def test_schema_check_opens_one_connection_not_one_per_table(nullpool_engine):
-    engine, connects = nullpool_engine
+def test_head_check_is_one_connection_one_query(nullpool_engine):
+    engine, connects, statements = nullpool_engine
     table_count = len(db_module.Base.metadata.sorted_tables)
     assert table_count > 20  # the point of the test: many tables, one handshake
 
-    db_module.apply_additive_migrations()
+    report = migrate.upgrade_to_head(engine)
 
+    assert report.state_before == migrate.State.AT_HEAD and report.ok
     assert len(connects) == 1, (
         f"{len(connects)} connections for {table_count} tables — each one is a "
         "full handshake to the database on a cold start"
     )
+    assert len(statements) == 1 and "alembic_version" in statements[0], statements
 
 
-def test_a_missing_column_is_still_added(nullpool_engine):
-    engine, connects = nullpool_engine
-    with engine.begin() as conn:
-        conn.execute(text('ALTER TABLE "users" DROP COLUMN "last_login_at"'))
-    assert "last_login_at" not in {c["name"] for c in inspect(engine).get_columns("users")}
+def test_cached_check_opens_no_connection(nullpool_engine):
+    engine, connects, statements = nullpool_engine
+    migrate.upgrade_to_head(engine)
     connects.clear()
+    statements.clear()
 
-    db_module.apply_additive_migrations()
-    opened = len(connects)
+    report = migrate.upgrade_to_head(engine)
 
-    assert "last_login_at" in {c["name"] for c in inspect(engine).get_columns("users")}
-    # One connection to inspect everything, one for the ALTER.
-    assert opened == 2
+    assert report.cached
+    assert connects == [] and statements == []
 
 
 def test_functions_are_pinned_next_to_the_database():

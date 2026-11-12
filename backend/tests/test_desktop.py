@@ -32,8 +32,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app import envfile, web  # noqa: E402
 from app.config import settings  # noqa: E402
-from app.db import Base, SessionLocal, engine  # noqa: E402
+from app.db import SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
+from tests.schema import ensure_test_schema  # noqa: E402
 from app.models import PairedDevice, PairingCode, User  # noqa: E402
 
 OWNER_KEY = "test-local-login-key-0123456789"
@@ -41,7 +42,7 @@ OWNER_KEY = "test-local-login-key-0123456789"
 
 @pytest.fixture(scope="module", autouse=True)
 def schema():
-    Base.metadata.create_all(bind=engine)
+    ensure_test_schema(engine)
     yield
 
 

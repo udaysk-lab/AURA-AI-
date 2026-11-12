@@ -23,6 +23,7 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app import migrate
 from app.config import settings
 from app.security import decode_access_token
 
@@ -223,6 +224,45 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 return f"user:{payload['sub']}", settings.rate_limit_per_minute
 
         return f"ip:{self._client_ip(request)}", settings.rate_limit_anon_per_minute
+
+
+# ---------------------------------------------------------------------------
+# Schema not ready
+# ---------------------------------------------------------------------------
+
+SCHEMA_GUARD_OPEN = {"/api/health/preflight"}  # must keep saying why
+SCHEMA_NOT_READY = {
+    "detail": "AURA is finishing a database update. Try again shortly.",
+    "code": "schema_not_ready",
+}
+
+
+class SchemaGuardMiddleware(BaseHTTPMiddleware):
+    """Answer /api with 503 while the database schema is not ready.
+
+    The runner never crashes a hosted start-up (a crashing lifespan shows on
+    Vercel only as FUNCTION_INVOCATION_FAILED), so this is how a failed upgrade
+    becomes visible. A transient failure (lock wait, connection) is retried here
+    at most once per 30 s per process; a deterministic one waits for the next
+    cold start. /health, /health/ready, docs and static files pass through.
+    """
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        path = request.url.path
+        if not path.startswith("/api/") or path in SCHEMA_GUARD_OPEN:
+            return await call_next(request)
+        report = migrate.status()
+        if report is not None and not report.ok and report.transient:
+            from anyio import to_thread
+
+            report = await to_thread.run_sync(migrate.retry_if_due)
+        if report is not None and not report.ok:
+            return JSONResponse(
+                status_code=503,
+                content=SCHEMA_NOT_READY,
+                headers={"Retry-After": "30"},
+            )
+        return await call_next(request)
 
 
 # ---------------------------------------------------------------------------

@@ -16,17 +16,18 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.config import settings  # noqa: E402
-from app.db import Base, SessionLocal, engine  # noqa: E402
+from app.db import SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
+from tests.schema import drop_test_schema, ensure_test_schema  # noqa: E402
 
 
 @pytest.fixture(scope="module")
 def client():
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    drop_test_schema(engine)
+    ensure_test_schema(engine)
     with TestClient(app) as c:
         yield c
-    Base.metadata.drop_all(bind=engine)
+    drop_test_schema(engine)
 
 
 @pytest.fixture(scope="module")
@@ -98,6 +99,122 @@ def test_sqlite_is_fatal_in_production(monkeypatch):
 def test_readiness_probe_reports_database(client):
     body = client.get("/health/ready").json()
     assert body["checks"]["database"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Schema guard: a failed upgrade is a 503 on /api, never a crashed start-up
+# ---------------------------------------------------------------------------
+
+
+def _failed_schema(monkeypatch, *, transient: bool, attempted_s_ago: float = 0.0):
+    from app import migrate
+
+    report = migrate.MigrationReport(
+        state_before=migrate.State.PARTIAL, revision_before=None, revision_after=None,
+        actions=[], backup_path=None, cached=False, duration_ms=1, ok=False,
+        transient=transient, error="users.email is missing",
+    )
+    monkeypatch.setattr(migrate, "_LAST", report)
+    monkeypatch.setattr(migrate, "_LAST_ATTEMPT", migrate._monotonic() - attempted_s_ago)
+    return report
+
+
+def _counting_ensure(monkeypatch, outcome):
+    """Replace ensure_schema; `outcome` is the report to leave behind."""
+    from app import migrate
+
+    calls: list[str] = []
+
+    def fake(context):
+        calls.append(context)
+        monkeypatch.setattr(migrate, "_LAST", outcome)
+        return outcome
+
+    monkeypatch.setattr(migrate, "ensure_schema", fake)
+    return calls
+
+
+def test_schema_guard_returns_503_on_api(client, auth, monkeypatch):
+    _failed_schema(monkeypatch, transient=False)
+    resp = client.get("/api/briefing", headers=auth)
+    assert resp.status_code == 503
+    assert resp.headers["Retry-After"] == "30"
+    assert resp.json() == {
+        "detail": "AURA is finishing a database update. Try again shortly.",
+        "code": "schema_not_ready",
+    }
+
+
+def test_schema_guard_allows_health_and_preflight(client, monkeypatch):
+    _failed_schema(monkeypatch, transient=False)
+    health = client.get("/health")
+    assert health.status_code == 200 and health.json()["schema"] == "not_ready"
+    assert client.get("/health/ready").status_code == 200
+    resp = client.get("/api/health/preflight")
+    assert resp.status_code == 200
+    schema = next(c for c in resp.json()["checks"] if c["key"] == "schema")
+    assert schema["level"] == "warn" and "users.email" in schema["detail"]
+
+
+def test_guard_retries_transient_after_30s(client, auth, monkeypatch):
+    from app import migrate
+
+    recovered = migrate.MigrationReport(
+        state_before=migrate.State.AT_HEAD, revision_before=migrate.EXPECTED_HEAD,
+        revision_after=migrate.EXPECTED_HEAD, actions=[], backup_path=None, cached=False,
+        duration_ms=1, ok=True, transient=False, error=None,
+    )
+    _failed_schema(monkeypatch, transient=True, attempted_s_ago=5)
+    calls = _counting_ensure(monkeypatch, recovered)
+
+    assert client.get("/api/briefing", headers=auth).status_code == 503
+    assert calls == []  # tried 5 s ago: not again yet
+
+    monkeypatch.setattr(migrate, "_LAST_ATTEMPT", migrate._monotonic() - 31)
+    _failed_schema_report = migrate.MigrationReport(
+        state_before=None, revision_before=None, revision_after=None, actions=[],
+        backup_path=None, cached=False, duration_ms=1, ok=False, transient=True, error="lock",
+    )
+    monkeypatch.setattr(migrate, "_LAST", _failed_schema_report)
+    resp = client.get("/api/briefing", headers=auth)
+    assert calls == ["api"] and resp.status_code != 503  # recovered, request served
+
+
+def test_guard_does_not_retry_deterministic(client, auth, monkeypatch):
+    from app import migrate
+
+    _failed_schema(monkeypatch, transient=False, attempted_s_ago=3600)
+    calls = _counting_ensure(monkeypatch, migrate._LAST)
+    assert client.get("/api/briefing", headers=auth).status_code == 503
+    assert calls == []
+
+
+def test_preflight_schema_warn_not_fail_in_production(monkeypatch):
+    """A production preflight failure raises in the lifespan and would hide the cause."""
+    from app import migrate, preflight
+
+    monkeypatch.setattr(settings, "environment", "production")
+    _failed_schema(monkeypatch, transient=False)
+    check = preflight._check_schema()
+    assert check.level == "warn" and "Redeploy" in check.fix
+    assert "schema" not in {c.key for c in preflight.run().failures}
+
+    ahead = migrate.MigrationReport(
+        state_before=migrate.State.AHEAD, revision_before="zz99", revision_after="zz99",
+        actions=[], backup_path=None, cached=False, duration_ms=1, ok=True, transient=False, error=None,
+    )
+    monkeypatch.setattr(migrate, "_LAST", ahead)
+    assert preflight._check_schema().level == "warn"
+
+    monkeypatch.setattr(migrate, "_LAST", ahead.__class__(**{**ahead.__dict__, "state_before": migrate.State.AT_HEAD, "revision_after": migrate.EXPECTED_HEAD}))
+    ok = preflight._check_schema()
+    assert ok.level == "ok" and ok.detail == migrate.EXPECTED_HEAD
+
+
+def test_health_reports_schema(client):
+    from app import migrate
+
+    assert client.get("/health").json()["schema"] == migrate.EXPECTED_HEAD
 
 
 # ---------------------------------------------------------------------------

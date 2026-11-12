@@ -67,10 +67,6 @@ class Settings(BaseSettings):
     # automatically so attaching a database is all the setup required.
     database_url: str = Field(default_factory=_discover_database_url)
 
-    # Create tables and patch in new columns at startup. Right for local dev,
-    # wrong once you have data you care about — set false and use Alembic.
-    auto_create_schema: bool = True
-
     # --- Security ---------------------------------------------------------
     # MUST be overridden in production; main.py refuses to start otherwise.
     secret_key: str = "dev-only-insecure-secret-change-me"

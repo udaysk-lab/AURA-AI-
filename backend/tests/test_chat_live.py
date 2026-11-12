@@ -26,8 +26,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 from app.config import settings  # noqa: E402
-from app.db import Base, SessionLocal, engine  # noqa: E402
+from app.db import SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
+from tests.schema import ensure_test_schema  # noqa: E402
 from app.models import Conversation, Message, Notification, Schedule, User  # noqa: E402
 
 EMAIL = "live-chat@example.com"
@@ -46,7 +47,7 @@ def _purge() -> None:
 
 @pytest.fixture(scope="module")
 def client():
-    Base.metadata.create_all(bind=engine)
+    ensure_test_schema(engine)
     _purge()
     with TestClient(app) as c:
         yield c

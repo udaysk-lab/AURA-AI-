@@ -16,17 +16,18 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.config import settings  # noqa: E402
-from app.db import Base, SessionLocal, engine  # noqa: E402
+from app.db import SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
+from tests.schema import drop_test_schema, ensure_test_schema  # noqa: E402
 
 
 @pytest.fixture(scope="module")
 def client():
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    drop_test_schema(engine)
+    ensure_test_schema(engine)
     with TestClient(app) as c:
         yield c
-    Base.metadata.drop_all(bind=engine)
+    drop_test_schema(engine)
 
 
 @pytest.fixture(scope="module")
@@ -886,3 +887,22 @@ def test_delegation_lifecycle(client, auth):
     assert updated["status"] == "done"
 
     assert client.delete(f"/api/delegations/{created['id']}", headers=auth).status_code == 200
+
+
+def test_worker_exits_on_schema_failure(monkeypatch):
+    """A worker never ticks against a schema it could not bring to head."""
+    import worker
+    from app import migrate
+
+    def broken(*_a, **_k):
+        raise migrate.SchemaError(migrate.State.PARTIAL, "missing: users.email")
+
+    monkeypatch.setattr(migrate, "upgrade_to_head", broken)
+    monkeypatch.setattr(migrate, "_LAST", None)
+    ticked: list[int] = []
+    monkeypatch.setattr(worker, "tick", lambda *a, **k: ticked.append(1))
+    for entry in (worker.main, worker.run_once):
+        with pytest.raises(SystemExit) as exit_info:
+            entry()
+        assert exit_info.value.code == 1
+    assert ticked == []

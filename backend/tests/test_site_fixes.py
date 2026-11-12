@@ -36,8 +36,9 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import timeutil  # noqa: E402
-from app.db import Base, SessionLocal, engine  # noqa: E402
+from app.db import SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
+from tests.schema import ensure_test_schema  # noqa: E402
 
 IST = ZoneInfo("Asia/Kolkata")
 EMAILS = (
@@ -69,7 +70,7 @@ def _purge() -> None:
 def client():
     # Same shape as test_password_auth.py: schema if absent, only our rows,
     # and no lifespan (test_smoke.py already runs it in this process).
-    Base.metadata.create_all(bind=engine)
+    ensure_test_schema(engine)
     _purge()
     c = TestClient(app)
     try:

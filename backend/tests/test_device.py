@@ -25,12 +25,13 @@ from app.agent import autonomy, skills as skill_registry  # noqa: E402
 from app.agent import tools as tool_registry  # noqa: E402
 from app.agent.prompts import build_system_prompt  # noqa: E402
 from app.config import settings  # noqa: E402
-from app.db import Base, SessionLocal, engine  # noqa: E402
+from app.db import SessionLocal, engine  # noqa: E402
 from app.device import files as device_files  # noqa: E402
 from app.device import policy as device_policy  # noqa: E402
 from app.device import shell as device_shell  # noqa: E402
 from app.device.runtime import DeviceUnavailable, reset_cache  # noqa: E402
 from app.main import app  # noqa: E402
+from tests.schema import drop_test_schema, ensure_test_schema  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 from app.deps import local_owner_email  # noqa: E402
@@ -57,11 +58,11 @@ def creates(path) -> str:
 @pytest.fixture(scope="module")
 def client(as_peer):
     """Requests from this computer, naming it — the way a local install is used."""
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    drop_test_schema(engine)
+    ensure_test_schema(engine)
     with TestClient(as_peer(app), base_url="http://127.0.0.1") as c:
         yield c
-    Base.metadata.drop_all(bind=engine)
+    drop_test_schema(engine)
 
 
 @pytest.fixture
