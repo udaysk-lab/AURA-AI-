@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Bell, CheckCheck, Radio } from "lucide-react";
-import { Activity, Heartbeat, NotificationItem, api } from "@/lib/api";
+import { Activity, Heartbeat, NotificationItem, PendingAction, api } from "@/lib/api";
+import { ApprovalCards } from "@/components/ApprovalCard";
 import { useAction } from "@/components/Toast";
 import {
   Badge,
@@ -29,15 +30,18 @@ export default function NotificationsPage() {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [beats, setBeats] = useState<Heartbeat[]>([]);
   const [activity, setActivity] = useState<Activity[]>([]);
+  const [pending, setPending] = useState<PendingAction[]>([]);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     try {
-      const [n, h, a] = await Promise.all([
+      const [n, h, a, p] = await Promise.all([
         api.notifications(),
         api.heartbeats(8).catch(() => []),
         api.activity().catch(() => []),
+        api.pendingActions(true).catch(() => [] as PendingAction[]),
       ]);
+      setPending(p);
       setNotifications(n);
       setBeats(h);
       setActivity(a);
@@ -79,6 +83,21 @@ export default function NotificationsPage() {
           ) : undefined
         }
       />
+
+      {pending.length > 0 && (
+        <Card id="approvals" className="border-amber/35 bg-amber/[0.06]">
+          <SectionTitle>
+            <span className="text-amber">Waiting on you</span>
+          </SectionTitle>
+          <ApprovalCards
+            actions={pending}
+            onDecided={async () => {
+              refreshBadges();
+              await load();
+            }}
+          />
+        </Card>
+      )}
 
       {loading ? (
         <div className="space-y-2">

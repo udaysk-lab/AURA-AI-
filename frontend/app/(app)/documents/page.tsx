@@ -328,7 +328,7 @@ export default function DocumentsPage() {
       <Card>
         <SectionTitle>Where this shows up</SectionTitle>
         <p className="text-[12.5px] leading-relaxed text-muted">
-          Install the <strong>Documents</strong> plugin and your assistant can search these
+          Assign the <strong>Documents</strong> system and your assistant can search these
           in conversation — &ldquo;what did we agree on notice period?&rdquo; pulls the
           passage rather than making something up.
         </p>

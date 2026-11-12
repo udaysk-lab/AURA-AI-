@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { GraduationCap, Radio, Sparkles, Wand2, X } from "lucide-react";
-import { SkillItem, SkillRun, SkillStats, api } from "@/lib/api";
+import Link from "next/link";
+import { PluginItem, SkillItem, SkillRun, SkillStats, api } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import {
   Badge,
@@ -41,6 +42,19 @@ export default function SkillsPage() {
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [toggling, setToggling] = useState<string | null>(null);
+  // Reached from a system (Systems page, "Skills"): ?system=<id> narrows the list.
+  const [system, setSystem] = useState<PluginItem | null>(null);
+
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("system");
+    if (!id) return;
+    void api
+      .plugins()
+      .then((all) => setSystem(all.find((p) => p.id === id) ?? null))
+      .catch(() => {
+        /* the full list is shown instead */
+      });
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -108,8 +122,9 @@ export default function SkillsPage() {
     }
   };
 
-  const categories = Array.from(new Set(skills.map((s) => s.category)));
-  const visible = filter ? skills.filter((s) => s.category === filter) : skills;
+  const inSystem = system ? skills.filter((s) => system.skills.includes(s.code)) : skills;
+  const categories = Array.from(new Set(inSystem.map((s) => s.category)));
+  const visible = filter ? inSystem.filter((s) => s.category === filter) : inSystem;
   const grouped = visible.reduce<Record<string, SkillItem[]>>((acc, s) => {
     (acc[s.category] ||= []).push(s);
     return acc;
@@ -117,16 +132,25 @@ export default function SkillsPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-5 p-4 sm:p-8">
+      <Link href="/hub" className="inline-flex min-h-[44px] items-center text-[13px] text-accent-soft underline-offset-2 hover:underline">
+        ← Systems
+      </Link>
       <PageHeader
-        title="Skills"
+        title={system ? `${system.name}: skills` : "Skills"}
         blurb={
           <>
-            What your assistant can actually do. Turning one off removes it from their
+            What your assistant can actually do in {system ? "this system" : "the systems you assigned"}. Turning one off removes it from their
             reach entirely — they can&apos;t use what they can&apos;t see. Teach a skill
             and the correction sticks.
           </>
         }
       />
+
+      {system && (
+        <Link href="/skills" className="inline-flex min-h-[44px] items-center text-[13px] text-accent-soft underline-offset-2 hover:underline">
+          Show every skill
+        </Link>
+      )}
 
       {stats && (
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
@@ -216,7 +240,6 @@ export default function SkillsPage() {
                         <Radio size={9} /> runs on its own
                       </Badge>
                     )}
-                    {s.autonomy_floor === "full" && <Badge tone="urgent">always asks</Badge>}
                     <span className="text-[11px] text-faint">
                       used {s.run_count}×
                       {s.last_run_at ? ` · ${fmtRelative(s.last_run_at)}` : ""}

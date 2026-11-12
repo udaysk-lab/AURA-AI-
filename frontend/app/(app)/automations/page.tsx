@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, Play, Plus, Trash2, Workflow, X, Zap } from "lucide-react";
-import { Automation, Decision, PendingAction, api } from "@/lib/api";
+import { Play, Plus, Trash2, Workflow, Zap } from "lucide-react";
+import { ApprovalMode, Automation, PendingAction, api } from "@/lib/api";
+import { ApprovalCards } from "@/components/ApprovalCard";
+import ApprovalModeSelect from "@/components/ApprovalModeSelect";
 import { useAction } from "@/components/Toast";
 import {
   Badge,
@@ -29,6 +31,7 @@ export default function AutomationsPage() {
   const [pending, setPending] = useState<PendingAction[]>([]);
   const [loading, setLoading] = useState(true);
   const [input, setInput] = useState("");
+  const [approval, setApproval] = useState<ApprovalMode>("ask");
   const [creating, setCreating] = useState(false);
   // Which rule or approval is mid-request, so its buttons can't be pressed twice.
   const [busy, setBusy] = useState<string | null>(null);
@@ -52,10 +55,11 @@ export default function AutomationsPage() {
   const create = async () => {
     if (!input.trim() || creating) return;
     setCreating(true);
-    const rule = await run(() => api.createAutomation(input.trim()), "Automation created");
+    const rule = await run(() => api.createAutomation(input.trim(), approval), "Automation created");
     setCreating(false);
     if (!rule) return;
     setInput("");
+    setApproval("ask");
     await load();
   };
 
@@ -66,15 +70,8 @@ export default function AutomationsPage() {
     await load();
   };
 
-  const decide = (p: PendingAction, decision: Decision) =>
-    act(
-      p.id,
-      async () => {
-        await api.decidePending(p.id, decision);
-        refreshBadges();
-      },
-      decision === "reject" ? "Dismissed" : "Approved"
-    );
+  // Only the automations' own questions; chat and schedule questions live elsewhere.
+  const queued = pending.filter((p) => !p.origin || p.origin === "automation");
 
   const remove = (r: Automation) => {
     if (!window.confirm(`Delete the "${r.name}" automation?`)) return;
@@ -85,31 +82,36 @@ export default function AutomationsPage() {
     <div className="mx-auto max-w-4xl space-y-5 p-4 sm:p-8">
       <PageHeader
         title="Automations"
-        blurb="Describe a rule in plain English. AURA compiles it into a workflow it can run unattended — and always stops for approval before anything irreversible."
+        blurb="Describe a rule in plain English. AURA compiles it into a workflow it can run unattended. When it needs an approval, it waits for you, or lets a safety check decide if you set it to Auto."
       />
 
       <Card>
         <form
-          className="flex flex-col gap-2 sm:flex-row"
+          className="space-y-3"
           onSubmit={(e) => {
             e.preventDefault();
             void create();
           }}
         >
           <input
-            className="input min-w-0 flex-1"
+            className="input min-h-[44px] min-w-0"
             placeholder="When… then…"
             aria-label="Describe an automation"
             value={input}
             onChange={(e) => setInput(e.target.value)}
           />
-          <button
-            type="submit"
-            disabled={creating || !input.trim()}
-            className="btn-primary shrink-0"
-          >
-            {creating ? <Spinner /> : <Plus size={14} />} Create
-          </button>
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div className="w-full sm:w-72">
+              <ApprovalModeSelect value={approval} onChange={setApproval} />
+            </div>
+            <button
+              type="submit"
+              disabled={creating || !input.trim()}
+              className="btn-primary min-h-[44px] shrink-0"
+            >
+              {creating ? <Spinner /> : <Plus size={14} />} Create
+            </button>
+          </div>
         </form>
         <div className="mt-3 flex flex-wrap gap-2">
           {EXAMPLES.map((e) => (
@@ -125,45 +127,18 @@ export default function AutomationsPage() {
         </div>
       </Card>
 
-      {pending.length > 0 && (
+      {queued.length > 0 && (
         <Card className="border-amber/35 bg-amber/[0.06]">
           <SectionTitle>
             <span className="text-amber">Queued by automations</span>
           </SectionTitle>
-          <div className="space-y-2">
-            {pending.map((p) => (
-              <div key={p.id} className="panel-raised flex flex-wrap items-center gap-3 p-3">
-                <pre className="min-w-0 flex-1 whitespace-pre-wrap break-words font-sans text-[12.5px] text-muted">
-                  {p.preview}
-                </pre>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => decide(p, "once")}
-                    disabled={busy === p.id}
-                    className="btn-primary py-1.5"
-                  >
-                    {busy === p.id ? <Spinner /> : <Check size={13} />} Allow
-                  </button>
-                  <button
-                    onClick={() => decide(p, "always")}
-                    disabled={busy === p.id}
-                    className="btn-ghost py-1.5"
-                  >
-                    Always
-                  </button>
-                  <button
-                    onClick={() => decide(p, "reject")}
-                    disabled={busy === p.id}
-                    className="btn-quiet py-1.5"
-                    aria-label="Don't do this"
-                    title="Don't do this"
-                  >
-                    <X size={13} />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
+          <ApprovalCards
+            actions={queued}
+            onDecided={async () => {
+              refreshBadges();
+              await load();
+            }}
+          />
         </Card>
       )}
 
@@ -255,7 +230,16 @@ export default function AutomationsPage() {
               <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-line pt-3 text-[11px] text-faint">
                 <span>ran {r.run_count}×</span>
                 {r.last_run_at && <span>· last {fmtRelative(r.last_run_at)}</span>}
-                {r.requires_confirmation && <span>· asks before acting</span>}
+              </div>
+              <div className="mt-2">
+                <ApprovalModeSelect
+                  compact
+                  value={r.approval_mode ?? "ask"}
+                  disabled={busy === r.id}
+                  onChange={(approval_mode) =>
+                    act(r.id, () => api.updateAutomation(r.id, { approval_mode }), "Approval setting saved")
+                  }
+                />
               </div>
             </div>
           ))}

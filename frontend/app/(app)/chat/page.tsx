@@ -6,17 +6,13 @@ import {
   AlertTriangle,
   ArrowRight,
   ArrowUp,
-  Check,
-  Clock4,
   GraduationCap,
   RotateCcw,
   Sparkles,
-  X,
   Zap,
 } from "lucide-react";
 import {
   Conversation,
-  Decision,
   Message,
   PendingAction,
   api,
@@ -24,12 +20,12 @@ import {
   StreamEvent,
 } from "@/lib/api";
 import { useAssistant } from "@/lib/assistant";
+import ApprovalCard from "@/components/ApprovalCard";
 import Mascot from "@/components/Mascot";
+import ModePicker from "@/components/ModePicker";
 import { useToast } from "@/components/Toast";
 import {
-  Badge,
   Markdown,
-  SkillBadge,
   SkillLine,
   ASK_EVENT,
   CHAT_EVENT,
@@ -120,7 +116,6 @@ export default function ChatPage() {
   const [memoryHits, setMemoryHits] = useState(0);
   const [learned, setLearned] = useState("");
   const [pending, setPending] = useState<PendingAction[]>([]);
-  const [deciding, setDeciding] = useState<string | null>(null);
   // Shown under the thread until the next message. It used to be appended to
   // the live draft, which disappears the moment streaming stops — so every
   // failure was invisible and the question just sat there unanswered.
@@ -363,19 +358,13 @@ export default function ChatPage() {
   };
   sendRef.current = send;
 
-  const decide = async (id: string, decision: Decision) => {
-    setDeciding(id);
-    try {
-      await api.decidePending(id, decision);
-      await loadPending(true);
-      refreshBadges();
-      // Mid-reply, the thread reloads itself when the reply lands.
-      if (activeId && !streamingRef.current) await openConversation(activeId);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Couldn't record that decision");
-    } finally {
-      setDeciding(null);
-    }
+  // The card records the answer (and carries the task on if it says so); the
+  // thread then reloads to show what happened.
+  const onDecided = async () => {
+    await loadPending(true);
+    refreshBadges();
+    // Mid-reply, the thread reloads itself when the reply lands.
+    if (activeId && !streamingRef.current) await openConversation(activeId);
   };
 
   const activeTitle = conversations.find((c) => c.id === activeId)?.title;
@@ -486,48 +475,10 @@ export default function ChatPage() {
             )}
 
             {pending.length > 0 && (
-              <div className="space-y-3 rounded-2xl border border-amber/35 bg-amber/[0.07] p-4">
+              <div className="space-y-3" aria-label="Waiting for your answer">
                 <div className="label text-amber">Needs your say-so</div>
                 {pending.map((p) => (
-                  <div key={p.id} className="space-y-2.5">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {p.skill_code && <SkillBadge code={p.skill_code} />}
-                      <Badge tone="warning">{p.tool_name}</Badge>
-                    </div>
-                    <pre className="whitespace-pre-wrap break-words font-sans text-[12.5px] leading-relaxed text-muted">
-                      {p.preview}
-                    </pre>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        onClick={() => decide(p.id, "once")}
-                        disabled={deciding === p.id}
-                        className="btn-primary py-1.5"
-                      >
-                        {deciding === p.id ? <Spinner /> : <Check size={13} />} Allow once
-                      </button>
-                      <button
-                        onClick={() => decide(p.id, "window")}
-                        disabled={deciding === p.id}
-                        className="btn-ghost py-1.5"
-                      >
-                        <Clock4 size={13} /> 10 min
-                      </button>
-                      <button
-                        onClick={() => decide(p.id, "always")}
-                        disabled={deciding === p.id}
-                        className="btn-ghost py-1.5"
-                      >
-                        Always
-                      </button>
-                      <button
-                        onClick={() => decide(p.id, "reject")}
-                        disabled={deciding === p.id}
-                        className="btn-quiet py-1.5"
-                      >
-                        <X size={13} /> Don&apos;t
-                      </button>
-                    </div>
-                  </div>
+                  <ApprovalCard key={p.id} action={p} onDecided={onDecided} />
                 ))}
               </div>
             )}
@@ -556,32 +507,37 @@ export default function ChatPage() {
                 ))}
               </div>
             )}
-            <div className="panel flex items-end gap-2 p-2 transition-colors focus-within:border-accent/40">
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  // isComposing: Enter that confirms an IME candidate (Hindi,
-                  // Japanese…) must not send a half-typed message.
-                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault();
-                    void send();
-                  }
-                }}
-                rows={1}
-                placeholder={`Ask ${assistant?.name ?? "Aura"} anything…`}
-                aria-label={`Message ${assistant?.name ?? "Aura"}`}
-                className="max-h-40 flex-1 resize-none bg-transparent px-3 py-2.5 text-[13.5px] placeholder:text-faint outline-none"
-              />
-              <button
-                onClick={() => send()}
-                disabled={!input.trim() || streaming}
-                aria-label="Send"
-                className="btn-primary h-9 w-9 shrink-0 rounded-full p-0"
-              >
-                {streaming ? <Spinner /> : <ArrowUp size={16} />}
-              </button>
+            <div className="panel p-2 transition-colors focus-within:border-accent/40">
+              <div className="flex items-end gap-2">
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    // isComposing: Enter that confirms an IME candidate (Hindi,
+                    // Japanese…) must not send a half-typed message.
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      void send();
+                    }
+                  }}
+                  rows={1}
+                  placeholder={`Ask ${assistant?.name ?? "Aura"} anything…`}
+                  aria-label={`Message ${assistant?.name ?? "Aura"}`}
+                  className="max-h-40 min-h-[44px] flex-1 resize-none bg-transparent px-3 py-2.5 text-[13.5px] placeholder:text-faint outline-none"
+                />
+                <button
+                  onClick={() => send()}
+                  disabled={!input.trim() || streaming}
+                  aria-label="Send"
+                  className="btn-primary h-11 w-11 shrink-0 rounded-full p-0"
+                >
+                  {streaming ? <Spinner /> : <ArrowUp size={16} />}
+                </button>
+              </div>
+              <div className="mt-1 border-t border-line px-1 pt-1.5">
+                <ModePicker />
+              </div>
             </div>
             <p className="mt-2 hidden text-center text-[11px] text-faint sm:block">
               Correct {assistant?.name ?? "Aura"} and it remembers. Enter to send, Shift+Enter

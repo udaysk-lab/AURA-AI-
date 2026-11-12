@@ -10,7 +10,6 @@ import {
   Gauge,
   Globe,
   KeyRound,
-  Laptop,
   Link2,
   Moon,
   Plus,
@@ -24,11 +23,8 @@ import {
 } from "lucide-react";
 import {
   AppSettings,
-  AutonomyTier,
   Colourway,
   Compaction,
-  DeviceStatus,
-  Grant,
   Integration,
   Secret,
   UsageReport,
@@ -86,29 +82,6 @@ const PERSONALITIES = [
   { key: "encouraging", label: "Encouraging" },
 ];
 
-const TIERS: Array<{ key: AutonomyTier; title: string; body: string }> = [
-  {
-    key: "strict",
-    title: "Strict",
-    body: "Asks before anything that changes state — including creating a task.",
-  },
-  {
-    key: "conservative",
-    title: "Conservative",
-    body: "Handles its own data alone. Asks before anything the outside world sees.",
-  },
-  {
-    key: "relaxed",
-    title: "Relaxed",
-    body: "Books meetings and acts freely. Only stops for irreversible actions.",
-  },
-  {
-    key: "full",
-    title: "Full access",
-    body: "Complete autonomy, including sending email. Nothing is held for approval.",
-  },
-];
-
 const SECRET_KEY = /^[a-zA-Z0-9_.-]+$/;
 
 export default function SettingsPage() {
@@ -117,8 +90,6 @@ export default function SettingsPage() {
 
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
-  const [grants, setGrants] = useState<Grant[]>([]);
-  const [device, setDevice] = useState<DeviceStatus | null>(null);
   const [provider, setProvider] = useState("");
   const [localMode, setLocalMode] = useState(false);
   const [remoteSession, setRemoteSession] = useState(false);
@@ -152,26 +123,22 @@ export default function SettingsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, i, c, g, v, u, d, dev] = await Promise.all([
+      const [s, i, c, v, u, d] = await Promise.all([
         api.settings(),
         api.integrations(),
         api.authConfig(),
-        api.grants().catch(() => []),
         api.secrets().catch(() => []),
         api.usage().catch(() => null),
         api.sampleData().catch(() => null),
-        api.device().catch(() => null),
       ]);
       setSettings(s);
       setIntegrations(i);
       setProvider(c.llm_provider);
       setLocalMode(c.local_mode);
       setRemoteSession(Boolean(c.remote_client));
-      setGrants(g);
       setSecrets(v);
       setUsage(u);
       setSample(d);
-      setDevice(dev);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't load your settings");
     } finally {
@@ -466,125 +433,19 @@ export default function SettingsPage() {
         )}
       </Card>
 
-      {/* Autonomy */}
       {/* The model — on your own computer you connect it yourself, here. */}
       {localMode && !remoteSession && <ModelSettingsCard />}
 
       <Card>
-        <SectionTitle>How much freedom</SectionTitle>
-        <p className="mb-3.5 text-[12.5px] leading-relaxed text-muted">
-          You can change this any time, and grant one-off exceptions when it asks.
+        <SectionTitle>Permissions</SectionTitle>
+        <p className="mb-3.5 text-[13px] leading-relaxed text-muted">
+          Choose how much AURA does without asking, set rules for single systems and
+          actions, and see every change to them.
         </p>
-        <div className="grid gap-2 sm:grid-cols-2">
-          {TIERS.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => update({ autonomy_level: t.key })}
-              className={`rounded-2xl border p-4 text-left transition ${
-                settings.autonomy_level === t.key
-                  ? "border-accent/50 bg-accent-dim"
-                  : "border-line hover:bg-raised"
-              }`}
-            >
-              <div className="mb-1 text-[13.5px] font-medium">{t.title}</div>
-              <div className="text-[12px] leading-relaxed text-muted">{t.body}</div>
-            </button>
-          ))}
-        </div>
-
-        {grants.length > 0 && (
-          <div className="mt-4 border-t border-line pt-4">
-            <div className="label mb-2 flex items-center gap-1.5">
-              <ShieldCheck size={11} /> Standing permissions
-            </div>
-            <div className="space-y-1.5">
-              {grants.map((g) => (
-                <div
-                  key={g.id}
-                  className="flex items-center justify-between rounded-xl border border-line px-3 py-2 text-[12.5px]"
-                >
-                  <span className="min-w-0 truncate">
-                    <span className="font-mono text-[11.5px]">{g.tool_name}</span>
-                    {g.target && (
-                      <span className="ml-1.5 text-[11.5px] text-muted">to {g.target}</span>
-                    )}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <Badge tone={g.scope === "always" ? "warning" : "normal"}>
-                      {g.scope === "always" ? "always" : "temporary"}
-                    </Badge>
-                    <button
-                      onClick={async () => {
-                        await run(
-                          () => api.revokeGrant(g.tool_name, g.target || undefined),
-                          "Permission revoked"
-                        );
-                        await load();
-                      }}
-                      className="text-[11.5px] text-faint hover:text-ink"
-                    >
-                      revoke
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        <Link href="/settings/permissions" className="btn-ghost min-h-[44px]">
+          <ShieldCheck size={13} /> Open Permissions
+        </Link>
       </Card>
-
-      {/* This computer — only on a local install */}
-      {device?.enabled && (
-        <Card id="device">
-          <SectionTitle>
-            <span className="flex items-center gap-2">
-              <Laptop size={12} className="text-accent-soft" /> This computer
-            </span>
-          </SectionTitle>
-          <p className="mb-3.5 text-[12.5px] leading-relaxed text-muted">
-            AURA is running on <span className="text-ink">{device.hostname}</span> and can
-            operate it — commands, files, apps, the screen. The trust tier above decides
-            what it does without asking: shell commands and screen control need{" "}
-            <span className="text-ink">full access</span> or a standing permission, and
-            everything else asks first.
-          </p>
-          <div className="space-y-2 rounded-xl border border-line bg-raised/40 p-3.5 text-[12.5px]">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-faint">Shell approval</span>
-              <Badge tone={device.policy?.exec_mode === "full" ? "urgent" : "success"}>
-                {device.policy?.exec_mode ?? "ask"}
-              </Badge>
-            </div>
-            <div>
-              <span className="text-faint">Folders it may read and write</span>
-              <div className="mt-1 flex flex-wrap gap-1">
-                {(device.policy?.allowed_roots ?? []).map((root) => (
-                  <code
-                    key={root}
-                    className="rounded-md border border-line bg-canvas/60 px-1.5 py-0.5 text-[11px] text-muted"
-                  >
-                    {root}
-                  </code>
-                ))}
-              </div>
-            </div>
-            <p className="text-[11.5px] leading-relaxed text-faint">
-              These live in AURA&apos;s settings file (<code>~/.aura/aura.env</code> for
-              the desktop app, <code>.env</code> when running from source — DEVICE_EXEC_MODE,
-              DEVICE_ALLOWED_ROOTS) and are read at startup, so they can&apos;t be widened
-              from inside the app — including by AURA itself.
-            </p>
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Link href="/device" className="btn-ghost">
-              <Laptop size={13} /> Open the device screen
-            </Link>
-            <Link href="/skills" className="btn-quiet">
-              Choose which device skills are on
-            </Link>
-          </div>
-        </Card>
-      )}
 
       {/* Using it from a phone — local installs, from the computer itself */}
       {localMode && !remoteSession && <RemoteAccessCard />}

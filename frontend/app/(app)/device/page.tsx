@@ -13,7 +13,6 @@ import {
   MemoryStick,
   Monitor,
   RefreshCw,
-  ShieldCheck,
   Square,
   Terminal,
   Timer,
@@ -27,6 +26,8 @@ import {
   DeviceSystemSnapshot,
   api,
 } from "@/lib/api";
+import Link from "next/link";
+import { AppAccess, ConnectedFolders } from "@/components/DeviceAccess";
 import { useAction, useToast } from "@/components/Toast";
 import {
   Badge,
@@ -53,12 +54,6 @@ const SKILL_LABELS: Record<string, string> = {
   DV05: "Screen control",
   DV06: "Clipboard & alerts",
   DV07: "Web fetch",
-};
-
-const MODE_TONE: Record<string, "success" | "warning" | "urgent"> = {
-  ask: "success",
-  allowlist: "warning",
-  full: "urgent",
 };
 
 export default function DevicePage() {
@@ -243,8 +238,11 @@ export default function DevicePage() {
         blurb={
           <>
             AURA is running on <span className="text-ink">{status.hostname}</span> and can
-            operate it. Everything it does here still goes through your trust tier and the
-            same approval card as the rest of its work.
+            operate it. Everything it does here follows your{" "}
+            <Link href="/settings/permissions" className="text-accent-soft underline-offset-2 hover:underline">
+              permission mode and rules
+            </Link>{" "}
+            and uses the same approval card as the rest of its work.
           </>
         }
         action={
@@ -297,38 +295,29 @@ export default function DevicePage() {
             <Capability on={status.clipboard} icon={<Keyboard size={11} />} label="Clipboard" />
           </div>
 
-          {policy && (
+          {policy && (policy.allowed_roots.length > 0 || policy.denylist_active) && (
             <div className="space-y-2.5 border-t border-line pt-3">
-              <div className="flex items-start gap-2">
-                <ShieldCheck size={13} className="mt-0.5 shrink-0 text-sage" />
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[12.5px] font-medium text-ink">Shell approval</span>
-                    <Badge tone={MODE_TONE[policy.exec_mode] ?? "normal"}>
-                      {policy.exec_mode}
-                    </Badge>
-                  </div>
-                  <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted">
-                    {policy.explanation}
+              {policy.allowed_roots.length > 0 && (
+                <div>
+                  <p className="text-[12.5px] text-muted">
+                    This install only allows folders inside:
                   </p>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {policy.allowed_roots.map((root) => (
+                      <code
+                        key={root}
+                        className="rounded-md border border-line bg-raised/50 px-1.5 py-0.5 text-[11px] text-muted"
+                      >
+                        {root}
+                      </code>
+                    ))}
+                  </div>
                 </div>
-              </div>
-              <div>
-                <p className="text-[11.5px] text-faint">Folders AURA may read and write</p>
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {policy.allowed_roots.map((root) => (
-                    <code
-                      key={root}
-                      className="rounded-md border border-line bg-raised/50 px-1.5 py-0.5 text-[11px] text-muted"
-                    >
-                      {root}
-                    </code>
-                  ))}
-                </div>
-              </div>
+              )}
               {policy.denylist_active && (
-                <p className="text-[11.5px] text-amber">
-                  A command denylist is active — some commands are refused even after approval.
+                <p className="text-[12.5px] text-amber">
+                  A command denylist is active, so some commands are refused even after
+                  approval.
                 </p>
               )}
             </div>
@@ -356,6 +345,12 @@ export default function DevicePage() {
             </p>
           )}
         </Card>
+      </div>
+
+      {/* What AURA may touch: folders first, then apps and the screen */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ConnectedFolders status={status} />
+        <AppAccess status={status} />
       </div>
 
       {/* Your own console — not the agent's */}

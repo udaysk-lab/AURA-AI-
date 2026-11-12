@@ -4,25 +4,22 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
-  Check,
   Clock,
-  Clock4,
   Inbox,
   Radio,
   RefreshCw,
   Sparkles,
   WifiOff,
-  X,
 } from "lucide-react";
 import {
   Briefing,
-  Decision,
   Heartbeat,
   PendingAction,
   SkillRun,
   api,
 } from "@/lib/api";
 import { useAssistant } from "@/lib/assistant";
+import { ApprovalCards } from "@/components/ApprovalCard";
 import Mascot from "@/components/Mascot";
 import { useToast } from "@/components/Toast";
 import {
@@ -48,7 +45,6 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
-  const [deciding, setDeciding] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -100,18 +96,10 @@ export default function DashboardPage() {
     }
   };
 
-  const decide = async (id: string, decision: Decision) => {
-    setDeciding(id);
-    try {
-      await api.decidePending(id, decision);
-      toast.success(decision === "reject" ? "Dismissed" : "Done");
-      await load();
-      refreshBadges();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Couldn't record that decision");
-    } finally {
-      setDeciding(null);
-    }
+  const onDecided = async () => {
+    toast.success("Recorded");
+    await load();
+    refreshBadges();
   };
 
   if (!loading && error && !brief) {
@@ -260,54 +248,7 @@ export default function DashboardPage() {
               <AlertTriangle size={13} /> Waiting on you
             </span>
           </SectionTitle>
-          <div className="space-y-2.5">
-            {pending.map((p) => (
-              <div key={p.id} className="panel-raised p-4">
-                <div className="mb-2 flex flex-wrap items-center gap-2">
-                  {p.skill_code && (
-                    <span className="font-mono text-[10.5px] text-accent-soft">
-                      {p.skill_code}
-                    </span>
-                  )}
-                  <Badge tone="warning">{p.tool_name}</Badge>
-                  <span className="text-[11px] text-faint">{fmtRelative(p.created_at)}</span>
-                </div>
-                <pre className="mb-3 whitespace-pre-wrap break-words font-sans text-[12.5px] leading-relaxed text-muted">
-                  {p.preview}
-                </pre>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={() => decide(p.id, "once")}
-                    disabled={deciding === p.id}
-                    className="btn-primary py-1.5"
-                  >
-                    {deciding === p.id ? <Spinner /> : <Check size={13} />} Allow once
-                  </button>
-                  <button
-                    onClick={() => decide(p.id, "window")}
-                    disabled={deciding === p.id}
-                    className="btn-ghost py-1.5"
-                  >
-                    <Clock4 size={13} /> Allow 10 min
-                  </button>
-                  <button
-                    onClick={() => decide(p.id, "always")}
-                    disabled={deciding === p.id}
-                    className="btn-ghost py-1.5"
-                  >
-                    Always allow
-                  </button>
-                  <button
-                    onClick={() => decide(p.id, "reject")}
-                    disabled={deciding === p.id}
-                    className="btn-quiet py-1.5"
-                  >
-                    <X size={13} /> Don&apos;t
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
+          <ApprovalCards actions={pending} onDecided={onDecided} />
         </Card>
       )}
 
@@ -399,8 +340,8 @@ export default function DashboardPage() {
         <Card>
           <SectionTitle
             action={
-              <Link href="/skills" className="text-[11.5px] text-muted hover:text-ink">
-                Skills →
+              <Link href="/hub" className="text-[12px] text-muted hover:text-ink">
+                Systems →
               </Link>
             }
           >

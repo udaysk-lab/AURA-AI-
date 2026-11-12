@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, Lock, Plus, Puzzle, Trash2 } from "lucide-react";
+import Link from "next/link";
+import { Check, Lock, Plus, Puzzle, Trash2, Wand2 } from "lucide-react";
 import { PluginItem, PluginSummary, api } from "@/lib/api";
 import { useAction } from "@/components/Toast";
 import {
@@ -68,7 +69,7 @@ export default function HubPage() {
         else await api.installPlugin(plugin.id);
         await load();
       },
-      plugin.installed ? `${plugin.name} removed` : `${plugin.name} installed`
+      plugin.installed ? `${plugin.name} removed` : `${plugin.name} assigned`
     );
     setBusy(null);
   };
@@ -78,16 +79,16 @@ export default function HubPage() {
   return (
     <div className="mx-auto max-w-5xl space-y-5 p-4 sm:p-8">
       <PageHeader
-        title="Plugin hub"
-        blurb="Plugins are bundles of skills. Installing one gives your assistant new abilities; removing it takes them away without losing what the skills already learned about you."
+        title="Systems"
+        blurb="AURA works only in the systems you assign. Take one away and its tools are gone at once, without losing what the skills already learned about you."
       />
 
       {summary && (
         <div className="grid grid-cols-3 gap-4">
           {[
-            { label: "Installed", value: summary.installed },
+            { label: "Assigned", value: summary.installed },
             { label: "Available", value: summary.available },
-            { label: "In the catalogue", value: summary.total },
+            { label: "In all", value: summary.total },
           ].map((s) => (
             <Card key={s.label}>
               <Stat value={s.value} label={s.label} />
@@ -156,7 +157,7 @@ export default function HubPage() {
                     </div>
                     <div>
                       <div className="text-[15px] font-semibold leading-tight">{p.name}</div>
-                      <div className="text-[11.5px] text-faint">{p.category}</div>
+                      <div className="text-[12px] text-muted">{p.category}</div>
                     </div>
                   </div>
                   {p.core ? (
@@ -165,7 +166,7 @@ export default function HubPage() {
                     </Badge>
                   ) : p.installed ? (
                     <Badge tone="success">
-                      <Check size={9} /> installed
+                      <Check size={9} /> assigned
                     </Badge>
                   ) : null}
                 </div>
@@ -189,18 +190,18 @@ export default function HubPage() {
                 )}
 
                 {!p.available ? (
-                  <div className="rounded-xl border border-dashed border-line px-3 py-2 text-[12px] text-faint">
+                  <div className="rounded-xl border border-dashed border-line px-3 py-2 text-[12.5px] text-muted">
                     {p.unavailable_reason}
                   </div>
                 ) : p.core ? (
-                  <div className="text-[12px] text-faint">
-                    Core plugins can&apos;t be removed — without them there is no assistant.
+                  <div className="text-[12.5px] text-muted">
+                    Core systems can&apos;t be removed. Without them there is no assistant.
                   </div>
                 ) : (
                   <button
                     onClick={() => toggle(p)}
                     disabled={busy === p.id}
-                    className={p.installed ? "btn-ghost py-1.5" : "btn-primary py-1.5"}
+                    className={`${p.installed ? "btn-ghost" : "btn-primary"} min-h-[44px]`}
                   >
                     {busy === p.id ? (
                       <Spinner />
@@ -209,8 +210,16 @@ export default function HubPage() {
                     ) : (
                       <Plus size={13} />
                     )}
-                    {p.installed ? "Remove" : "Install"}
+                    {p.installed ? "Remove" : "Assign"}
                   </button>
+                )}
+                {p.available && p.skills.length > 0 && (
+                  <Link
+                    href={`/skills?system=${encodeURIComponent(p.id)}`}
+                    className="btn-quiet mt-2 min-h-[44px] w-full justify-start px-0 sm:w-auto sm:px-4"
+                  >
+                    <Wand2 size={13} aria-hidden /> Skills in {p.name}
+                  </Link>
                 )}
               </div>
             </div>
@@ -221,8 +230,8 @@ export default function HubPage() {
       <Card>
         <SectionTitle>What&apos;s coming</SectionTitle>
         <p className="text-[12.5px] leading-relaxed text-muted">
-          Greyed-out plugins need a connector that hasn&apos;t been built yet. They&apos;re
-          shown rather than hidden because a plugin that pretends to work is worse than one
+          Greyed-out systems need a connector that hasn&apos;t been built yet. They&apos;re
+          shown rather than hidden because a system that pretends to work is worse than one
           that says it doesn&apos;t.
         </p>
       </Card>

@@ -48,7 +48,7 @@ const TIERS: Tier[] = [
       "Unlimited memory with consolidation",
       "All permission modes and rules",
       "Automations and schedules",
-      "Plugin hub access",
+      "Systems you choose",
     ],
   },
   {
@@ -62,7 +62,7 @@ const TIERS: Tier[] = [
       "Everything in Daily",
       "One assistant per teammate",
       "Shared project memory",
-      "Custom skills and private plugins",
+      "Custom skills and private systems",
       "Full action audit log",
       "Priority support",
     ],

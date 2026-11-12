@@ -17,9 +17,9 @@ import {
   Radio,
   Search,
   Settings,
+  ShieldCheck,
   Sparkles,
   Timer,
-  Wand2,
   Workflow,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -68,8 +68,7 @@ export default function CommandPalette({
     () => [
       { id: "today", label: "Today", group: "Go", icon: LayoutDashboard, run: go("/dashboard") },
       { id: "chat", label: "Chat", group: "Go", icon: MessageSquare, run: go("/chat") },
-      { id: "skills", label: "Skills", group: "Go", icon: Wand2, run: go("/skills") },
-      { id: "hub", label: "Plugin hub", group: "Go", icon: Puzzle, run: go("/hub"), keywords: "plugins install marketplace" },
+      { id: "hub", label: "Systems", group: "Go", icon: Puzzle, run: go("/hub"), keywords: "plugins assign install skills marketplace" },
       { id: "channels", label: "Channels", group: "Go", icon: Radio, run: go("/channels"), keywords: "slack telegram email cli" },
       { id: "documents", label: "Documents", group: "Go", icon: FileText, run: go("/documents"), keywords: "files upload pdf" },
       { id: "schedules", label: "Schedules", group: "Go", icon: Timer, run: go("/schedules"), keywords: "cron recurring" },
@@ -80,6 +79,7 @@ export default function CommandPalette({
       { id: "automations", label: "Automations", group: "Go", icon: Workflow, run: go("/automations") },
       { id: "notifications", label: "Notifications", group: "Go", icon: Bell, run: go("/notifications"), keywords: "alerts inbox unread" },
       { id: "settings", label: "Settings", group: "Go", icon: Settings, run: go("/settings") },
+      { id: "permissions", label: "Permissions", group: "Go", icon: ShieldCheck, run: go("/settings/permissions"), keywords: "mode ask auto skip approvals rules block allow" },
       // Harmless on a hosted instance: the screen explains that device
       // control is off rather than 404ing.
       {

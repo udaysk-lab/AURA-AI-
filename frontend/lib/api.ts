@@ -344,11 +344,17 @@ export interface Automation {
   trigger_config: Record<string, any>;
   actions: Array<{ tool: string; arguments: Record<string, any> }>;
   enabled: boolean;
-  requires_confirmation: boolean;
+  /** What happens when this automation needs an approval while you're away. */
+  approval_mode: ApprovalMode;
   run_count: number;
   last_run_at: string | null;
   created_at: string;
 }
+
+export type ApprovalCardKind = "tool" | "folder_access" | "app_grant" | "delete_permission";
+
+/** What an approval card may offer. Special cards use `approve` and `reject`. */
+export type ApprovalOption = "once" | "window" | "always" | "reject" | "approve";
 
 export interface PendingAction {
   id: string;
@@ -358,6 +364,19 @@ export interface PendingAction {
   preview: string;
   status: string;
   created_at: string;
+  card?: ApprovalCardKind;
+  options?: ApprovalOption[];
+  expires_at?: string | null;
+  origin?: "chat" | "schedule" | "automation" | "inbound" | string;
+  reason?: string;
+  work_item_id?: string | null;
+  /**
+   * Stored with the action (folder path, app id and tier, proposed rule text).
+   * The permissions API lists it in the data model but not by name among the
+   * response fields, so everything read from it is optional.
+   */
+  card_payload?: Record<string, any>;
+  always_user?: boolean;
 }
 
 export interface Activity {
@@ -409,12 +428,9 @@ export interface SyncResult {
   message: string;
 }
 
-export type AutonomyTier = "strict" | "conservative" | "relaxed" | "full";
-
 export interface AppSettings {
   briefing_time: string;
   briefing_enabled: boolean;
-  autonomy_level: AutonomyTier;
   tone: string;
   theme: "warm" | "dark" | "light";
   heartbeat_enabled: boolean;
@@ -440,7 +456,6 @@ export interface SkillItem {
   description: string;
   tools: string[];
   proactive: boolean;
-  autonomy_floor: string;
   enabled: boolean;
   run_count: number;
   success_count: number;
@@ -476,16 +491,6 @@ export interface Heartbeat {
   created_at: string;
 }
 
-export interface Grant {
-  id: string;
-  tool_name: string;
-  scope: string;
-  /** For send_email: the one recipient it covers. Empty: the whole tool. */
-  target: string;
-  expires_at: string | null;
-  created_at: string;
-}
-
 export interface Compaction {
   before: number;
   after: number;
@@ -494,7 +499,7 @@ export interface Compaction {
   dropped: number;
 }
 
-export type Decision = "reject" | "once" | "always" | "window";
+export type Decision = ApprovalOption;
 
 export interface Spend {
   spent_usd: number;
@@ -619,10 +624,9 @@ export interface SkillCatalog {
 // ---------------------------------------------------------------------------
 
 export interface DevicePolicy {
+  /** This install's own limit on which folders can be connected. Empty: none. */
   allowed_roots: string[];
   protected_paths: string[];
-  exec_mode: "ask" | "allowlist" | "full" | string;
-  exec_allowlist: string[];
   denylist_active: boolean;
   exec_timeout_seconds: number;
   max_read_bytes: number;
@@ -796,6 +800,7 @@ export interface ScheduleItem {
   cron_label: string;
   timezone: string;
   enabled: boolean;
+  approval_mode: ApprovalMode;
   deliver_to: string;
   last_run_at: string | null;
   last_result: string;
@@ -824,6 +829,122 @@ export interface Conflict {
   event_a: CalendarEvent;
   event_b: CalendarEvent;
   overlap_minutes: number;
+}
+
+// ---------------------------------------------------------------------------
+// Permissions (docs: spec 10-permissions section 11)
+// ---------------------------------------------------------------------------
+
+export type PermissionMode = "ask" | "auto" | "skip";
+/** Schedules and automations only have these two. */
+export type ApprovalMode = "ask" | "auto";
+export type RuleEffect = "block" | "ask" | "allow";
+export type RuleTargetKind = "" | "path" | "command" | "recipient" | "domain" | "app";
+
+export interface PermissionState {
+  mode: PermissionMode;
+  /** "Ask first" / "Auto" / "Skip approvals" ("Auto (acting as Ask first)" when unavailable). */
+  mode_label: string;
+  auto_available: boolean;
+  auto_effective: boolean;
+  reviewer_model: string;
+  boundaries: string;
+}
+
+export interface CatalogueEntry {
+  tool: string;
+  system: string;
+  kind: string;
+  /** Which kinds of target a rule on this tool can be limited to. */
+  targets: Array<string | { kind?: string; name?: string }>;
+  always_user: boolean;
+}
+
+export interface PermissionRule {
+  /** Install-level entries (`source: "install"`) are read-only and may have no id. */
+  id?: string;
+  effect: RuleEffect;
+  system: string;
+  tool?: string | null;
+  target_kind?: RuleTargetKind | string;
+  pattern?: string;
+  applies_to?: string;
+  source: "user" | "card" | "legacy" | "install" | string;
+  expires_at?: string | null;
+  revoked_at?: string | null;
+  note?: string;
+  created_at?: string;
+}
+
+export interface NewPermissionRule {
+  effect: RuleEffect;
+  system: string;
+  tool?: string;
+  target_kind?: RuleTargetKind;
+  pattern?: string;
+  applies_to?: string;
+  minutes?: number;
+  note?: string;
+}
+
+export interface PermissionEvent {
+  seq: number;
+  actor: "user" | "aura" | "system" | "migration" | string;
+  kind: string;
+  tool?: string;
+  target?: string;
+  outcome?: string;
+  reason_code?: string;
+  run_key?: string;
+  detail?: Record<string, any>;
+  created_at: string;
+}
+
+export interface EventsVerify {
+  ok: boolean;
+  checked: number;
+  first_bad_seq: number | null;
+}
+
+export interface DecisionOutcome {
+  status?: string;
+  decision?: string;
+  /** `ready` means the paused task can be continued (POST /api/chat/continue). */
+  work_item?: { id: string; status: string } | null;
+  [key: string]: any;
+}
+
+// --- This computer: connected folders, apps, blocklist ---------------------
+
+export interface DeviceFolder {
+  id: string;
+  path: string;
+  can_delete: boolean;
+  source: "user" | "legacy" | "request" | string;
+  created_at?: string;
+}
+
+export type AppTier = "view" | "click" | "full";
+
+export interface DeviceAppGrant {
+  id?: string;
+  app_id: string;
+  display_name: string;
+  tier: AppTier;
+}
+
+export interface DeviceAppBlock {
+  id: string;
+  app_id: string;
+  match: "app" | "keyword";
+  source: "default" | "user" | string;
+}
+
+export interface DeviceApps {
+  grants: DeviceAppGrant[];
+  blocks: DeviceAppBlock[];
+  /** Running apps; the API names this list but not its fields, so both shapes are read. */
+  running: Array<string | { app_id?: string; display_name?: string; name?: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -936,8 +1057,8 @@ export const api = {
   pinMemory: (id: string) => patch<MemoryItem>(`/api/memories/${id}/pin`),
 
   automations: () => get<Automation[]>("/api/automations"),
-  createAutomation: (natural_language: string) =>
-    post<Automation>("/api/automations", { natural_language, enabled: true }),
+  createAutomation: (natural_language: string, approval_mode: ApprovalMode = "ask") =>
+    post<Automation>("/api/automations", { natural_language, enabled: true, approval_mode }),
   updateAutomation: (id: string, body: Partial<Automation>) =>
     patch<Automation>(`/api/automations/${id}`, body),
   deleteAutomation: (id: string) => del<{ message: string }>(`/api/automations/${id}`),
@@ -948,11 +1069,10 @@ export const api = {
     fresh
       ? get<PendingAction[]>("/api/pending-actions")
       : sharedGet<PendingAction[]>("/api/pending-actions"),
-  decidePending: async (id: string, decision: Decision, minutes = 10) => {
-    const outcome = await post<Record<string, any>>(`/api/pending-actions/${id}`, {
-      decision,
-      minutes,
-    });
+  pendingAction: (id: string) => get<PendingAction>(`/api/pending-actions/${id}`),
+  /** Answer a card with one of the options it came with. */
+  decidePending: async (id: string, decision: Decision) => {
+    const outcome = await post<DecisionOutcome>(`/api/pending-actions/${id}`, { decision });
     forget("/api/pending-actions");
     return outcome;
   },
@@ -990,16 +1110,36 @@ export const api = {
   runHeartbeat: () => post<Heartbeat>("/api/heartbeat/run"),
   ackHeartbeat: (id: string) => post<Heartbeat>(`/api/heartbeat/${id}/ack`),
 
-  // --- Trust + memory maintenance -----------------------------------------
-  grants: () => get<Grant[]>("/api/grants"),
-  revokeGrant: (tool: string, target?: string) =>
-    del<{ revoked: number }>(
-      `/api/grants/${tool}${target ? `?target=${encodeURIComponent(target)}` : ""}`
+  // --- Permissions --------------------------------------------------------
+  permissions: () => get<PermissionState>("/api/permissions"),
+  setPermissionMode: (mode: PermissionMode) =>
+    put<PermissionState>("/api/permissions/mode", { mode }),
+  setPermissionBoundaries: (text: string) =>
+    put<PermissionState>("/api/permissions/boundaries", { text }),
+  permissionCatalogue: () => get<CatalogueEntry[]>("/api/permissions/catalogue"),
+  permissionRules: (filter: { effect?: RuleEffect; system?: string; tool?: string; includeExpired?: boolean } = {}) => {
+    const q = new URLSearchParams();
+    if (filter.effect) q.set("effect", filter.effect);
+    if (filter.system) q.set("system", filter.system);
+    if (filter.tool) q.set("tool", filter.tool);
+    if (filter.includeExpired) q.set("include_expired", "true");
+    const qs = q.toString();
+    return get<PermissionRule[]>(`/api/permissions/rules${qs ? `?${qs}` : ""}`);
+  },
+  addPermissionRule: (body: NewPermissionRule) =>
+    post<PermissionRule>("/api/permissions/rules", body),
+  removePermissionRule: (id: string) =>
+    del<{ revoked: boolean }>(`/api/permissions/rules/${encodeURIComponent(id)}`),
+  permissionEvents: (limit = 100, beforeSeq?: number) =>
+    get<PermissionEvent[]>(
+      `/api/permissions/events?limit=${limit}${beforeSeq ? `&before_seq=${beforeSeq}` : ""}`
     ),
+  verifyPermissionEvents: () => get<EventsVerify>("/api/permissions/events/verify"),
+
   compactMemory: (dryRun = false) =>
     post<Compaction>(`/api/memories/compact?dry_run=${dryRun}`),
 
-  // --- Plugins ------------------------------------------------------------
+  // --- Systems (plugins) --------------------------------------------------
   plugins: (category = "") =>
     get<PluginItem[]>(
       `/api/plugins${category ? `?category=${encodeURIComponent(category)}` : ""}`
@@ -1053,6 +1193,7 @@ export const api = {
     name?: string;
     cron?: string;
     deliver_to?: string;
+    approval_mode?: ApprovalMode;
   }) => post<ScheduleItem>("/api/schedules", body),
   updateSchedule: (id: string, body: Partial<ScheduleItem>) =>
     patch<ScheduleItem>(`/api/schedules/${id}`, body),
@@ -1120,6 +1261,23 @@ export const api = {
   deviceBackground: () => get<DeviceBackgroundCommand[]>("/api/device/background"),
   deviceStopBackground: (sessionId: string) =>
     post<DeviceBackgroundCommand>(`/api/device/background/${sessionId}/stop`),
+  deviceFolders: () => get<DeviceFolder[]>("/api/device/folders"),
+  connectDeviceFolder: (path: string, can_delete = false) =>
+    post<DeviceFolder>("/api/device/folders", { path, can_delete }),
+  setDeviceFolderDelete: (id: string, can_delete: boolean) =>
+    patch<DeviceFolder>(`/api/device/folders/${encodeURIComponent(id)}`, { can_delete }),
+  removeDeviceFolder: (id: string) => del<unknown>(`/api/device/folders/${encodeURIComponent(id)}`),
+  deviceApps: () => get<DeviceApps>("/api/device/apps"),
+  setDeviceApp: (appId: string, tier: AppTier) =>
+    put<DeviceAppGrant>(`/api/device/apps/${encodeURIComponent(appId)}`, { tier }),
+  removeDeviceApp: (appId: string) =>
+    del<unknown>(`/api/device/apps/${encodeURIComponent(appId)}`),
+  addDeviceBlock: (app_id: string, match: "app" | "keyword") =>
+    post<DeviceAppBlock>("/api/device/blocklist", { app_id, match }),
+  removeDeviceBlock: (id: string) =>
+    del<unknown>(`/api/device/blocklist/${encodeURIComponent(id)}`),
+  /** Tells a local install the person is at the screen. 204 and nothing else. */
+  devicePresence: () => post<void>("/api/device/presence", {}),
 
   // --- Diagnostics (unauthenticated) --------------------------------------
   preflight: async (): Promise<Preflight> => {
@@ -1154,22 +1312,10 @@ export type StreamEvent =
   | { type: "done"; conversation_id: string; message_id: string; latency_ms: number; steps: number }
   | { type: "error"; message: string };
 
-export async function streamChat(
-  message: string,
-  conversationId: string | null,
-  onEvent: (e: StreamEvent) => void,
-  signal?: AbortSignal
+async function readEventStream(
+  res: Response,
+  onEvent: (e: StreamEvent) => void
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/chat/stream`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${getToken() ?? ""}`,
-    },
-    body: JSON.stringify({ message, conversation_id: conversationId }),
-    signal,
-  });
-
   if (res.status === 401) handleExpiredSession();
   if (!res.ok) throw new ApiError(res.status, await describeError(res));
   if (!res.body) throw new ApiError(res.status, "The reply didn't arrive. Please try again.");
@@ -1208,4 +1354,46 @@ export async function streamChat(
   // Whatever arrived without a trailing blank line is still a frame.
   buffer += decoder.decode();
   if (buffer.trim()) flush([buffer]);
+}
+
+export async function streamChat(
+  message: string,
+  conversationId: string | null,
+  onEvent: (e: StreamEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/chat/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${getToken() ?? ""}`,
+    },
+    body: JSON.stringify({ message, conversation_id: conversationId }),
+    signal,
+  });
+  await readEventStream(res, onEvent);
+}
+
+/**
+ * Carry on a task that was paused for an approval (POST /api/chat/continue).
+ * Streams the same events as a chat reply. A 409 means someone else already
+ * continued it, or it isn't ready; that resolves quietly with `false`.
+ */
+export async function continueChat(
+  workItemId: string,
+  onEvent: (e: StreamEvent) => void = () => {},
+  signal?: AbortSignal
+): Promise<boolean> {
+  const res = await fetch(`${API_BASE}/api/chat/continue`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${getToken() ?? ""}`,
+    },
+    body: JSON.stringify({ work_item_id: workItemId }),
+    signal,
+  });
+  if (res.status === 409) return false;
+  await readEventStream(res, onEvent);
+  return true;
 }

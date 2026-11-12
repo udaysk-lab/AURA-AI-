@@ -168,6 +168,13 @@ body::after {
   }
 }
 
+/* Keyboard focus is always visible, on buttons, links and switches as well as
+   form fields. Mouse clicks don't trigger it. */
+:where(a, button, summary, select, [role="radio"], [role="switch"], [tabindex]):focus-visible {
+  outline: 2px solid rgb(var(--accent-soft));
+  outline-offset: 2px;
+}
+
 @layer components {
   /* -------------------------------------------------------------------------
      Surfaces

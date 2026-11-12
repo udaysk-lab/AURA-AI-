@@ -6,6 +6,7 @@ import { RefreshCw, WifiOff } from "lucide-react";
 import Sidebar, { MobileNav, MobileTopBar } from "@/components/Sidebar";
 import CommandPalette from "@/components/CommandPalette";
 import ErrorBoundary from "@/components/ErrorBoundary";
+import PresencePing from "@/components/PresencePing";
 import { ToastProvider, useHotkey } from "@/components/Toast";
 import { Spinner } from "@/components/ui";
 import { getToken } from "@/lib/api";
@@ -80,6 +81,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <ToastProvider>
+      <PresencePing />
       <div className="relative flex h-dvh overflow-hidden">
         {/* Faint blueprint grid — gives the glass panels something to float over */}
         <div className="pointer-events-none absolute inset-0 bg-grid-fade bg-grid opacity-60" />

@@ -22,7 +22,6 @@ import {
   Sparkles,
   Trash2,
   Timer,
-  Wand2,
   Workflow,
   X,
 } from "lucide-react";
@@ -42,7 +41,7 @@ import { useToast } from "./Toast";
 // The everyday links, always visible under the Recent list.
 const MAIN_LINKS = [
   { href: "/schedules", label: "Scheduled", icon: Timer },
-  { href: "/skills", label: "Systems", icon: Wand2 },
+  { href: "/hub", label: "Systems", icon: Puzzle },
   { href: "/memory", label: "Memory", icon: Sparkles },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
@@ -55,7 +54,6 @@ const WORKSPACE_LINKS = [
   { href: "/tasks", label: "Tasks", icon: CheckSquare },
   { href: "/documents", label: "Documents", icon: FileText },
   { href: "/automations", label: "Automations", icon: Workflow },
-  { href: "/hub", label: "Plugin hub", icon: Puzzle },
   { href: "/channels", label: "Channels", icon: Radio },
   { href: "/notifications", label: "Notifications", icon: Bell },
 ];
@@ -210,7 +208,11 @@ export default function Sidebar({
     }`;
 
   const renderLink = ({ href, label, icon: Icon }: (typeof MAIN_LINKS)[number]) => {
-    const active = pathname === href || pathname.startsWith(`${href}/`);
+    // The skills page is reached from a system, so Systems stays lit there.
+    const active =
+      pathname === href ||
+      pathname.startsWith(`${href}/`) ||
+      (href === "/hub" && (pathname === "/skills" || pathname.startsWith("/skills/")));
     const badge = href === "/notifications" && unread ? unread : undefined;
     return (
       <Link

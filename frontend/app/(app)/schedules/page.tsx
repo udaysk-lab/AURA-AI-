@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Clock, Play, Plus, Timer, Trash2 } from "lucide-react";
-import { ScheduleItem, api } from "@/lib/api";
+import { ApprovalMode, ScheduleItem, api } from "@/lib/api";
+import ApprovalModeSelect from "@/components/ApprovalModeSelect";
 import { useAction } from "@/components/Toast";
 import {
   Badge,
@@ -50,6 +51,7 @@ export default function SchedulesPage() {
 
   const [when, setWhen] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [approval, setApproval] = useState<ApprovalMode>("ask");
   const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
@@ -70,7 +72,11 @@ export default function SchedulesPage() {
     if (!prompt.trim() || creating) return;
     setCreating(true);
     const created = await run(
-      () => api.createSchedule({ prompt: prompt.trim(), natural_language: when.trim() }),
+      () => api.createSchedule({
+          prompt: prompt.trim(),
+          natural_language: when.trim(),
+          approval_mode: approval,
+        }),
       "Schedule created"
     );
     setCreating(false);
@@ -79,6 +85,7 @@ export default function SchedulesPage() {
     setOpen(false);
     setWhen("");
     setPrompt("");
+    setApproval("ask");
     await load();
   };
 
@@ -197,6 +204,17 @@ export default function SchedulesPage() {
                 {s.last_run_at && <span>last {fmtRelative(s.last_run_at)}</span>}
               </div>
 
+              <div className="mt-3">
+                <ApprovalModeSelect
+                  compact
+                  value={s.approval_mode ?? "ask"}
+                  onChange={async (approval_mode) => {
+                    await run(() => api.updateSchedule(s.id, { approval_mode }), "Approval setting saved");
+                    await load();
+                  }}
+                />
+              </div>
+
               {s.last_result && (
                 <details className="mt-3">
                   <summary className="cursor-pointer text-[12px] text-muted hover:text-ink">
@@ -258,6 +276,7 @@ export default function SchedulesPage() {
               can look things up and chain skills.
             </p>
           </div>
+          <ApprovalModeSelect value={approval} onChange={setApproval} />
           <button
             onClick={create}
             disabled={!prompt.trim() || creating}
