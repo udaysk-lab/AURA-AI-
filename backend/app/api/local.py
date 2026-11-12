@@ -41,6 +41,7 @@ class ProviderOut(BaseModel):
     openai_model: str
     openai_base_url: str
     background_model: str
+    reviewer_model: str
     config_file: str
     writable: bool
 
@@ -55,6 +56,7 @@ class ProviderIn(BaseModel):
     openai_model: str | None = Field(default=None, max_length=100)
     openai_base_url: str | None = Field(default=None, max_length=300)
     background_model: str | None = Field(default=None, max_length=100)
+    reviewer_model: str | None = Field(default=None, max_length=100)
 
 
 class ProviderTestOut(BaseModel):
@@ -89,6 +91,7 @@ def _provider_out() -> ProviderOut:
         openai_model=settings.openai_model,
         openai_base_url=settings.openai_base_url,
         background_model=settings.background_model,
+        reviewer_model=settings.reviewer_model,
         config_file=str(local_config.config_path()),
         writable=local_config.is_writable(),
     )
@@ -153,6 +156,10 @@ def update_provider(payload: ProviderIn, owner: PresentOwner, db: DbSession) -> 
         model = _clean_model(payload.background_model, "The background model")
         updates["BACKGROUND_MODEL"] = model or None
         applied["background_model"] = model
+    if payload.reviewer_model is not None:
+        model = _clean_model(payload.reviewer_model, "The reviewer model")
+        updates["REVIEWER_MODEL"] = model or None
+        applied["reviewer_model"] = model
 
     if updates:
         local_config.write_values(updates)

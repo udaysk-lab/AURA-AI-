@@ -18,7 +18,7 @@ from app.config import settings  # noqa: E402
 from app.llm import LLMResponse, ToolCall, Usage  # noqa: E402
 from app.models import PendingAction  # noqa: E402
 from app.permissions import gate, rules  # noqa: E402
-from tests.perm_helpers import ctx, decide, make_session, make_user  # noqa: E402
+from tests.perm_helpers import apply_legacy, ctx, decide, make_session, make_user  # noqa: E402
 
 TASK = {"title": "Call Priya"}
 SEND = {"to": "bob@example.com", "subject": "Hi", "body": "x"}
@@ -195,12 +195,14 @@ class Scripted:
         return []
 
 
-def run_turn(db, user, monkeypatch, tool, args, tier="conservative", trigger="chat", **kw):
+def run_turn(db, user, monkeypatch, tool, args, tier=None, trigger="chat", **kw):
     monkeypatch.setattr(coordinator, "get_provider", lambda: Scripted(tool, args))
     convo = models.Conversation(user_id=user.id, title="t")
     db.add(convo)
     db.commit()
-    return coordinator.run_agent(db, user, convo, "please do it", autonomy_level=tier, trigger=trigger, **kw)
+    if tier:
+        apply_legacy(db, user, tier)
+    return coordinator.run_agent(db, user, convo, "please do it", trigger=trigger, **kw)
 
 
 def test_the_loop_parks_an_ask_with_its_card_fields(env, monkeypatch):
@@ -283,7 +285,7 @@ def test_automation_actions_each_go_through_the_gate(env):
 
 
 def test_automation_keeps_what_the_old_engine_ran_alone(env):
-    """Interim rules: safe/external actions of an existing automation still run, irreversible ones queue."""
+    """Legacy rules: safe/external actions of an existing automation still run, irreversible ones queue."""
     from app.automation import engine
 
     db, user = env
@@ -296,6 +298,7 @@ def test_automation_keeps_what_the_old_engine_ran_alone(env):
     )
     db.add(rule)
     db.commit()
+    apply_legacy(db, legacy)
     out = engine.run_rule(db, legacy, rule, {})
     assert [e["tool"] for e in out["executed"]] == ["create_event"]
     assert out["queued_for_approval"] == ["delete_event"]
@@ -308,5 +311,5 @@ def test_heartbeat_tools_go_through_the_gate(env, monkeypatch):
     calls = []
     real = permissions.decide
     monkeypatch.setattr(permissions, "decide", lambda *a, **k: calls.append((a[2], a[4].trigger)) or real(*a, **k))
-    heartbeat.run(db, user, "full", force=True)
+    heartbeat.run(db, user, force=True)
     assert calls and all(trigger == "heartbeat" for _, trigger in calls)

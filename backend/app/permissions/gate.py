@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import AutomationRule, PendingAction, Schedule, User, UserSettings, utcnow
-from app.permissions import catalogue, events, floors, interim, match, reviewer, rules as rules_store, shellparse, triggers
+from app.permissions import catalogue, events, floors, match, reviewer, rules as rules_store, shellparse, triggers
 from app.permissions.catalogue import ALLOW_KINDS, READ_KINDS, ToolPolicy
 from app.permissions.match import BadArgs, Target
 
@@ -69,8 +69,6 @@ class GateContext:
     owner_verified: bool = True
     run_key: str = ""
     present: bool = False  # UI presence at decide time (filled by build_context)
-    # Interim only: the 1.0 autonomy tier of the run, until the legacy data migration (WP11).
-    legacy_tier: str | None = None
 
 
 def build_context(db: Session | None, user: User | None, trigger: str, **kw: Any) -> GateContext:
@@ -160,8 +158,15 @@ def _settings_row(db: Session, user: User) -> UserSettings | None:
     return user.settings or db.scalars(select(UserSettings).where(UserSettings.user_id == user.id)).first()
 
 
+def stored_mode(db: Session, user: User) -> str:
+    """The permission mode the user chose (`ask` when the row is missing or holds something unknown)."""
+    row = _settings_row(db, user)
+    mode = row.permission_mode if row else "ask"
+    return mode if mode in catalogue.MODES else "ask"
+
+
 def mode_label(db: Session, user: User) -> str:
-    mode = interim.stored_mode(db, user)
+    mode = stored_mode(db, user)
     if mode == "auto":
         return "Auto" if reviewer.available() else "Auto (acting as Ask first)"
     return {"ask": "Ask first", "skip": "Skip approvals"}[mode]
@@ -174,7 +179,7 @@ def effective_mode(db: Session, user: User, ctx: GateContext) -> str:
     if ctx.trigger in ("schedule", "automation"):
         mode = ctx.approval_mode if ctx.approval_mode in ("ask", "auto") else "ask"
     else:
-        mode = interim.stored_mode(db, user, ctx)
+        mode = stored_mode(db, user)
     if mode == "auto" and not reviewer.available():
         return "ask"
     return mode
@@ -211,6 +216,9 @@ def _dialect(policy: ToolPolicy) -> str:
         return shellparse.dialect_for_shell_kind(capabilities()["shell"]["kind"])
     except Exception:  # pragma: no cover - capability probe failure
         return shellparse.POSIX
+
+
+dialect_for = _dialect  # the shell dialect a tool's command rules are written in (used by the API)
 
 
 def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> Decision | _Pre:

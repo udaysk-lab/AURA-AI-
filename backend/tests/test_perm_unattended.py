@@ -23,7 +23,7 @@ from app.models import utcnow  # noqa: E402
 from app.permissions import approvals, events, gate, reviewer, rules  # noqa: E402
 from app.services import heartbeat, schedules, usage  # noqa: E402
 from tests.perm_helpers import ctx as make_ctx  # noqa: E402
-from tests.perm_helpers import make_session, make_user  # noqa: E402
+from tests.perm_helpers import apply_legacy, make_session, make_user  # noqa: E402
 
 SEND = {"to": "bob@example.com", "subject": "Hi", "body": "x"}
 
@@ -310,6 +310,7 @@ def test_a_heartbeat_creates_tasks_at_every_old_tier(env, level):
     """Workspace writes need no tier (decision 3a), except where the user's own ask rule says so."""
     db = env
     user = make_user(db, email=f"{level}@example.com", level=level)
+    apply_legacy(db, user)
     _urgent_email(db, user)
     heartbeat.run(db, user, force=True)
     titles = [t.title for t in db.scalars(select(models.Task).where(models.Task.user_id == user.id)).all()]

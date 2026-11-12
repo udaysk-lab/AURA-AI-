@@ -28,7 +28,7 @@ SOURCES = ("user", "card", "legacy")
 
 @dataclass(frozen=True)
 class Rule:
-    """The matching-relevant view of a stored (or interim) rule."""
+    """The matching-relevant view of a stored rule."""
 
     id: str
     effect: str
@@ -92,14 +92,8 @@ def stored(db: Session, user_id: str, policy: catalogue.ToolPolicy, ctx, now: da
 
 
 def active(db: Session, user: User, policy: catalogue.ToolPolicy, ctx, dialect: str = shellparse.POSIX) -> list[Rule]:
-    """Stored rules plus, until the legacy data migration has run for this user, the
-    read-time interim rules derived from the 1.0 settings (permissions/interim.py)."""
-    now = utcnow()
-    out = stored(db, user.id, policy, ctx, now)
-    from app.permissions import interim
-
-    out.extend(r for r in interim.rules(db, user, policy, ctx, dialect) if in_play(r, policy, scope_of(ctx), now))
-    return out
+    """The user's stored rules in play for this call (the `dialect` argument is kept for callers)."""
+    return stored(db, user.id, policy, ctx)
 
 
 # ---------------------------------------------------------------------------

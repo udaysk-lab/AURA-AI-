@@ -798,7 +798,10 @@ def test_0002_roundtrip(engine):
         insp = sa.inspect(engine)
         return {(t, c): next(x for x in insp.get_columns(t) if x["name"] == c)["default"] for t, c in keys}
 
-    migrate.upgrade_to_head(engine)
+    # Later revisions (pm02 is a data step and cannot be undone) are not part of this round trip.
+    with engine.connect() as conn:
+        command.upgrade(migrate.alembic_config(conn), "pm01_permissions")
+        conn.commit()
     assert all(v is not None for v in defaults().values()), defaults()
     with engine.connect() as conn:
         command.downgrade(migrate.alembic_config(conn), FIRST)
@@ -811,6 +814,118 @@ def test_0002_roundtrip(engine):
     migrate._CACHE.clear()
     assert migrate.upgrade_to_head(engine).state_before == State.BEHIND
     assert all(v is not None for v in defaults().values())
+
+
+# ---------------------------------------------------------------------------
+# Revision pm02 (permissions, data): the 1.0 trust settings become rows
+# ---------------------------------------------------------------------------
+
+
+def test_pm02_permissions_data_data(engine, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from app.config import settings
+
+    # Hosted shape: no device rows. (The device-control mapping is covered in test_perm_legacy.py.)
+    monkeypatch.setattr(settings, "device_control", "off", raising=False)
+    monkeypatch.setattr(settings, "local_mode", False, raising=False)
+    with engine.connect() as conn:
+        command.upgrade(migrate.alembic_config(conn), "pm01_permissions")
+        conn.commit()
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(hours=30)
+
+    def table(conn, name):
+        return sa.Table(name, sa.MetaData(), autoload_with=conn)
+
+    with engine.begin() as conn:
+        users, uset = table(conn, "users"), table(conn, "user_settings")
+        for uid, level in (("u-strict", "strict"), ("u-relaxed", "relaxed"), ("u-full", "full"), ("u-cons", "conservative")):
+            conn.execute(users.insert().values(id=uid, email=f"{uid}@x.test", name=uid, avatar_url="", timezone="UTC",
+                                              password_hash="", is_active=True, is_demo=False, created_at=now, updated_at=now))
+            conn.execute(uset.insert().values(id=f"s-{uid}", user_id=uid, briefing_time="08:00", briefing_enabled=True,
+                                             autonomy_level=level, theme="warm", heartbeat_enabled=True,
+                                             heartbeat_interval_minutes=30, quiet_hours="22:00-07:00", extra={},
+                                             created_at=now, updated_at=now))
+        # a user without a settings row at all
+        conn.execute(users.insert().values(id="u-bare", email="bare@x.test", name="b", avatar_url="", timezone="UTC",
+                                          password_hash="", is_active=True, is_demo=False, created_at=now, updated_at=now))
+        grants = table(conn, "approval_grants")
+        for gid, tool, scope, exp, revoked, target in (
+            ("g1", "send_email", "always", None, False, "Bob@Example.com"),
+            ("g2", "open_app", "window", now + timedelta(minutes=30), False, ""),
+            ("g3", "open_app", "window", now - timedelta(minutes=30), False, ""),
+            ("g4", "delete_file", "always", None, False, ""),
+            ("g5", "notify", "always", None, True, ""),
+        ):
+            conn.execute(grants.insert().values(id=gid, user_id="u-cons", tool_name=tool, scope=scope, expires_at=exp,
+                                               revoked=revoked, target=target, created_at=now, updated_at=now))
+        conn.execute(table(conn, "schedules").insert().values(
+            id="sch1", user_id="u-full", name="n", prompt="p", natural_language="", cron="0 8 * * *", timezone="UTC",
+            enabled=True, deliver_to="notification", last_result="", run_count=0, created_at=now, updated_at=now))
+        conn.execute(table(conn, "automation_rules").insert().values(
+            id="auto1", user_id="u-cons", name="A", natural_language="", trigger_type="manual", trigger_config={},
+            actions=[{"tool": "create_event"}, {"tool": "delete_event"}], enabled=True, run_count=0,
+            created_at=now, updated_at=now))
+        pend = table(conn, "pending_actions")
+        for pid, convo, created in (("p-new", "c1", now - timedelta(hours=1)), ("p-auto", None, now - timedelta(hours=2)), ("p-old", "c1", old)):
+            conn.execute(pend.insert().values(id=pid, user_id="u-cons", conversation_id=convo, tool_name="send_email",
+                                             arguments={}, preview="", status="pending", skill_code="",
+                                             created_at=created, updated_at=created))
+
+    report = migrate.upgrade_to_head(engine)
+    assert version_rows(engine) == [migrate.EXPECTED_HEAD] and report.revision_after == migrate.EXPECTED_HEAD
+
+    with engine.connect() as conn:
+        modes = dict(conn.execute(text("SELECT user_id, permission_mode FROM user_settings")).all())
+        assert modes == {"u-strict": "ask", "u-relaxed": "ask", "u-full": "skip", "u-cons": "ask"}
+        levels = dict(conn.execute(text("SELECT user_id, autonomy_level FROM user_settings")).all())
+        assert levels["u-full"] == "full" and levels["u-strict"] == "strict", "the old column is untouched"
+        rules = conn.execute(text("SELECT user_id, effect, system, tool, target_kind, pattern, applies_to, source, expires_at"
+                                  " FROM permission_rules")).all()
+        by = {}
+        for r in rules:
+            by.setdefault(r[0], []).append(r)
+        assert {r[1] for r in by["u-strict"]} == {"ask"} and len(by["u-strict"]) == 7
+        assert {r[3] for r in by["u-relaxed"]} == {"create_event", "write_file", "edit_file", "move_file", "make_directory",
+                                                  "open_app", "close_app", "set_clipboard", "scroll_screen", "fetch_url"}
+        assert {(r[2], r[6]) for r in by["u-full"]} == {(s, "schedule:sch1") for s in (
+            "core-calendar", "core-inbox", "core-memory", "core-planning", "core-tasks")}
+        cons = {(r[3], r[4], r[5], r[6]) for r in by["u-cons"]}
+        assert cons == {("send_email", "recipient", "bob@example.com", ""), ("open_app", "", "", ""),
+                        ("create_event", "", "", "automation:auto1")}
+        assert {r[7] for r in rules} == {"legacy"} and "u-bare" not in by
+        assert conn.execute(text("SELECT COUNT(*) FROM permission_rules WHERE tool = 'open_app' AND expires_at IS NOT NULL")).scalar() == 1
+        assert conn.execute(text("SELECT COUNT(*) FROM device_folders")).scalar() == 0
+        assert conn.execute(text("SELECT COUNT(*) FROM device_app_blocks")).scalar() == 0
+        pend = {r[0]: r[1:] for r in conn.execute(text("SELECT id, status, origin, expires_at FROM pending_actions")).all()}
+        assert pend["p-new"][0] == "pending" and pend["p-new"][1] == "chat" and pend["p-new"][2] is not None
+        assert pend["p-auto"][1] == "automation" and pend["p-old"][0] == "expired"
+        extra = conn.execute(text("SELECT extra FROM user_settings WHERE user_id = 'u-cons'")).scalar()
+        extra = json.loads(extra) if isinstance(extra, str) else extra
+        assert extra["permissions_migrated"]["from_tier"] == "conservative" and extra["legacy_events_pending"][0]["rules"] == 3
+        assert extra["legacy_events_pending"][0]["grants_not_carried"] == ["delete_file"]
+    assert has_table(engine, "approval_grants"), "nothing the 1.0 release had is dropped"
+
+    # running the transform again changes nothing: migrated users are skipped
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("pm02_again", BACKEND / "alembic" / "versions" / "pm02_permissions_data.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    env = {"device_control": False, "allowed_roots": [], "exec_mode": "ask", "exec_allowlist": [], "command_denylist": []}
+    with engine.begin() as conn:
+        again = mod.map_legacy(conn, env)
+        assert not {"u-strict", "u-relaxed", "u-full", "u-cons"} & set(again)
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM permission_rules")).scalar() == len(rules)
+
+
+def test_pm02_cannot_be_downgraded(engine):
+    migrate.upgrade_to_head(engine)
+    with engine.connect() as conn:
+        with pytest.raises(NotImplementedError):
+            command.downgrade(migrate.alembic_config(conn), "pm01_permissions")
 
 
 def test_unmapped_columns_are_safe(engine):

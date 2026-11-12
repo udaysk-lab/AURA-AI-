@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
 class ORMModel(BaseModel):
@@ -75,7 +75,6 @@ class PasswordResetIn(BaseModel):
 class SettingsOut(ORMModel):
     briefing_time: str
     briefing_enabled: bool
-    autonomy_level: str
     tone: str
     theme: str
     heartbeat_enabled: bool
@@ -86,12 +85,19 @@ class SettingsOut(ORMModel):
 class SettingsIn(BaseModel):
     briefing_time: str | None = None
     briefing_enabled: bool | None = None
-    autonomy_level: Literal["strict", "conservative", "relaxed", "full"] | None = None
     tone: str | None = None
     theme: Literal["warm", "dark", "light"] | None = None
     heartbeat_enabled: bool | None = None
     heartbeat_interval_minutes: int | None = Field(default=None, ge=5, le=720)
     quiet_hours: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_trust_level(cls, data):
+        """The 1.0 trust level is gone: the permission mode is set only on /api/permissions/mode."""
+        if isinstance(data, dict) and "autonomy_level" in data:
+            raise ValueError("autonomy_level was replaced by the permission mode: use /api/permissions/mode")
+        return data
 
 
 class Capability(BaseModel):
@@ -509,16 +515,6 @@ class HeartbeatOut(ORMModel):
     skills_run: list[str]
     needs_attention: int
     acknowledged: bool
-    created_at: datetime
-
-
-class GrantOut(ORMModel):
-    id: str
-    tool_name: str
-    scope: str
-    # For send_email, the one recipient the grant covers. Empty: the whole tool.
-    target: str = ""
-    expires_at: datetime | None
     created_at: datetime
 
 

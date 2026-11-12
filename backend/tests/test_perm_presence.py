@@ -107,6 +107,11 @@ def changing_routes(tmp_path):
         ("POST", "/api/device/blocklist", {"app_id": "somebank", "match": "keyword"}),
         ("POST", "/api/plugins/research/install", None),
         ("POST", "/api/device/run", {"command": "echo hi"}),
+        ("PUT", "/api/permissions/mode", {"mode": "ask"}),
+        ("PUT", "/api/permissions/boundaries", {"text": "no Fridays"}),
+        ("POST", "/api/permissions/rules", {"effect": "ask", "system": "core-inbox", "tool": "send_email"}),
+        ("PATCH", "/api/permissions/rules/no-such-rule", {"effect": "ask"}),
+        ("DELETE", "/api/permissions/rules/no-such-rule", None),
     ]
 
 

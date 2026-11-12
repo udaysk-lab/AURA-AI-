@@ -31,6 +31,7 @@ from app.device import policy as device_policy  # noqa: E402
 from app.device import shell as device_shell  # noqa: E402
 from app.device.runtime import DeviceUnavailable, reset_cache  # noqa: E402
 from app.main import app  # noqa: E402
+from tests.perm_helpers import apply_legacy  # noqa: E402
 from tests.schema import drop_test_schema, ensure_test_schema  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
@@ -646,6 +647,11 @@ def test_the_console_refuses_a_denylisted_command(client, auth, sandbox, monkeyp
 
 def test_browsing_files_is_fenced_to_the_allowed_roots(client, auth, sandbox):
     (sandbox / "visible.txt").write_text("hi")
+    db = SessionLocal()
+    try:  # the folder is the owner's connected folder, as the 2.0 upgrade makes it from DEVICE_ALLOWED_ROOTS
+        apply_legacy(db, db.scalars(select(User).where(User.email == EMAIL)).first())
+    finally:
+        db.close()
     ok = client.get("/api/device/files", headers=auth, params={"path": str(sandbox)})
     assert ok.status_code == 200
     assert any(e["name"] == "visible.txt" for e in ok.json()["entries"])
@@ -813,7 +819,8 @@ def _run_turn(monkeypatch, tool, arguments, tier, message="do the thing"):
     try:
         user = db.scalars(select(User).where(User.email == EMAIL)).first()
         convo = _conversation(db, user)
-        result = coordinator.run_agent(db, user, convo, message, autonomy_level=tier)
+        apply_legacy(db, user, tier)  # what the 2.0 upgrade makes of a user at this 1.0 level
+        result = coordinator.run_agent(db, user, convo, message)
         return result, db, user
     finally:
         db.close()
@@ -1038,7 +1045,8 @@ def test_a_screenshot_reaches_the_model_as_an_image(sandbox, monkeypatch):
     try:
         user = db.scalars(select(User).where(User.email == EMAIL)).first()
         convo = _conversation(db, user)
-        coordinator.run_agent(db, user, convo, "what's on my screen", autonomy_level="full")
+        apply_legacy(db, user, "full")
+        coordinator.run_agent(db, user, convo, "what's on my screen")
     finally:
         db.close()
 

@@ -88,17 +88,14 @@ def _can_run(enabled: set[str], code: str) -> bool:
     return bool(skill and code in enabled and skill.proactive)
 
 
-def run(db: Session, user: User, tier: str | None = None, force: bool = False) -> HeartbeatReport:
-    """Do a pass of background work and write a report.
-
-    `tier` is accepted for older callers and no longer decides anything."""
+def run(db: Session, user: User, force: bool = False) -> HeartbeatReport:
+    """Do a pass of background work and write a report."""
     from app import permissions
     from app.agent.coordinator import run_gated
 
     # Every tool call below goes through the gate as a heartbeat call: reads and
-    # AURA-workspace writes only, and it never asks (spec 9.2). Until the legacy data
-    # migration has run, a passed `tier` keeps a strict user's ask rules in force.
-    gate_ctx = permissions.build_context(db, user, "heartbeat", legacy_tier=tier or None)
+    # AURA-workspace writes only, and it never asks (spec 9.2).
+    gate_ctx = permissions.build_context(db, user, "heartbeat")
 
     def execute_tool(db_, user_, name, args, trigger="heartbeat", log_skill=True):
         return run_gated(db_, user_, name, args, gate_ctx, trigger=trigger, log_skill=log_skill)

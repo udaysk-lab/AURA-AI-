@@ -223,7 +223,6 @@ def listing(db: Session, user_id: str) -> list[Schedule]:
 def run_one(db: Session, user: User, schedule: Schedule) -> dict:
     """Run the schedule's prompt through the full agent and deliver the result."""
     from app.agent.coordinator import persist_exchange, run_agent
-    from app.deps import get_user_settings
     from app.models import Conversation
 
     convo = db.scalars(
@@ -237,9 +236,8 @@ def run_one(db: Session, user: User, schedule: Schedule) -> dict:
         db.commit()
         db.refresh(convo)
 
-    tier = get_user_settings(db, user).autonomy_level
     result = run_agent(
-        db, user, convo, schedule.prompt, autonomy_level=tier, trigger="schedule",
+        db, user, convo, schedule.prompt, trigger="schedule",
         origin_id=schedule.id, approval_mode=schedule.approval_mode,
     )
     persist_exchange(db, convo, schedule.prompt, result)

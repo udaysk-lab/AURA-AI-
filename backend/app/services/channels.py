@@ -304,7 +304,6 @@ def handle_inbound(
 ) -> dict:
     """Run an inbound message through the same agent the web app uses, if it is the owner's."""
     from app.agent.coordinator import persist_exchange, run_agent
-    from app.deps import get_user_settings
 
     text = (text or "").strip()
     if not text:
@@ -317,10 +316,7 @@ def handle_inbound(
         return _keep_as_notification(db, user, kind, sender, text)
 
     convo = conversation_for(db, user, kind, thread_key)
-    tier = get_user_settings(db, user).autonomy_level
-    result = run_agent(
-        db, user, convo, text, autonomy_level=tier, trigger="inbound", origin_id=kind
-    )
+    result = run_agent(db, user, convo, text, trigger="inbound", origin_id=kind)
     persist_exchange(db, convo, text, result)
 
     reply = result.text

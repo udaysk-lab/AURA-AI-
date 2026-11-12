@@ -137,3 +137,45 @@ def drop_table_if_present(name: str) -> bool:
         return False
     op.drop_table(name)
     return True
+
+
+# ---------------------------------------------------------------------------
+# What a data migration may know about the install it runs on
+# ---------------------------------------------------------------------------
+
+
+def install_env() -> dict:
+    """The install-level settings the permissions data migration (pm02) maps into rows.
+
+    They live in the environment or in .env / aura.env files that only the app's settings
+    object reads, so a revision cannot see them through os.environ. Imported lazily; a revision
+    imports this module and nothing else. Command patterns are normalised here, with the
+    matcher the gate uses, so a stored pattern means exactly what the gate will compare.
+    """
+    from app.config import settings
+
+    device = bool(settings.device_control_enabled)
+    allow: list[str] = []
+    if device and settings.device_exec_mode == "allowlist":
+        dialect = "posix"
+        try:
+            from app.device.runtime import capabilities
+            from app.permissions import shellparse
+
+            dialect = shellparse.dialect_for_shell_kind(capabilities()["shell"]["kind"])
+        except Exception:  # capability probe failed: posix rules are the safest reading
+            pass
+        from app.permissions import match
+
+        for entry in settings.device_exec_allow_list:
+            try:
+                allow.append(match.normalise_command_pattern(entry, "allow", dialect))
+            except match.PatternError:
+                continue  # an entry that is not one plain command could never have matched
+    return {
+        "device_control": device,
+        "allowed_roots": list(settings.device_allowed_root_list) if device else [],
+        "exec_mode": settings.device_exec_mode if device else "ask",
+        "exec_allowlist": allow,
+        "command_denylist": list(settings.device_command_deny_list) if device else [],
+    }

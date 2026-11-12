@@ -61,6 +61,56 @@ def legacy_folders(db, user):
         connect(db, user, root, can_delete=True, source="legacy")
 
 
+_PM02 = None
+
+
+def pm02():
+    """The data migration module (alembic/versions/pm02_permissions_data.py), loaded from its file."""
+    global _PM02
+    if _PM02 is None:
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "pm02_permissions_data.py"
+        spec = importlib.util.spec_from_file_location("pm02_permissions_data_under_test", path)
+        _PM02 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_PM02)
+    return _PM02
+
+
+def apply_legacy(db, user, tier=None, *, env=None, reset=True):
+    """Run the pm02 mapping for one user, as the upgrade would, with this process's settings as the
+    install (or `env`). `tier` sets the 1.0 level first. `reset` clears an earlier mapping so a test
+    can map the same user again under another tier or setting."""
+    import sqlalchemy as sa
+
+    from app.migration_ops import install_env
+
+    db.flush()
+    row = db.scalars(sa.select(models.UserSettings).where(models.UserSettings.user_id == user.id)).first()
+    if row is None:
+        row = models.UserSettings(user_id=user.id)
+        db.add(row)
+        db.flush()
+    if reset:
+        db.execute(sa.delete(models.PermissionRule).where(
+            models.PermissionRule.user_id == user.id, models.PermissionRule.source == "legacy"))
+        db.execute(sa.delete(models.DeviceFolder).where(
+            models.DeviceFolder.user_id == user.id, models.DeviceFolder.source == "legacy"))
+        extra = dict(row.extra or {})
+        for key in ("permissions_migrated", "legacy_events_pending"):
+            extra.pop(key, None)
+        row.extra = extra
+        row.permission_mode = "ask"
+    if tier:
+        row.autonomy_level = tier
+    db.commit()
+    summary = pm02().map_legacy(db.connection(), env if env is not None else install_env(), only_user_id=user.id)
+    db.commit()
+    db.expire_all()
+    return summary.get(user.id)
+
+
 def ctx(db, user, trigger="chat", **kw):
     return gate.build_context(db, user, trigger, **kw)
 

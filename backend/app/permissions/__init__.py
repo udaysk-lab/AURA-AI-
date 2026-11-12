@@ -3,8 +3,8 @@
 Submodules: `catalogue` (every tool, its system and kind), `match` and `shellparse`
 (rule matching), `floors` (what nobody can override), `rules` (storage and
 lookup), `events` (the hash-chained log), `triggers` (limits per trigger),
-`interim` (read-time stand-in for the legacy mapping until WP11), `reviewer`
-(the auto-mode safety reviewer, WP10), `gate` (the single decision function) and
+`legacy` (the 1.0 mapping: its record in the user's log), `reviewer`
+(the auto-mode safety reviewer), `gate` (the single decision function) and
 `approvals` (parked approvals: queueing, answering, expiry).
 
 The public names the task loop uses are available here (`permissions.decide`,

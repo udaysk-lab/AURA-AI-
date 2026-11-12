@@ -9,10 +9,8 @@ Install-level environment settings are ceilings, never levels: DEVICE_ALLOWED_RO
 limits which folders count (a connected folder outside every root is inert); the user's choices
 live in the database and must fit inside.
 
-Until the legacy data migration (`pm02`, work package 11) has run for a user, the folders of
-DEVICE_ALLOWED_ROOTS are derived at read time as "legacy" folders (see `_legacy_folders`), so an
-existing install keeps its folders; nothing is written. The first change a user makes to such a
-folder turns it into a real row (`materialise`). The hosted site has none of this: with device
+An existing install keeps its folders: the data migration `pm02` wrote the folders of
+DEVICE_ALLOWED_ROOTS as real rows (source `legacy`). The hosted site has none of this: with device
 control off every function here answers "nothing" without touching the database.
 """
 
@@ -38,7 +36,6 @@ from app.permissions import match
 
 TIERS = ("view", "click", "full")
 TIER_RANK = {t: i for i, t in enumerate(TIERS)}
-LEGACY_PREFIX = "legacy:"
 PRESENCE_SECONDS = 90
 SUSPEND_SECONDS = 60
 COOLDOWN_SECONDS = 10
@@ -72,7 +69,6 @@ class FolderInfo:
     source: str
     within_limit: bool = True
     created_at: datetime | None = None
-    virtual: bool = False
 
 
 @dataclass(frozen=True)
@@ -216,27 +212,6 @@ def _set_extra(db: Session, user: User, **values) -> None:
     db.commit()
 
 
-def migrated(db: Session, user: User) -> bool:
-    return bool(_extra(db, user).get("permissions_migrated"))
-
-
-def _legacy_folders(db: Session, user: User, rows: list[DeviceFolder]) -> list[FolderInfo]:
-    """DEVICE_ALLOWED_ROOTS as folders, for a user the data migration has not reached yet.
-
-    A real row for the same path (even a removed one) replaces the derived entry."""
-    if migrated(db, user):
-        return []
-    have = {r.path_key for r in rows}
-    out = []
-    for root in settings.device_allowed_root_list:
-        key = path_key(root)
-        if key in have:
-            continue
-        out.append(FolderInfo(id=LEGACY_PREFIX + key[:16], path=root, path_key=key, can_delete=True,
-                              source="legacy", virtual=True))
-    return out
-
-
 def seed_blocklist(db: Session, user_id: str) -> int:
     """Insert the default blocklist once per user. A default the user later deletes stays deleted."""
     user = db.get(User, user_id)
@@ -269,7 +244,6 @@ def snapshot(db: Session | None, user: User | None) -> Access:
                    within_limit=within_ceiling(r.path, ceiling), created_at=r.created_at)
         for r in rows if r.revoked_at is None
     ]
-    folders += _legacy_folders(db, user, list(rows))
     grants = tuple(
         GrantInfo(g.id, g.app_id, g.display_name or g.app_id, g.tier)
         for g in db.scalars(
@@ -285,21 +259,6 @@ def snapshot(db: Session | None, user: User | None) -> Access:
         ).all()
     )
     return Access(tuple(folders), grants, blocks, ceiling)
-
-
-def materialise(db: Session, user: User, folder_id: str) -> DeviceFolder | None:
-    """Turn a derived legacy folder into a real row (so it can be changed or removed)."""
-    if not folder_id.startswith(LEGACY_PREFIX):
-        return None
-    for f in snapshot(db, user).folders:
-        if f.id == folder_id and f.virtual:
-            row = DeviceFolder(user_id=user.id, path=f.path, path_key=f.path_key, can_delete=f.can_delete,
-                               source="legacy")
-            db.add(row)
-            db.commit()
-            db.refresh(row)
-            return row
-    return None
 
 
 # ---------------------------------------------------------------------------

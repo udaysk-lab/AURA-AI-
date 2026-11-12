@@ -44,13 +44,17 @@ def record(
     target: str = "",
     detail: dict | None = None,
     link: str = "/settings/permissions",
+    log_event: bool = True,
 ) -> None:
-    """Event + notification for one change the signed-in user made. Never raises: the change is saved."""
-    try:
-        events.append(db, user.id, kind, actor="user", tool=tool, target=target, outcome="allow",
-                      detail=detail or {})
-    except Exception:
-        log.exception("could not write the permission event for %s", kind)
+    """Event + notification for one change the signed-in user made. Never raises: the change is saved.
+
+    `log_event=False` when the code that made the change already wrote its event (rules.add / revoke)."""
+    if log_event:
+        try:
+            events.append(db, user.id, kind, actor="user", tool=tool, target=target, outcome="allow",
+                          detail=detail or {})
+        except Exception:
+            log.exception("could not write the permission event for %s", kind)
     title = ("Permission widened: " if widens else "Permission changed: ") + summary
     try:
         db.add(Notification(user_id=user.id, level="urgent" if widens else "info", title=title[:300],

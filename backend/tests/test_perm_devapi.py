@@ -18,6 +18,7 @@ from app.device.runtime import reset_cache  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import DeviceAppGrant, DeviceFolder, User  # noqa: E402
 from app.permissions import access  # noqa: E402
+from tests.perm_helpers import apply_legacy  # noqa: E402
 from tests.schema import drop_test_schema, ensure_test_schema  # noqa: E402
 
 
@@ -102,12 +103,17 @@ def test_legacy_roots_are_listed_and_changeable(client, h, tmp_path, monkeypatch
     finally:
         db.close()
     monkeypatch.setattr(settings, "device_allowed_roots", str(root), raising=False)
+    db = SessionLocal()
+    try:
+        apply_legacy(db, db.scalars(select(User).where(User.email.like("%@localhost"))).first())
+    finally:
+        db.close()
     listing = client.get("/api/device/folders", headers=h).json()
     assert [x["path"] for x in listing] == [os.path.realpath(str(root))]
     item = listing[0]
     assert item["source"] == "legacy" and item["can_delete"] is True
     r = client.patch(f"/api/device/folders/{item['id']}", headers=h, json={"can_delete": False})
-    assert r.status_code == 200 and r.json()["can_delete"] is False and not r.json()["id"].startswith("legacy:")
+    assert r.status_code == 200 and r.json()["can_delete"] is False and r.json()["id"] == item["id"]
     assert client.delete(f"/api/device/folders/{r.json()['id']}", headers=h).status_code == 200
     assert client.get("/api/device/folders", headers=h).json() == []
 

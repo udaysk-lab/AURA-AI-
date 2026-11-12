@@ -16,7 +16,7 @@ from app.device.runtime import DeviceUnavailable, reset_cache  # noqa: E402
 from app.llm import ToolCall  # noqa: E402
 from app.models import DeviceFolder, UserSettings, utcnow  # noqa: E402
 from app.permissions import access, approvals, gate  # noqa: E402
-from tests.perm_helpers import connect, ctx, make_session, make_user  # noqa: E402
+from tests.perm_helpers import apply_legacy, connect, ctx, make_session, make_user  # noqa: E402
 
 
 @pytest.fixture
@@ -209,29 +209,24 @@ def test_nested_folders_the_most_specific_decides_delete(env):
     assert snap.folder_for(os.path.realpath(str(tmp / "a" / "f"))).can_delete is True
 
 
-def test_legacy_roots_are_derived_until_the_migration_has_run(env, monkeypatch):
+def test_legacy_roots_become_folders_when_the_migration_runs(env, monkeypatch):
     tmp, db = env
     root = tmp / "root"
     root.mkdir()
     monkeypatch.setattr(settings, "device_allowed_roots", str(root), raising=False)
     user = user_with(db, "skip", migrated=False)  # not through pm02 yet
+    assert access.snapshot(db, user).folders == (), "nothing is derived at read time any more"
+    apply_legacy(db, user)
     snap = access.snapshot(db, user)
-    assert [f.path for f in snap.folders] == [os.path.realpath(str(root))]
-    assert snap.folders[0].virtual and snap.folders[0].can_delete and snap.folders[0].source == "legacy"
-    assert db.scalars(select(DeviceFolder)).first() is None, "nothing is written by deriving them"
-    d = go(db, user, "write_file", {"path": str(root / "a.txt"), "content": "x"})
-    assert code(d) == ("ask", "MODE_ASK")  # inside the folder: the 1.0 tier's mode decides, no folder card
-    # the first change turns it into a real row, which then replaces the derived one
-    row = access.materialise(db, user, snap.folders[0].id)
+    real = os.path.realpath(str(root))
+    assert [(f.path, f.path_key, f.can_delete, f.source) for f in snap.folders] == [
+        (real, access.path_key(real), True, "legacy")
+    ]
+    row = db.scalars(select(DeviceFolder)).one()
+    assert row.revoked_at is None and row.id == snap.folders[0].id
     row.revoked_at = utcnow()
     db.commit()
     assert access.snapshot(db, user).folders == ()
-    # a migrated user gets rows from the migration, never derived ones
-    other = make_user(db, email="m@example.com", migrated=False)
-    db.add(DeviceFolder(user_id=other.id, path="/x", path_key="k"))
-    other.settings.extra = {"permissions_migrated": 1}
-    db.commit()
-    assert all(not f.virtual for f in access.snapshot(db, other).folders)
 
 
 def test_blocklist_defaults_and_matching(env):

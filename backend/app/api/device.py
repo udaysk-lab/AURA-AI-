@@ -270,8 +270,7 @@ def _row_out(row: DeviceFolder) -> DeviceFolderOut:
 
 
 def _folder_row(db: Session, user: User, folder_id: str) -> DeviceFolder:
-    row = access.materialise(db, user, folder_id) if folder_id.startswith(access.LEGACY_PREFIX) else None
-    row = row or db.get(DeviceFolder, folder_id)
+    row = db.get(DeviceFolder, folder_id)
     if row is None or row.user_id != user.id or row.revoked_at is not None:
         raise HTTPException(status_code=404, detail="Folder not found")
     return row

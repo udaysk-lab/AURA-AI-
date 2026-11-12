@@ -16,7 +16,7 @@ from app.config import settings  # noqa: E402
 from app.device.runtime import reset_cache  # noqa: E402
 from app.models import ApprovalGrant, PermissionEvent, utcnow  # noqa: E402
 from app.permissions import events, gate, reviewer, rules  # noqa: E402
-from tests.perm_helpers import ctx, decide, make_session, make_user  # noqa: E402
+from tests.perm_helpers import apply_legacy, ctx, decide, make_session, make_user  # noqa: E402
 
 SEND = {"to": "bob@example.com", "subject": "Hi", "body": "x"}
 
@@ -377,15 +377,15 @@ def test_decisions_are_logged_but_plain_reads_are_not(env):
     assert all("Hi" not in (e.target + str(e.detail)) for e in rows), "no message content in the log"
 
 
-# --- until the legacy migration: the 1.0 tier is read at decision time ------------------------
+# --- what the legacy mapping (pm02) makes of the 1.0 settings: see also test_perm_legacy.py ----
 
 
-def test_interim_tiers_keep_existing_behaviour(env):
+def test_legacy_tiers_keep_existing_behaviour(env):
     _, db = env
-    strict = make_user(db, "strict@example.com", level="strict")
-    cons = make_user(db, "cons@example.com", level="conservative")
-    relaxed = make_user(db, "relaxed@example.com", level="relaxed")
-    full = make_user(db, "full@example.com", level="full")
+    users = {lv: make_user(db, f"{lv}@example.com", level=lv) for lv in ("strict", "conservative", "relaxed", "full")}
+    strict, cons, relaxed, full = (users[k] for k in ("strict", "conservative", "relaxed", "full"))
+    for u in users.values():
+        apply_legacy(db, u)
     # strict asks before its own writes; the others do not
     assert codes(decide(db, strict, "create_task", {"title": "x"})) == ("ask", "RULE_ASK")
     assert codes(decide(db, cons, "create_task", {"title": "x"})) == ("allow", "DEFAULT_WORKSPACE")
@@ -395,16 +395,15 @@ def test_interim_tiers_keep_existing_behaviour(env):
     assert codes(decide(db, cons, "create_event", ev)) == ("ask", "MODE_ASK")
     assert decide(db, relaxed, "send_email", SEND).kind == "ask"
     assert decide(db, relaxed, "delete_event", {"event_id": "e"}).kind == "ask"
-    # full does everything the gate allows, schedules included
+    # full skips approvals; its schedules that existed keep running alone (see test_perm_legacy)
     assert codes(decide(db, full, "send_email", SEND)) == ("allow", "MODE_SKIP")
-    assert codes(decide(db, full, "send_email", SEND, trigger="schedule", approval_mode="ask", origin_id="s")) == ("allow", "RULE_ALLOW")
     assert codes(decide(db, cons, "send_email", SEND, trigger="schedule", approval_mode="ask", origin_id="s")) == ("ask", "MODE_ASK")
-    # nobody is put on auto, and nothing was written
-    assert db.scalars(select(models.PermissionRule)).all() == []
+    # nobody is put on auto
     assert gate.mode_label(db, full) == "Skip approvals" and gate.mode_label(db, cons) == "Ask first"
+    assert {r.source for r in db.scalars(select(models.PermissionRule)).all()} == {"legacy"}
 
 
-def test_interim_grants_and_the_loop_tier(env):
+def test_legacy_grants(env):
     _, db = env
     user = make_user(db, level="conservative")
     db.add(ApprovalGrant(user_id=user.id, tool_name="send_email", scope="always", target="bob@example.com"))
@@ -412,32 +411,37 @@ def test_interim_grants_and_the_loop_tier(env):
     db.add(ApprovalGrant(user_id=user.id, tool_name="archive_email", scope="window", expires_at=utcnow() - timedelta(minutes=5)))
     db.add(ApprovalGrant(user_id=user.id, tool_name="delete_task", scope="always", revoked=True))
     db.commit()
+    apply_legacy(db, user)
     assert codes(decide(db, user, "send_email", SEND)) == ("allow", "RULE_ALLOW")
     assert decide(db, user, "send_email", {**SEND, "to": "eve@evil.org"}).kind == "ask"
     assert codes(decide(db, user, "delete_event", {"event_id": "e"})) == ("allow", "RULE_ALLOW")
     assert decide(db, user, "archive_email", {"email_id": "e"}).kind == "ask"
     assert decide(db, user, "delete_task", {"task_id": "t"}).kind == "ask"
-    # a tier passed by the loop wins over the stored one
-    assert codes(decide(db, user, "create_task", {"title": "x"}, legacy_tier="strict")) == ("ask", "RULE_ASK")
 
 
-def test_interim_stops_once_the_user_is_migrated(env):
+def test_a_user_who_is_not_mapped_gets_no_old_behaviour(env):
+    """There is no read-time derivation any more: the stored mode and rules are the whole truth."""
     _, db = env
-    user = make_user(db, level="full", migrated=True)  # stored mode is ask (the column default)
+    user = make_user(db, level="full", migrated=True)  # 1.0 level full, but stored mode is ask
     assert codes(decide(db, user, "send_email", SEND)) == ("ask", "MODE_ASK")
+    plain = make_user(db, "plain@example.com", level="relaxed")  # never mapped: no rules at all
+    ev = {"title": "t", "start": "2030-01-01T10:00:00Z", "end": "2030-01-01T11:00:00Z"}
+    assert codes(decide(db, plain, "create_event", ev)) == ("ask", "MODE_ASK")
 
 
-def test_interim_exec_allowlist(device, monkeypatch):
+def test_legacy_exec_allowlist(device, monkeypatch):
     engine, db = make_session(device)
     try:
         user = make_user(db, level="conservative")
         monkeypatch.setattr(settings, "device_exec_mode", "allowlist", raising=False)
         monkeypatch.setattr(settings, "device_exec_allowlist", "git status,ls", raising=False)
+        apply_legacy(db, user)
         assert codes(decide(db, user, "run_command", {"command": "git status -s"})) == ("allow", "RULE_ALLOW")
         assert decide(db, user, "run_command", {"command": "git status && git push"}).kind == "ask"
         assert decide(db, user, "run_command", {"command": "ls; rm x"}).kind == "ask"
         assert decide(db, user, "run_command", {"command": "ls $(echo)"}).kind == "ask"
         monkeypatch.setattr(settings, "device_exec_mode", "full", raising=False)
+        apply_legacy(db, user)
         assert codes(decide(db, user, "run_command", {"command": "make build"})) == ("allow", "RULE_ALLOW")
         # but a command that deletes still needs the user, and the floors still hold
         assert codes(decide(db, user, "run_command", {"command": "rm -rf build"})) == ("ask", "ALWAYS_USER")

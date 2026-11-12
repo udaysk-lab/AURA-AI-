@@ -114,6 +114,10 @@ class Settings(BaseSettings):
     # Blank means "use the same model as chat".
     background_model: str = ""
 
+    # The auto-mode safety reviewer's model (a second, separate call per action that would have
+    # asked). Blank falls back to BACKGROUND_MODEL, then to the main model.
+    reviewer_model: str = ""
+
     # Embeddings need OpenAI. Without it, memory and document search fall back to
     # lexical overlap — degraded but working, never broken.
     embedding_model: str = "text-embedding-3-small"

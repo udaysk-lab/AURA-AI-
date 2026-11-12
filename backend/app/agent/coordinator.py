@@ -22,7 +22,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import permissions
-from app.agent import autonomy
 from app.agent import skills as skill_registry
 from app.agent import tools as tool_registry
 from app.agent.prompts import build_system_prompt
@@ -247,7 +246,7 @@ def _last_assistant_message(db: Session, conversation: Conversation) -> str:
 
 
 def _prelude(
-    db: Session, user: User, user_message: str, tier: str
+    db: Session, user: User, user_message: str
 ) -> tuple[list[dict], list[str]]:
     memory_block, memory_ids = memory_service.build_context_block(db, user.id, user_message)
     assistant = identity_service.get_or_create(db, user)
@@ -263,7 +262,7 @@ def _prelude(
         user_email=user.email,
         timezone=user.timezone,
         persona=identity_service.persona_prompt(assistant),
-        autonomy=tier,
+        permission_mode=permissions.mode_label(db, user),
         memory_block=memory_block,
         learned_block=learned,
         google_connected=google_service.is_connected(db, user.id),
@@ -337,7 +336,6 @@ def iter_agent(
     user: User,
     conversation: Conversation,
     user_message: str,
-    autonomy_level: str = "conservative",
     trigger: str = "chat",
     origin_id: str = "",
     approval_mode: str | None = None,
@@ -356,7 +354,6 @@ def iter_agent(
     the interactive budget the user actually notices.
     """
     started = time.perf_counter()
-    tier = autonomy.normalise_tier(autonomy_level)
     result = AgentResult()
 
     # Only the signed-in owner's own chat teaches AURA anything: a schedule's stored prompt and,
@@ -366,7 +363,7 @@ def iter_agent(
     if result.learned:
         yield {"type": "learned", "value": result.learned}
 
-    messages, result.memories_used = _prelude(db, user, user_message, tier)
+    messages, result.memories_used = _prelude(db, user, user_message)
     if result.memories_used:
         yield {"type": "memory", "count": len(result.memories_used)}
     messages += _history(db, conversation)
@@ -374,12 +371,11 @@ def iter_agent(
 
     provider = get_provider()
     specs = _available_specs(db, user)
-    # One gate context per run. `legacy_tier` keeps the 1.0 tier in force until the
-    # legacy data migration has turned it into a permission mode and rules (WP11).
+    # One gate context per run: the mode and rules are read from the database on every decision.
     gate_ctx = permissions.build_context(
         db, user, trigger,
         conversation_id=conversation.id, instruction=user_message,
-        origin_id=origin_id, approval_mode=approval_mode, legacy_tier=tier,
+        origin_id=origin_id, approval_mode=approval_mode,
     )
     cheap_model = (
         settings.background_model
@@ -561,7 +557,6 @@ def run_agent(
     user: User,
     conversation: Conversation,
     user_message: str,
-    autonomy_level: str = "conservative",
     trigger: str = "chat",
     origin_id: str = "",
     approval_mode: str | None = None,
@@ -569,8 +564,7 @@ def run_agent(
     """The whole turn, without the running commentary."""
     events = iter_agent(
         db, user, conversation, user_message,
-        autonomy_level=autonomy_level, trigger=trigger,
-        origin_id=origin_id, approval_mode=approval_mode,
+        trigger=trigger, origin_id=origin_id, approval_mode=approval_mode,
     )
     while True:
         try:
@@ -630,7 +624,6 @@ def stream_agent(
     user: User,
     conversation: Conversation,
     user_message: str,
-    autonomy_level: str = "conservative",
     trigger: str = "chat",
 ) -> Iterator[dict]:
     """Yield progress events for SSE, as they happen.
@@ -645,8 +638,7 @@ def stream_agent(
     yield {"type": "status", "value": "thinking"}
 
     events = iter_agent(
-        db, user, conversation, user_message,
-        autonomy_level=autonomy_level, trigger=trigger,
+        db, user, conversation, user_message, trigger=trigger,
     )
     while True:
         try:

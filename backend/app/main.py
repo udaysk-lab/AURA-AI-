@@ -21,6 +21,7 @@ from app.api import (
     hub,
     intelligence,
     local,
+    permissions,
     remote,
     workspace,
 )
@@ -74,6 +75,13 @@ async def lifespan(_: FastAPI):
         from app import deps
 
         deps.ensure_local_key()
+
+    if settings.device_control_enabled and (settings.device_exec_mode != "ask" or settings.device_exec_allowlist.strip()):
+        # They were read once, by the 2.0 upgrade, and turned into rules. Rules are the one place to change this now.
+        log.warning(
+            "DEVICE_EXEC_MODE / DEVICE_EXEC_ALLOWLIST are no longer used: the upgrade turned them into "
+            "rules. Change command rules in Settings, Permissions."
+        )
 
     if settings.device_control_enabled:
         from app.device.runtime import capabilities
@@ -148,6 +156,7 @@ app.include_router(account.router)
 app.include_router(assistant.router)
 app.include_router(cron.router)
 app.include_router(local.router)
+app.include_router(permissions.router)
 app.include_router(remote.router)
 
 

@@ -1,4 +1,4 @@
-"""Skills, identity, heartbeat and trust grants."""
+"""Skills, identity, heartbeat and memory maintenance."""
 
 from __future__ import annotations
 
@@ -6,15 +6,13 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from app.agent import autonomy
 from app.agent import skills as skill_registry
-from app.deps import CurrentUser, DbSession, PresentUser, get_user_settings
+from app.deps import CurrentUser, DbSession, PresentUser
 from app.models import HeartbeatReport
 from app.schemas import (
     AssistantOut,
     AssistantPatch,
     CompactionOut,
-    GrantOut,
     HeartbeatOut,
     SkillOut,
     SkillPatch,
@@ -250,10 +248,7 @@ def heartbeat_latest(user: CurrentUser, db: DbSession) -> HeartbeatOut | None:
 
 @router.post("/heartbeat/run", response_model=HeartbeatOut)
 def heartbeat_run(user: CurrentUser, db: DbSession) -> HeartbeatOut:
-    tier = get_user_settings(db, user).autonomy_level
-    return HeartbeatOut.model_validate(
-        heartbeat_service.run(db, user, tier, force=True)
-    )
+    return HeartbeatOut.model_validate(heartbeat_service.run(db, user, force=True))
 
 
 @router.post("/heartbeat/{report_id}/ack", response_model=HeartbeatOut)
@@ -268,25 +263,8 @@ def heartbeat_ack(report_id: str, user: CurrentUser, db: DbSession) -> Heartbeat
 
 
 # ---------------------------------------------------------------------------
-# Trust grants + memory maintenance
+# Memory maintenance
 # ---------------------------------------------------------------------------
-
-
-@router.get("/grants", response_model=list[GrantOut])
-def list_grants(user: CurrentUser, db: DbSession) -> list[GrantOut]:
-    return [GrantOut.model_validate(g) for g in autonomy.list_grants(db, user.id)]
-
-
-@router.delete("/grants/{tool_name}")
-def revoke_grant(
-    tool_name: str,
-    user: CurrentUser,
-    db: DbSession,
-    target: str | None = Query(default=None, max_length=320),
-) -> dict:
-    """Revoke a tool's standing permission — or, with ?target=, one recipient's."""
-    count = autonomy.revoke(db, user.id, tool_name, target=target)
-    return {"revoked": count}
 
 
 @router.post("/memories/compact", response_model=CompactionOut)

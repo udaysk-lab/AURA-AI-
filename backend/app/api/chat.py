@@ -14,7 +14,7 @@ from sqlalchemy.exc import OperationalError
 from app.agent.coordinator import persist_exchange, run_agent, stream_agent
 from app.config import settings
 from app.db import SessionLocal
-from app.deps import CurrentUser, DbSession, get_user_settings
+from app.deps import CurrentUser, DbSession
 from app.models import Conversation, Message, User
 from app.schemas import (
     ChatIn,
@@ -147,8 +147,7 @@ def delete_conversation(conversation_id: str, user: CurrentUser, db: DbSession) 
 def chat(payload: ChatIn, user: CurrentUser, db: DbSession) -> ChatOut:
     """Non-streaming turn. Use /stream for the live UI."""
     convo = _get_or_create(db, user, payload.conversation_id)
-    tier = get_user_settings(db, user).autonomy_level
-    result = run_agent(db, user, convo, payload.message, autonomy_level=tier)
+    result = run_agent(db, user, convo, payload.message)
     message = persist_exchange(db, convo, payload.message, result)
     return ChatOut(
         conversation_id=convo.id,
@@ -168,7 +167,6 @@ def chat(payload: ChatIn, user: CurrentUser, db: DbSession) -> ChatOut:
 @router.post("/stream")
 def chat_stream(payload: ChatIn, user: CurrentUser, db: DbSession) -> StreamingResponse:
     convo = _get_or_create(db, user, payload.conversation_id)
-    tier = get_user_settings(db, user).autonomy_level
     user_id, convo_id = user.id, convo.id
     bind = db.get_bind()  # same engine as the request, test overrides included
 
@@ -186,7 +184,6 @@ def chat_stream(payload: ChatIn, user: CurrentUser, db: DbSession) -> StreamingR
             stream_convo = stream_db.get(Conversation, convo_id)
             for event in stream_agent(
                 stream_db, stream_user, stream_convo, payload.message,
-                autonomy_level=tier,
             ):
                 yield f"data: {json.dumps(event, default=str)}\n\n"
         except Exception as exc:  # never leave the client hanging

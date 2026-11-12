@@ -54,8 +54,11 @@ def _columns(eng, table: str) -> set[str]:
     return {c["name"] for c in sa.inspect(eng).get_columns(table)}
 
 
-def test_pm01_follows_0002_and_is_head():
-    assert migrate.EXPECTED_HEAD == PM01
+def test_pm01_follows_0002():
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(migrate.alembic_config())
+    assert script.get_revision(PM01).down_revision == PREV
 
 
 def test_pm01_adds_only(engine):
