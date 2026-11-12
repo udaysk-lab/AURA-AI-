@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from datetime import timezone
+
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from app.agent.coordinator import resolve_pending
 from app.automation import engine as automation_engine
-from app.deps import CurrentUser, DbSession, get_user_settings
+from app.deps import CurrentUser, DbSession, get_user_settings, is_remote_session
 from app.models import (
     ActivityLog,
     AutomationRule,
@@ -35,6 +37,8 @@ from app.schemas import (
 )
 from app.services import briefing as briefing_service
 from app.services import demo as demo_service
+from app.permissions import approvals, events as permission_events, reviewer
+from app.security import decode_access_token
 from app.services import memory as memory_service
 
 router = APIRouter(prefix="/api", tags=["assistant"])
@@ -173,10 +177,27 @@ def list_automations(user: CurrentUser, db: DbSession) -> list[AutomationOut]:
     return [AutomationOut.model_validate(r) for r in rows]
 
 
+def _check_mode(mode: str | None) -> None:
+    """`auto` sends each approval to the safety reviewer, which needs a connected model."""
+    if mode == "auto" and not reviewer.available():
+        raise HTTPException(
+            status_code=409,
+            detail="Auto needs a connected AI model. The built-in demo model can't review actions.",
+        )
+
+
 @router.post("/automations", response_model=AutomationOut)
 def create_automation(payload: AutomationIn, user: CurrentUser, db: DbSession) -> AutomationOut:
-    rule = automation_engine.create_rule(db, user, payload.natural_language, payload.enabled)
-    return AutomationOut.model_validate(rule)
+    _check_mode(payload.approval_mode)
+    try:
+        rule, warnings = automation_engine.create_rule_checked(
+            db, user, payload.natural_language, payload.enabled, approval_mode=payload.approval_mode
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    out = AutomationOut.model_validate(rule)
+    out.warnings = warnings
+    return out
 
 
 @router.patch("/automations/{rule_id}", response_model=AutomationOut)
@@ -186,10 +207,21 @@ def update_automation(
     rule = db.get(AutomationRule, rule_id)
     if not rule or rule.user_id != user.id:
         raise HTTPException(status_code=404, detail="Automation not found")
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    old_mode = rule.approval_mode
+    if changes.get("approval_mode") is None:
+        changes.pop("approval_mode", None)
+    elif changes["approval_mode"] != old_mode:
+        _check_mode(changes["approval_mode"])
+    for key, value in changes.items():
         setattr(rule, key, value)
     db.commit()
     db.refresh(rule)
+    if rule.approval_mode != old_mode:
+        permission_events.append(
+            db, user.id, "schedule_mode_changed", actor="user", target=f"automation:{rule.id}",
+            outcome="allow", detail={"kind": "automation", "from": old_mode, "to": rule.approval_mode},
+        )
     return AutomationOut.model_validate(rule)
 
 
@@ -224,25 +256,63 @@ def tick(user: CurrentUser, db: DbSession) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _pending_out(action: PendingAction) -> PendingActionOut:
+    """The client's `PendingAction`: the row, with the options a card always has and no internals."""
+    out = PendingActionOut.model_validate(action)
+    out.options = list(approvals.default_options(action))
+    out.card_payload = {k: v for k, v in (action.card_payload or {}).items() if k != "rule_draft"}
+    out.card = action.card or "tool"
+    if action.expires_at is not None and action.expires_at.tzinfo is None:
+        out.expires_at = action.expires_at.replace(tzinfo=timezone.utc)
+    return out
+
+
+def _caller(request: Request) -> approvals.Caller:
+    """Who is answering: a paired device, the keyless local login (`amr` = local-open), or the owner."""
+    if is_remote_session(request):
+        return approvals.Caller("remote", str(getattr(request.state, "remote_device_id", "") or ""))
+    header = request.headers.get("authorization", "")
+    claims = decode_access_token(header.split(" ", 1)[1]) if header.lower().startswith("bearer ") else None
+    if claims and claims.get("amr") == "local-open":
+        return approvals.Caller("local-open")
+    return approvals.Caller("session")
+
+
 @router.get("/pending-actions", response_model=list[PendingActionOut])
 def list_pending(user: CurrentUser, db: DbSession) -> list[PendingActionOut]:
+    approvals.expire_due(db, user.id)  # lazily: anything overdue is settled before it is listed
     rows = db.scalars(
         select(PendingAction)
         .where(PendingAction.user_id == user.id, PendingAction.status == "pending")
         .order_by(PendingAction.created_at.desc())
     ).all()
-    return [PendingActionOut.model_validate(a) for a in rows]
+    return [_pending_out(a) for a in rows]
+
+
+@router.get("/pending-actions/{action_id}", response_model=PendingActionOut)
+def get_pending(action_id: str, user: CurrentUser, db: DbSession) -> PendingActionOut:
+    action = db.get(PendingAction, action_id)
+    if not action or action.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Action not found")
+    approvals.expire_if_due(db, action)
+    return _pending_out(action)
 
 
 @router.post("/pending-actions/{action_id}")
 def decide_pending(
-    action_id: str, payload: PendingDecisionIn, user: CurrentUser, db: DbSession
-) -> dict:
-    """decision: reject | once | always | window (window uses `minutes`)."""
-    action = db.get(PendingAction, action_id)
-    if not action or action.user_id != user.id:
-        raise HTTPException(status_code=404, detail="Action not found")
-    return resolve_pending(db, user, action, payload.decision, minutes=payload.minutes)
+    action_id: str, payload: PendingDecisionIn, request: Request, user: CurrentUser, db: DbSession
+):
+    """decision: once | window | always | reject (approve on folder / app cards).
+
+    Answers the card, runs the approved tool inside this request and returns its result, plus
+    `work_item` ({id, status}; status `ready` means the paused task can be continued). A second
+    answer gets 409 and changes nothing. A paired device or the terminal login may answer once or
+    no only; the always-ask cards need the computer itself.
+    """
+    try:
+        return approvals.resolve(db, user, action_id, payload.decision, _caller(request))
+    except approvals.ApprovalError as exc:
+        return JSONResponse(status_code=exc.status_code, content=exc.body())
 
 
 # ---------------------------------------------------------------------------

@@ -222,8 +222,9 @@ def test_legacy_tier_values_still_resolve():
     assert normalise_tier(None) == "conservative"
 
 
-def test_always_allow_creates_a_standing_grant(client, auth):
-    from app.agent import autonomy
+def test_always_allow_creates_a_standing_rule(client, auth):
+    """"Always allow" stores a rule for that recipient (spec 10 section 6.2), not a blanket grant."""
+    from app import permissions
     from app.models import PendingAction, User
 
     db = SessionLocal()
@@ -239,7 +240,10 @@ def test_always_allow_creates_a_standing_grant(client, auth):
         db.add(action)
         db.commit()
         action_id = action.id
-        assert autonomy.requires_approval(db, user.id, "send_email", "conservative") is True
+        first = permissions.decide(
+            db, user, "send_email", action.arguments, permissions.build_context(db, user, "chat")
+        )
+        assert first.kind == "ask"
     finally:
         db.close()
 
@@ -247,21 +251,32 @@ def test_always_allow_creates_a_standing_grant(client, auth):
         f"/api/pending-actions/{action_id}", headers=auth, json={"decision": "always"}
     )
     assert resp.status_code == 200
-    assert resp.json().get("grant", {}).get("scope") == "always"
-    assert resp.json()["grant"]["target"] == "a@b.com"
+    rule = resp.json()["rule"]
+    assert rule["tool"] == "send_email" and rule["expires_at"] is None
+    assert "a@b.com" in rule["text"]
+    # Answering twice is a conflict and changes nothing.
+    again = client.post(
+        f"/api/pending-actions/{action_id}", headers=auth, json={"decision": "always"}
+    )
+    assert again.status_code == 409
 
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == "test@aura.ai").one()
-        to_same = {"to": "A <A@B.com>", "subject": "Again", "body": "Hello"}
-        to_other = {"to": "someone@else.com", "subject": "Hi", "body": "Hello"}
-        # The grant now overrides the tier — that's the point…
-        assert autonomy.requires_approval(db, user.id, "send_email", "conservative", to_same) is False
-        # …for that recipient only. "Always" never meant "anyone an email suggests".
-        assert autonomy.requires_approval(db, user.id, "send_email", "conservative", to_other) is True
-        assert autonomy.requires_approval(db, user.id, "send_email", "conservative") is True
-        autonomy.revoke(db, user.id, "send_email")
-        assert autonomy.requires_approval(db, user.id, "send_email", "conservative", to_same) is True
+
+        def decide(args):
+            return permissions.decide(db, user, "send_email", args, permissions.build_context(db, user, "chat"))
+
+        # The rule now overrides the mode, for that recipient only. "Always" never meant
+        # "anyone an email suggests".
+        assert decide({"to": "A <A@B.com>", "subject": "Again", "body": "Hello"}).kind == "allow"
+        assert decide({"to": "someone@else.com", "subject": "Hi", "body": "Hello"}).kind == "ask"
+        assert decide({"to": "a@b.com, someone@else.com", "subject": "Hi", "body": "x"}).kind == "ask"
+        # Removing the rule puts the question back.
+        from app.permissions import rules as rule_store
+
+        assert rule_store.revoke(db, user, rule["id"])
+        assert decide({"to": "A <A@B.com>", "subject": "Again", "body": "Hello"}).kind == "ask"
     finally:
         db.close()
 
@@ -562,9 +577,25 @@ def test_inbound_requires_a_valid_token(client, auth):
         == 401
     )
 
+    # A channel proves the channel, not the sender: until the owner says who they are on it,
+    # a message is kept as a notification and nothing is done (spec 10 section 9.3).
     resp = client.post(
         "/api/channels/inbound/cli",
-        json={"token": token, "text": "add a task to file the VAT return"},
+        json={"token": token, "text": "add a task to file the VAT return", "sender": "owner@example.com"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["reply"] == ""
+    titles = [t["title"] for t in client.get("/api/tasks", headers=auth).json()]
+    assert not any("VAT return" in t for t in titles)
+
+    owner = client.put(
+        "/api/channels/cli/owner", headers=auth, json={"owner_sender": "Owner@Example.com"}
+    )
+    assert owner.status_code == 200 and owner.json()["owner_sender"] == "Owner@Example.com"
+
+    resp = client.post(
+        "/api/channels/inbound/cli",
+        json={"token": token, "text": "add a task to file the VAT return", "sender": "owner@example.com"},
     )
     assert resp.status_code == 200
     assert resp.json()["reply"]

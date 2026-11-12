@@ -1,9 +1,14 @@
 """Channels — the surfaces the assistant can be reached on.
 
 Every channel funnels into the same place: a conversation, run through the same
-agent, with the same skills and the same autonomy gate. A message from Telegram
-is not a lesser message than one typed into the web app, and there is exactly
-one code path deciding what the assistant is allowed to do.
+agent, with the same skills and the same permission gate. There is exactly one
+code path deciding what the assistant is allowed to do.
+
+A channel proves the channel, not the person: anyone who learns a webhook token
+can post to it. So a message is acted on only when it is from the owner (the
+configured `owner_sender`, or every message on a channel the owner declared a
+private, owner-only bridge). Anything else is data, kept as a notification: it
+starts no run, reaches no tool and teaches AURA nothing.
 
 Inbound requests authenticate with a per-channel token rather than the user's
 JWT, because a webhook has no session. The token is generated server-side, shown
@@ -14,14 +19,16 @@ from __future__ import annotations
 
 import hmac
 import logging
+import re
 import secrets
 from dataclasses import dataclass
+from email.utils import parseaddr
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Channel, Conversation, User, utcnow
+from app.models import Channel, Conversation, Notification, User, utcnow
 
 log = logging.getLogger("aura.channels")
 
@@ -180,8 +187,8 @@ def disconnect(db: Session, user_id: str, kind: str) -> bool:
     return True
 
 
-def authenticate(db: Session, kind: str, token: str) -> User | None:
-    """Resolve an inbound webhook token to its owner, in constant time."""
+def authenticate_channel(db: Session, kind: str, token: str) -> Channel | None:
+    """Resolve an inbound webhook token to its channel, in constant time."""
     if not token:
         return None
     candidates = db.scalars(
@@ -196,8 +203,58 @@ def authenticate(db: Session, kind: str, token: str) -> User | None:
             row.last_seen_at = utcnow()
             row.message_count += 1
             db.commit()
-            return db.get(User, row.user_id)
+            return row
     return None
+
+
+def authenticate(db: Session, kind: str, token: str) -> User | None:
+    """Resolve an inbound webhook token to its owner, in constant time."""
+    row = authenticate_channel(db, kind, token)
+    return db.get(User, row.user_id) if row else None
+
+
+# --- who is the owner on a channel -------------------------------------------
+
+
+def owner_sender_of(channel: Channel | None) -> str:
+    return str(((channel.config if channel else None) or {}).get("owner_sender") or "")
+
+
+def bridge_owner_only_of(channel: Channel | None) -> bool:
+    return bool(((channel.config if channel else None) or {}).get("bridge_owner_only"))
+
+
+def set_owner(db: Session, channel: Channel, owner_sender: str, bridge_owner_only: bool) -> Channel:
+    config = dict(channel.config or {})
+    config["owner_sender"] = (owner_sender or "").strip()[:320]
+    config["bridge_owner_only"] = bool(bridge_owner_only)
+    channel.config = config  # a new dict: JSON columns do not notice in-place changes
+    db.commit()
+    db.refresh(channel)
+    return channel
+
+
+def normalise_sender(raw: str) -> str:
+    """Compare senders as people write them: "Ana <Ana@Example.com>" is "ana@example.com",
+    "@Ana" is "ana", "+1 (555) 010-2000" is "+15550102000". An empty result matches nothing."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    addr = parseaddr(text)[1] if "@" in text and not text.startswith("@") else text
+    addr = addr.strip().casefold()
+    if re.fullmatch(r"\+?[\d\s().-]{6,}", addr):
+        return ("+" if addr.startswith("+") else "") + re.sub(r"\D", "", addr)
+    return addr.lstrip("@")
+
+
+def is_owner_message(channel: Channel | None, sender: str) -> bool:
+    """True only for the owner's own message on a verified channel (spec 9.3)."""
+    if channel is None or not channel.verified or not channel.enabled:
+        return False
+    if bridge_owner_only_of(channel):
+        return True
+    configured = normalise_sender(owner_sender_of(channel))
+    return bool(configured) and normalise_sender(sender) == configured
 
 
 def conversation_for(db: Session, user: User, kind: str, thread_key: str = "") -> Conversation:
@@ -220,8 +277,32 @@ def conversation_for(db: Session, user: User, kind: str, thread_key: str = "") -
     return row
 
 
-def handle_inbound(db: Session, user: User, kind: str, text: str, thread_key: str = "") -> dict:
-    """Run an inbound message through the same agent the web app uses."""
+def _keep_as_notification(db: Session, user: User, kind: str, sender: str, text: str) -> dict:
+    """A message that is not from the owner is shown to the owner and nothing else: no
+    conversation, no model call, no tool, nothing learned."""
+    who = re.sub(r"[\x00-\x1f\x7f]", " ", sender or "").strip()[:80] or "unknown"
+    name = KINDS[kind].name if kind in KINDS else kind
+    db.add(
+        Notification(
+            user_id=user.id, level="info", link="/dashboard",
+            title=f"Message on {name} from {who}"[:300],
+            body=(text or "")[:1500],
+        )
+    )
+    db.commit()
+    return {"reply": "", "skipped": "not from the owner", "pending": 0}
+
+
+def handle_inbound(
+    db: Session,
+    user: User,
+    kind: str,
+    text: str,
+    thread_key: str = "",
+    sender: str = "",
+    channel: Channel | None = None,
+) -> dict:
+    """Run an inbound message through the same agent the web app uses, if it is the owner's."""
     from app.agent.coordinator import persist_exchange, run_agent
     from app.deps import get_user_settings
 
@@ -230,6 +311,10 @@ def handle_inbound(db: Session, user: User, kind: str, text: str, thread_key: st
         return {"reply": "", "skipped": "empty message"}
     if len(text) > 8000:
         text = text[:8000]
+
+    channel = channel or get(db, user.id, kind)
+    if not is_owner_message(channel, sender):
+        return _keep_as_notification(db, user, kind, sender, text)
 
     convo = conversation_for(db, user, kind, thread_key)
     tier = get_user_settings(db, user).autonomy_level
@@ -240,9 +325,10 @@ def handle_inbound(db: Session, user: User, kind: str, text: str, thread_key: st
 
     reply = result.text
     if result.pending_actions:
+        n = len(result.pending_actions)
         reply += (
-            f"\n\n({len(result.pending_actions)} action awaiting your approval — "
-            f"open {settings.frontend_url}/dashboard)"
+            f"\n\n({n} action{'s' if n != 1 else ''} waiting for your approval. "
+            f"Open {settings.frontend_url}/dashboard to answer.)"
         )
 
     return {

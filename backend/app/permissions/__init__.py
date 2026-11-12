@@ -4,7 +4,8 @@ Submodules: `catalogue` (every tool, its system and kind), `match` and `shellpar
 (rule matching), `floors` (what nobody can override), `rules` (storage and
 lookup), `events` (the hash-chained log), `triggers` (limits per trigger),
 `interim` (read-time stand-in for the legacy mapping until WP11), `reviewer`
-(the auto-mode safety reviewer, WP10) and `gate` (the single decision function).
+(the auto-mode safety reviewer, WP10), `gate` (the single decision function) and
+`approvals` (parked approvals: queueing, answering, expiry).
 
 The public names the task loop uses are available here (`permissions.decide`,
 `GateContext`, `Decision`, `is_read_only`, `expiry_for`, `mode_label`,
@@ -17,7 +18,7 @@ from __future__ import annotations
 _GATE_NAMES = (
     "decide", "decide_approved", "console_decision", "ui_decision", "build_context", "GateContext",
     "Decision", "RuleDraft", "is_read_only", "expiry_for", "mode_label", "effective_mode", "args_digest",
-    "is_sealed",
+    "is_sealed", "proposed_rule_for",
 )
 
 __all__ = list(_GATE_NAMES)

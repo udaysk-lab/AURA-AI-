@@ -11,10 +11,12 @@ from app import plugins as plugin_registry
 from app.agent import skills as skill_registry
 from app.config import settings
 from app.deps import CurrentUser, DbSession
-from app.models import Delegation, Document, DocumentChunk, Schedule, utcnow
+from app.models import Delegation, Document, DocumentChunk, Schedule, User, utcnow
+from app.permissions import events as permission_events, reviewer
 from app.schemas import (
     ChannelConnectIn,
     ChannelOut,
+    ChannelOwnerIn,
     DelegationIn,
     DelegationOut,
     DocumentDetail,
@@ -132,6 +134,8 @@ def _channel_out(kind_key: str, row, token: str | None = None) -> ChannelOut:
         identifier=row.identifier if row else "",
         message_count=row.message_count if row else 0,
         last_seen_at=row.last_seen_at if row else None,
+        owner_sender=channel_service.owner_sender_of(row) if row else "",
+        bridge_owner_only=channel_service.bridge_owner_only_of(row) if row else False,
         token=token,
     )
 
@@ -162,6 +166,25 @@ def rotate_channel_token(kind: str, user: CurrentUser, db: DbSession) -> Channel
     return _channel_out(kind, row, token=row.token)
 
 
+@router.put("/channels/{kind}/owner", response_model=ChannelOut)
+def set_channel_owner(
+    kind: str, payload: ChannelOwnerIn, user: CurrentUser, db: DbSession
+) -> ChannelOut:
+    """Say who counts as the owner on a channel. Until this is set, nothing that arrives on the
+    channel is acted on (it is kept as a notification); only the signed-in owner can set it."""
+    spec = channel_service.KINDS.get(kind)
+    row = channel_service.get(db, user.id, kind)
+    if not spec or not spec.inbound or row is None:
+        raise HTTPException(status_code=404, detail="Channel not connected")
+    row = channel_service.set_owner(db, row, payload.owner_sender, payload.bridge_owner_only)
+    permission_events.append(
+        db, user.id, "system_changed", actor="user", target=f"channel:{kind}", outcome="allow",
+        detail={"channel": kind, "owner_sender_set": bool(channel_service.owner_sender_of(row)),
+                "bridge_owner_only": channel_service.bridge_owner_only_of(row)},
+    )
+    return _channel_out(kind, row)
+
+
 @router.post("/channels/{kind}/disconnect")
 def disconnect_channel(kind: str, user: CurrentUser, db: DbSession) -> dict:
     if not channel_service.disconnect(db, user.id, kind):
@@ -179,12 +202,13 @@ def channel_inbound(kind: str, payload: InboundIn, db: DbSession) -> InboundOut:
     if kind not in channel_service.KINDS:
         raise HTTPException(status_code=404, detail="Unknown channel")
 
-    user = channel_service.authenticate(db, kind, payload.token)
-    if not user:
+    channel = channel_service.authenticate_channel(db, kind, payload.token)
+    user = db.get(User, channel.user_id) if channel else None
+    if not channel or not user:
         raise HTTPException(status_code=401, detail="Invalid channel token")
 
     result = channel_service.handle_inbound(
-        db, user, kind, payload.text, payload.thread_key
+        db, user, kind, payload.text, payload.thread_key, sender=payload.sender, channel=channel
     )
     return InboundOut(**{k: v for k, v in result.items() if k != "skipped"})
 
@@ -315,6 +339,15 @@ def delete_document(document_id: str, user: CurrentUser, db: DbSession) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _check_auto(mode: str | None) -> None:
+    """`auto` sends each approval to the safety reviewer, which needs a connected model."""
+    if mode == "auto" and not reviewer.available():
+        raise HTTPException(
+            status_code=409,
+            detail="Auto needs a connected AI model. The built-in demo model can't review actions.",
+        )
+
+
 def _schedule_out(row: Schedule) -> ScheduleOut:
     out = ScheduleOut.model_validate(row)
     out.cron_label = schedule_service.describe(row.cron)
@@ -328,6 +361,7 @@ def list_schedules(user: CurrentUser, db: DbSession) -> list[ScheduleOut]:
 
 @router.post("/schedules", response_model=ScheduleOut)
 def create_schedule(payload: ScheduleIn, user: CurrentUser, db: DbSession) -> ScheduleOut:
+    _check_auto(payload.approval_mode)
     row = schedule_service.create(
         db, user,
         prompt=payload.prompt,
@@ -335,6 +369,7 @@ def create_schedule(payload: ScheduleIn, user: CurrentUser, db: DbSession) -> Sc
         name=payload.name,
         cron=payload.cron,
         deliver_to=payload.deliver_to,
+        approval_mode=payload.approval_mode,
     )
     return _schedule_out(row)
 
@@ -346,11 +381,22 @@ def update_schedule(
     row = db.get(Schedule, schedule_id)
     if not row or row.user_id != user.id:
         raise HTTPException(status_code=404, detail="Schedule not found")
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    old_mode = row.approval_mode
+    if changes.get("approval_mode") is None:
+        changes.pop("approval_mode", None)
+    elif changes["approval_mode"] != old_mode:
+        _check_auto(changes["approval_mode"])
+    for key, value in changes.items():
         setattr(row, key, value)
     row.updated_at = utcnow()
     db.commit()
     db.refresh(row)
+    if row.approval_mode != old_mode:
+        permission_events.append(
+            db, user.id, "schedule_mode_changed", actor="user", target=f"schedule:{row.id}", outcome="allow",
+            detail={"kind": "schedule", "from": old_mode, "to": row.approval_mode},
+        )
     return _schedule_out(row)
 
 

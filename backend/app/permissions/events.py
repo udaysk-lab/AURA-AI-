@@ -91,9 +91,14 @@ _BEARER = re.compile(r"(?i)\bbearer\s+[^\s'\",;]+")
 _LONG_TOKEN = re.compile(r"[A-Za-z0-9+_=\-]{32,}")
 
 
+_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
 def _mask_token(m: re.Match) -> str:
-    """A long unbroken run that looks like a key or token (not a long word or path segment)."""
+    """A long unbroken run that looks like a key or token (not a long word, path segment or an id)."""
     t = m.group(0)
+    if _UUID.fullmatch(t):  # row ids are what an audit trail is for
+        return t
     mixed = bool(re.search(r"\d", t)) and bool(re.search(r"[A-Za-z]", t))
     padding = len(t) >= 40 and len(set(t)) < 6
     return "[redacted]" if mixed or padding else t

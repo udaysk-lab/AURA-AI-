@@ -4,12 +4,13 @@ The difference between a chatbot and an assistant is that an assistant does
 things while you're not looking. This runs on a timer, decides what is worth
 doing right now, does it, and leaves a short report.
 
-Two hard rules:
-  * It only runs skills the user has enabled AND whose autonomy floor their
-    trust tier clears. A heartbeat can never do something the user wouldn't
-    have let it do in conversation.
-  * It never fires an irreversible action. Those queue for approval like
-    anything else.
+Two hard rules, both enforced by the permission gate rather than by a tier:
+  * It only runs skills the user has enabled and marked proactive, and every
+    tool call goes through `decide(trigger="heartbeat")`: reads and writes to
+    AURA's own workspace, nothing else. No device-control tool is reachable.
+  * It never asks. A call that would need approval is refused (HEARTBEAT_NO_ASK)
+    and nothing is parked, so a background check can never leave a card behind
+    or reach the safety reviewer. The user's ask and block rules still apply.
 """
 
 from __future__ import annotations
@@ -22,7 +23,6 @@ from sqlalchemy.orm import Session
 
 from app import timeutil
 
-from app.agent import autonomy
 from app.agent import skills as skill_registry
 from app.models import (
     CalendarEvent,
@@ -81,23 +81,24 @@ def latest(db: Session, user_id: str) -> HeartbeatReport | None:
     ).first()
 
 
-def _can_run(tier: str, enabled: set[str], code: str) -> bool:
+def _can_run(enabled: set[str], code: str) -> bool:
+    """A skill the user turned on and that is meant to run in the background. Whether a given
+    call may run is the gate's decision, not a trust tier's."""
     skill = skill_registry.CATALOG.get(code)
-    if not skill or code not in enabled or not skill.proactive:
-        return False
-    return autonomy.heartbeat_allows(tier, skill.autonomy_floor)
+    return bool(skill and code in enabled and skill.proactive)
 
 
-def run(db: Session, user: User, tier: str, force: bool = False) -> HeartbeatReport:
-    """Do a pass of background work and write a report."""
+def run(db: Session, user: User, tier: str | None = None, force: bool = False) -> HeartbeatReport:
+    """Do a pass of background work and write a report.
+
+    `tier` is accepted for older callers and no longer decides anything."""
     from app import permissions
     from app.agent.coordinator import run_gated
 
-    tier = autonomy.normalise_tier(tier)
     # Every tool call below goes through the gate as a heartbeat call: reads and
-    # AURA-workspace writes only, and it never asks (spec 9.2). `legacy_tier` keeps a
-    # strict user's ask rules in force until the legacy migration has run.
-    gate_ctx = permissions.build_context(db, user, "heartbeat", legacy_tier=tier)
+    # AURA-workspace writes only, and it never asks (spec 9.2). Until the legacy data
+    # migration has run, a passed `tier` keeps a strict user's ask rules in force.
+    gate_ctx = permissions.build_context(db, user, "heartbeat", legacy_tier=tier or None)
 
     def execute_tool(db_, user_, name, args, trigger="heartbeat", log_skill=True):
         return run_gated(db_, user_, name, args, gate_ctx, trigger=trigger, log_skill=log_skill)
@@ -114,13 +115,13 @@ def run(db: Session, user: User, tier: str, force: bool = False) -> HeartbeatRep
         codes_run.append(code)
 
     # --- Keep the mirror fresh ------------------------------------------
-    if _can_run(tier, enabled, "SY01") and google_service.is_connected(db, user.id):
+    if _can_run(enabled, "SY01") and google_service.is_connected(db, user.id):
         result = execute_tool(db, user, "sync_google", {}, trigger="heartbeat")
         if isinstance(result, dict) and (result.get("emails") or result.get("events")):
             note("SY01", result.get("message", "Synced workspace"))
 
     # --- Triage whatever arrived ----------------------------------------
-    if _can_run(tier, enabled, "EM01"):
+    if _can_run(enabled, "EM01"):
         triaged = triage_service.triage_pending(db, user.id, limit=25)
         unread = db.scalars(
             select(EmailMessage).where(
@@ -141,7 +142,7 @@ def run(db: Session, user: User, tier: str, force: bool = False) -> HeartbeatRep
         attention += len(urgent)
 
     # --- Turn commitments into tasks ------------------------------------
-    if _can_run(tier, enabled, "TK01"):
+    if _can_run(enabled, "TK01"):
         created = 0
         candidates = db.scalars(
             select(EmailMessage).where(
@@ -171,14 +172,14 @@ def run(db: Session, user: User, tier: str, force: bool = False) -> HeartbeatRep
             note("TK01", f"Captured {created} commitment(s) from flagged email")
 
     # --- Watch the calendar ---------------------------------------------
-    if _can_run(tier, enabled, "CA03"):
+    if _can_run(enabled, "CA03"):
         conflicts = execute_tool(db, user, "detect_conflicts", {}, trigger="heartbeat")
         if isinstance(conflicts, list) and conflicts:
             note("CA03", f"Found {len(conflicts)} double-booking(s) — needs a decision")
             attention += len(conflicts)
 
     # --- Prepare the next meeting ---------------------------------------
-    if _can_run(tier, enabled, "MP01"):
+    if _can_run(enabled, "MP01"):
         upcoming = [
             e for e in db.scalars(
                 select(CalendarEvent)
@@ -195,7 +196,7 @@ def run(db: Session, user: User, tier: str, force: bool = False) -> HeartbeatRep
                 note("MP01", f"Briefed: {upcoming[0].title} · agenda and context ready")
 
     # --- Flag anything slipping -----------------------------------------
-    if _can_run(tier, enabled, "TK02"):
+    if _can_run(enabled, "TK02"):
         overdue = [
             t for t in db.scalars(
                 select(Task).where(Task.user_id == user.id, Task.status != "done")
@@ -221,7 +222,7 @@ def run(db: Session, user: User, tier: str, force: bool = False) -> HeartbeatRep
     )
     db.add(report)
 
-    if attention and _can_run(tier, enabled, "NT01"):
+    if attention and _can_run(enabled, "NT01"):
         db.add(
             Notification(
                 user_id=user.id,
@@ -267,7 +268,7 @@ def run_all_due(
         if not due(row, latest(db, user.id), local_now):
             continue
         try:
-            reports.append(run(db, user, row.autonomy_level))
+            reports.append(run(db, user))
         except Exception:
             log.exception("Heartbeat failed for %s", user.email)
             db.rollback()

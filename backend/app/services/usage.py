@@ -207,14 +207,23 @@ def spend_today(db: Session, user_id: str, now: datetime | None = None) -> Spend
     )
 
 
-def check(db: Session, user_id: str, trigger: str = "chat") -> SpendState:
-    """Raise SpendCapReached if this call shouldn't happen. Call before the model."""
+def check(
+    db: Session, user_id: str, trigger: str = "chat", *, background: bool | None = None
+) -> SpendState:
+    """Raise SpendCapReached if this call shouldn't happen. Call before the model.
+
+    Unattended work (heartbeat, schedules, automations) is held to a fraction of the daily cap.
+    The safety reviewer's calls (`trigger="review"`) count the same way when the action they
+    check is unattended, and as ordinary chat spend when the user is watching: the reviewer
+    passes `background=True` for schedule, automation and inbound origins."""
     state = spend_today(db, user_id)
     if not settings.spend_cap_enabled or state.cap_usd <= 0:
         return state
 
     budget = state.cap_usd
-    if trigger in ("heartbeat", "schedule", "automation"):
+    if background is None:
+        background = trigger in ("heartbeat", "schedule", "automation")
+    if background:
         budget *= BACKGROUND_BUDGET_SHARE
 
     if state.spent_usd >= budget:

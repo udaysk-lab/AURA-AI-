@@ -469,6 +469,17 @@ def decide_approved(db: Session, user: User, action: PendingAction) -> Decision:
     return _finish(db, user, d, ctx)
 
 
+def proposed_rule_for(db: Session, user: User, action: PendingAction) -> RuleDraft | None:
+    """The rule a "for 10 minutes" / "always" answer to a parked call would store, worked out again
+    from the call as it stands now. Used for a card that did not record its draft (an older row).
+    None when the call may only be allowed once (or cannot be read at all)."""
+    ctx = context_for_action(db, user, action)
+    pre = _head(db, user, action.tool_name, action.arguments or {}, ctx)
+    if isinstance(pre, Decision) or pre.policy.always_user or pre.floor.always_user:
+        return None
+    return _propose(pre.policy, pre.targets, ctx)
+
+
 def console_decision(db: Session, user: User, command: str, workdir: str | None = None) -> Decision:
     """The user's own console: steps 0 to 2, the install denylist, and block rules only."""
     from app.agent.tools import REGISTRY  # noqa: F401  (ensures tools are registered)

@@ -16,13 +16,11 @@ import re
 import time
 from collections.abc import Generator, Iterator
 from dataclasses import dataclass, field
-from datetime import timezone
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import timeutil
 from app import permissions
 from app.agent import autonomy
 from app.agent import skills as skill_registry
@@ -30,7 +28,7 @@ from app.agent import tools as tool_registry
 from app.agent.prompts import build_system_prompt
 from app.agent.tools import ToolContext
 from app.config import settings
-from app.llm import ToolCall, get_provider
+from app.llm import get_provider
 from app.models import (
     ActivityLog,
     Conversation,
@@ -39,6 +37,7 @@ from app.models import (
     User,
     utcnow,
 )
+from app.permissions import approvals
 from app.services import google as google_service
 from app.services import identity as identity_service
 from app.services import memory as memory_service
@@ -164,64 +163,6 @@ def run_gated(
         return {"error": decision.reason, "blocked": True, "reason_code": decision.reason_code}
     return execute_tool(db, user, name, args, trigger or ctx.trigger, log_skill,
                         work_item_id=ctx.work_item_id, decision=decision)
-
-
-def _queue_action(
-    db: Session,
-    user: User,
-    conversation_id: str | None,
-    call: ToolCall,
-    decision: permissions.Decision | None = None,
-    ctx: permissions.GateContext | None = None,
-    preview_prefix: str = "",
-) -> PendingAction:
-    """Park a call for the user's answer. Minimal form of the spec's approvals.queue_action
-    (WP6 moves it and adds the card text and notifications)."""
-    skill = skill_registry.skill_for_tool(call.name)
-    preview = preview_prefix + tool_registry.build_preview(
-        call.name, call.arguments, timeutil.user_zone(user), db=db, user_id=user.id
-    )
-    extra: dict[str, Any] = {}
-    if decision is not None:
-        preview = f"{preview}\n\nWhy I'm asking: {decision.reason}"
-        extra = dict(
-            card=decision.card or "tool",
-            card_payload=dict(decision.card_payload or {}),
-            options=list(decision.options),
-            always_user=decision.always_user,
-            reason_code=decision.reason_code,
-            reason=decision.reason,
-            args_digest=decision.args_digest,
-        )
-    if ctx is not None:
-        extra.update(
-            work_item_id=ctx.work_item_id,
-            origin=ctx.trigger if ctx.trigger in ("chat", "schedule", "automation", "inbound") else "chat",
-            origin_id=ctx.origin_id or "",
-            expires_at=permissions.expiry_for(ctx, extra.get("card", "tool")),
-        )
-    action = PendingAction(
-        user_id=user.id,
-        conversation_id=conversation_id,
-        tool_name=call.name,
-        arguments=call.arguments,
-        preview=preview,
-        skill_code=skill.code if skill else "",
-        **extra,
-    )
-    db.add(action)
-    db.commit()
-    db.refresh(action)
-    if decision is not None:
-        from app.permissions import events
-
-        events.append(
-            db, user.id, "approval_created", actor="aura", tool=call.name, outcome="ask",
-            reason_code=decision.reason_code, run_key=(ctx.run_key if ctx else ""),
-            detail={"pending_action_id": action.id, "digest": decision.args_digest,
-                    "options": list(decision.options)},
-        )
-    return action
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +357,10 @@ def iter_agent(
     tier = autonomy.normalise_tier(autonomy_level)
     result = AgentResult()
 
-    result.learned = maybe_learn(db, user, conversation, user_message)
+    # Only the signed-in owner's own chat teaches AURA anything: a schedule's stored prompt and,
+    # above all, a message that came in through a channel never become learned notes or
+    # preferences (decisions 7 and 11).
+    result.learned = maybe_learn(db, user, conversation, user_message) if trigger == "chat" else ""
     if result.learned:
         yield {"type": "learned", "value": result.learned}
 
@@ -500,7 +444,7 @@ def iter_agent(
                     gate_ctx.reviewer_total += 1
 
             if decision.kind == "ask":
-                action = _queue_action(db, user, conversation.id, call, decision, gate_ctx)
+                action = approvals.queue_action(db, user, gate_ctx, call, decision)
                 result.pending_actions.append(action)
                 yield {
                     "type": "pending_action",
@@ -508,6 +452,11 @@ def iter_agent(
                     "tool_name": action.tool_name,
                     "skill_code": action.skill_code,
                     "preview": action.preview,
+                    "card": action.card,
+                    "options": list(action.options or []),
+                    "always_user": bool(action.always_user),
+                    "reason": action.reason,
+                    "conversation_id": action.conversation_id,
                 }
                 payload: Any = {
                     "status": "awaiting_approval",
@@ -728,85 +677,15 @@ def stream_agent(
 # Approvals
 # ---------------------------------------------------------------------------
 
-DECISIONS = ("reject", "once", "always", "window")
-
 
 def resolve_pending(
     db: Session, user: User, action: PendingAction, decision: str, minutes: int = 10
 ) -> dict:
-    """decision: reject | once | always | window
-
-    'always' and 'window' also create a standing grant, so the same action stops
-    asking. That is the mechanism by which trust actually accrues.
-    """
-    if action.status != "pending":
-        return {"error": f"Action already {action.status}"}
-    if decision not in DECISIONS:
-        return {"error": f"Unknown decision: {decision}"}
-    expires = action.expires_at
-    if expires is not None and (expires if expires.tzinfo else expires.replace(tzinfo=timezone.utc)) <= utcnow():
-        action.status = "expired"
-        action.resolved_at = utcnow()
-        db.commit()
-        return {"error": "This approval has expired. Ask AURA to try again."}
-
-    if decision == "reject":
-        action.status = "rejected"
-        action.resolved_at = utcnow()
-        db.add(
-            ActivityLog(
-                user_id=user.id, actor="user", action=f"reject:{action.tool_name}",
-                target=action.preview[:300], status="rejected",
-            )
-        )
-        db.commit()
-        return {"message": f"Cancelled — {action.tool_name} was not run."}
-
-    # The user said yes, but things may have changed since the card was shown (a block
-    # rule added, a folder gone): the gate looks again before anything runs.
-    gate_decision = permissions.decide_approved(db, user, action)
-    if gate_decision.kind != "allow":
-        action.status = "refused"
-        action.reason = gate_decision.reason[:2000]
-        action.resolved_at = utcnow()
-        db.commit()
-        return {
-            "status": "refused",
-            "message": f"It was approved, but is no longer allowed: {gate_decision.reason}",
-        }
-
-    action.status = "approved"
-    action.resolved_at = utcnow()
-    db.commit()
-
-    granted = None
-    if decision in ("always", "window"):
-        granted = autonomy.grant(
-            db, user.id, action.tool_name,
-            scope="always" if decision == "always" else "window",
-            minutes=minutes,
-            target=autonomy.grant_target(action.tool_name, action.arguments),
-        )
-
-    outcome = execute_tool(
-        db, user, action.tool_name, action.arguments, trigger="manual",
-        work_item_id=action.work_item_id, decision=gate_decision,
-    )
-    db.add(
-        ActivityLog(
-            user_id=user.id, actor="user", action=f"approve:{action.tool_name}",
-            target=action.preview[:300],
-            detail={"decision": decision, "result": str(outcome)[:500]},
-        )
-    )
-    db.commit()
-
-    payload = outcome if isinstance(outcome, dict) else {"result": outcome}
-    if granted:
-        payload["grant"] = {
-            "tool_name": granted.tool_name,
-            "scope": granted.scope,
-            "target": granted.target,
-            "expires_at": granted.expires_at.isoformat() if granted.expires_at else None,
-        }
-    return payload
+    """Answer a parked call as the signed-in owner. Kept for callers that hold a PendingAction;
+    the work is permissions/approvals.resolve (the API calls that directly, with who is asking).
+    `minutes` is ignored: a "for 10 minutes" answer is always ten minutes. A refused answer
+    comes back as {"error", "status_code", ...} as it always did."""
+    try:
+        return approvals.resolve(db, user, action.id, decision, approvals.Caller())
+    except approvals.ApprovalError as exc:
+        return {"error": exc.detail, "status_code": exc.status_code, **exc.extra}

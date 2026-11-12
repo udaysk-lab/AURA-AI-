@@ -18,17 +18,15 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import timeutil
-from app.agent.autonomy import risk_class
-from app import permissions
-from app.agent.coordinator import _queue_action, execute_tool
+from app import permissions, timeutil
+from app.agent.coordinator import execute_tool
 from app.agent.prompts import AUTOMATION_COMPILER
 from app.llm import ToolCall, get_provider
+from app.permissions import approvals, catalogue, triggers
 from app.models import (
     ActivityLog,
     AutomationRule,
     EmailMessage,
-    PendingAction,
     Task,
     User,
     utcnow,
@@ -37,11 +35,6 @@ from app.models import (
 log = logging.getLogger("aura.automation")
 
 VALID_TRIGGERS = {"email_received", "schedule", "event_cancelled", "task_due", "manual"}
-
-
-def is_destructive(tool_name: str) -> bool:
-    """Automations never fire irreversible actions unattended, whatever the tier."""
-    return risk_class(tool_name) == "irreversible"
 
 
 # ---------------------------------------------------------------------------
@@ -109,8 +102,48 @@ def _heuristic_compile(rule: str) -> dict:
         "trigger_type": trigger_type,
         "trigger_config": trigger_config,
         "actions": actions,
-        "requires_confirmation": any(is_destructive(a["tool"]) for a in actions),
     }
+
+
+def _needs_approval_hint(actions: list[dict]) -> bool:
+    """True when some action is one the default mode would ask about (informational only: the
+    gate decides at run time, per action)."""
+    for a in actions:
+        policy = catalogue.policy_for(a.get("tool", ""))
+        if policy is None or catalogue.default_disposition(policy.kind, "ask") != "allow":
+            return True
+    return False
+
+
+def screen_actions(db: Session | None, user: User | None, actions: list[dict]) -> tuple[list[dict], list[str]]:
+    """Drop the steps an automation can never run, and say why (spec 9.1).
+
+    Dropped: a tool the catalogue does not know, one whose system is not assigned to the user, and
+    any of a kind that cannot run unattended (commands, the screen, the clipboard, apps, deleting
+    files). Whatever is kept is still decided one call at a time when the rule fires."""
+    assigned: set[str] | None = None
+    if db is not None and user is not None:
+        from app import plugins
+
+        assigned = plugins.assigned_systems(db, user.id)
+    denied = triggers.DENIED_KINDS["automation"]
+    kept: list[dict] = []
+    warnings: list[str] = []
+    for action in actions or []:
+        tool = str(action.get("tool", "")) if isinstance(action, dict) else ""
+        policy = catalogue.policy_for(tool)
+        if policy is None or policy.loop_internal:
+            warnings.append(f"Left out “{tool or 'unnamed step'}”: AURA has no such action.")
+        elif policy.kind in denied:
+            warnings.append(
+                f"Left out “{tool}”: an automation runs while you are away, so it cannot run commands, "
+                "use the screen or clipboard, open apps, or delete files."
+            )
+        elif assigned is not None and policy.system not in assigned:
+            warnings.append(f"Left out “{tool}”: its system is not turned on for you.")
+        else:
+            kept.append(action)
+    return kept, warnings
 
 
 def compile_rule(natural_language: str) -> dict:
@@ -130,32 +163,40 @@ def compile_rule(natural_language: str) -> dict:
                 if data.get("trigger_type") in VALID_TRIGGERS and data.get("actions"):
                     data.setdefault("name", natural_language[:80])
                     data.setdefault("trigger_config", {})
-                    data["requires_confirmation"] = bool(
-                        data.get("requires_confirmation")
-                        or any(is_destructive(a.get("tool", "")) for a in data["actions"])
-                    )
                     return data
         except Exception as exc:
             log.warning("Model rule compilation failed, using heuristics: %s", exc)
     return _heuristic_compile(natural_language)
 
 
-def create_rule(db: Session, user: User, natural_language: str, enabled: bool = True) -> AutomationRule:
+def create_rule_checked(
+    db: Session, user: User, natural_language: str, enabled: bool = True, approval_mode: str = "ask"
+) -> tuple[AutomationRule, list[str]]:
+    """Compile and store a rule. Returns it with the warnings about steps that were left out;
+    raises ValueError when nothing is left that an automation could do."""
     compiled = compile_rule(natural_language)
+    actions, warnings = screen_actions(db, user, compiled["actions"])
+    if not actions:
+        raise ValueError(" ".join(warnings) or "Nothing in that rule can run while you are away.")
     rule = AutomationRule(
         user_id=user.id,
         name=compiled["name"],
         natural_language=natural_language,
         trigger_type=compiled["trigger_type"],
         trigger_config=compiled.get("trigger_config") or {},
-        actions=compiled["actions"],
+        actions=actions,
         enabled=enabled,
-        requires_confirmation=compiled.get("requires_confirmation", True),
+        requires_confirmation=_needs_approval_hint(actions),
+        approval_mode=approval_mode if approval_mode in ("ask", "auto") else "ask",
     )
     db.add(rule)
     db.commit()
     db.refresh(rule)
-    return rule
+    return rule, warnings
+
+
+def create_rule(db: Session, user: User, natural_language: str, enabled: bool = True) -> AutomationRule:
+    return create_rule_checked(db, user, natural_language, enabled)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -226,8 +267,8 @@ def run_rule(db: Session, user: User, rule: AutomationRule, context: dict | None
                 gate_ctx.reviewer_total += 1
 
         if decision.kind == "ask":
-            _queue_action(
-                db, user, None, ToolCall(id="", name=tool_name, arguments=args), decision, gate_ctx,
+            approvals.queue_action(
+                db, user, gate_ctx, ToolCall(id="", name=tool_name, arguments=args), decision,
                 preview_prefix=f"Automation “{rule.name}” wants to:\n\n",
             )
             queued.append(tool_name)

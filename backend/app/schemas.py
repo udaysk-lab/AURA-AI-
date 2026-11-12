@@ -361,6 +361,11 @@ class AutomationOut(ORMModel):
     actions: list[Any]
     enabled: bool
     requires_confirmation: bool
+    # What an approval needed during a run does: ask parks it for you, auto sends it to the
+    # safety reviewer. Never "skip": unattended work is always held to a check.
+    approval_mode: Literal["ask", "auto"] = "ask"
+    # Steps the compiler left out because they cannot run unattended (set when a rule is created).
+    warnings: list[str] = Field(default_factory=list)
     run_count: int
     last_run_at: datetime | None
     created_at: datetime
@@ -371,12 +376,14 @@ class AutomationIn(BaseModel):
 
     natural_language: str = Field(min_length=5, max_length=1000)
     enabled: bool = True
+    approval_mode: Literal["ask", "auto"] = "ask"
 
 
 class AutomationPatch(BaseModel):
     enabled: bool | None = None
     name: str | None = None
     requires_confirmation: bool | None = None
+    approval_mode: Literal["ask", "auto"] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +392,8 @@ class AutomationPatch(BaseModel):
 
 
 class PendingActionOut(ORMModel):
+    """A parked approval, in the shape the web client's `PendingAction` type reads."""
+
     id: str
     tool_name: str
     skill_code: str
@@ -392,12 +401,29 @@ class PendingActionOut(ORMModel):
     preview: str
     status: str
     created_at: datetime
+    card: Literal["tool", "folder_access", "app_grant", "delete_permission"] = "tool"
+    # once | window | always | reject; the special cards offer approve | reject
+    options: list[str] = Field(default_factory=list)
+    expires_at: datetime | None = None
+    origin: str = "chat"
+    origin_id: str = ""
+    reason: str = ""
+    reason_code: str = ""
+    work_item_id: str | None = None
+    conversation_id: str | None = None
+    # folder path, app id / display name / tier, rule_text (what "always" would allow)
+    card_payload: dict[str, Any] = Field(default_factory=dict)
+    always_user: bool = False
+    decision: str = ""
 
 
 class PendingDecisionIn(BaseModel):
-    """decision: reject | once | always | window"""
+    """decision: once | window | always | reject, or approve on a folder / app card.
 
-    decision: Literal["reject", "once", "always", "window"] = "once"
+    `minutes` is accepted for old clients and ignored: "window" is always ten minutes.
+    """
+
+    decision: Literal["reject", "once", "always", "window", "approve"] = "once"
     minutes: int = Field(default=10, ge=1, le=1440)
 
 
@@ -548,8 +574,17 @@ class ChannelOut(BaseModel):
     identifier: str = ""
     message_count: int = 0
     last_seen_at: datetime | None = None
+    # Who counts as the owner on this channel. Until one of these is set, messages that come in
+    # are kept as notifications and AURA does not act on them.
+    owner_sender: str = ""
+    bridge_owner_only: bool = False
     # Returned only immediately after connect/rotate, never on a plain list.
     token: str | None = None
+
+
+class ChannelOwnerIn(BaseModel):
+    owner_sender: str = Field(default="", max_length=320)
+    bridge_owner_only: bool = False
 
 
 class ChannelConnectIn(BaseModel):
@@ -561,6 +596,9 @@ class InboundIn(BaseModel):
     token: str
     text: str = Field(min_length=1, max_length=8000)
     thread_key: str = ""
+    # Who wrote it on that channel (an address, a handle, a phone number). Only the owner's own
+    # messages are acted on; see Channel.config owner_sender / bridge_owner_only.
+    sender: str = Field(default="", max_length=320)
 
 
 class InboundOut(BaseModel):
@@ -640,6 +678,7 @@ class ScheduleOut(ORMModel):
     timezone: str
     enabled: bool
     deliver_to: str
+    approval_mode: Literal["ask", "auto"] = "ask"
     last_run_at: datetime | None
     last_result: str
     run_count: int
@@ -652,6 +691,7 @@ class ScheduleIn(BaseModel):
     name: str = ""
     cron: str = ""
     deliver_to: Literal["notification", "email", "chat"] = "notification"
+    approval_mode: Literal["ask", "auto"] = "ask"
 
 
 class SchedulePatch(BaseModel):
@@ -660,6 +700,7 @@ class SchedulePatch(BaseModel):
     cron: str | None = None
     enabled: bool | None = None
     deliver_to: Literal["notification", "email", "chat"] | None = None
+    approval_mode: Literal["ask", "auto"] | None = None
 
 
 # ---------------------------------------------------------------------------

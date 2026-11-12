@@ -189,6 +189,7 @@ def create(
     name: str = "",
     cron: str = "",
     deliver_to: str = "notification",
+    approval_mode: str = "ask",
 ) -> Schedule:
     parsed_cron, parsed_name = parse_natural(natural_language or prompt)
     row = Schedule(
@@ -199,6 +200,9 @@ def create(
         cron=cron or parsed_cron,
         timezone=user.timezone or "UTC",
         deliver_to=deliver_to,
+        # A schedule never skips approvals: ask parks the question for the owner, auto sends it
+        # to the safety reviewer. Anything else is treated as ask.
+        approval_mode=approval_mode if approval_mode in ("ask", "auto") else "ask",
     )
     db.add(row)
     db.commit()

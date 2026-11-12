@@ -11,7 +11,8 @@ without opening a browser:
 It talks to the local API over HTTP like any other client — same agent, same
 skills, same approval gate — so nothing here can do more than the web app can.
 When the agent parks an action for approval, this prints the card and lets you
-answer it on the spot, which is the whole point of being at the machine.
+answer it on the spot (yes once, or no), which is the whole point of being at the machine.
+Longer-lasting answers and the cards that widen access are made in the AURA app.
 
 The session token is cached in ~/.aura/cli-token so you sign in once. Delete
 that file to forget it.
@@ -117,14 +118,17 @@ class Aura:
 
     def ask(self, message: str, conversation: str | None) -> str | None:
         """Stream one turn. Returns the conversation id to continue in."""
-        payload = {"message": message, "conversation_id": conversation}
+        return self._stream("/api/chat/stream", {"message": message, "conversation_id": conversation}, conversation)
+
+    def _stream(self, path: str, payload: dict, conversation: str | None) -> str | None:
+        """POST to a streaming endpoint and print its events as they arrive."""
         reply_started = False
         convo_id = conversation
 
         try:
             with self.client.stream(
                 "POST",
-                f"{self.url}/api/chat/stream",
+                f"{self.url}{path}",
                 headers={**self._headers(), "Content-Type": "application/json"},
                 json=payload,
             ) as response:
@@ -174,29 +178,38 @@ class Aura:
         return convo_id
 
     def _approve(self, event: dict) -> None:
-        """An action is waiting. Ask here rather than sending them to the app."""
+        """An action is waiting. Ask here rather than sending them to the app.
+
+        This terminal can say yes once or no. "For 10 minutes", "always" and the cards that
+        connect a folder, allow an app or allow deleting need the AURA app itself, so they are
+        not offered here (the server would refuse them for this login anyway)."""
+        needs_app = bool(event.get("always_user")) or event.get("card", "tool") != "tool"
+        options = event.get("options") or []
         print()
         print(amber("  ┌ Needs your say-so"))
         for line in str(event.get("preview", "")).splitlines():
-            print(amber(f"  │ ") + line)
-        print(amber("  └ ") + dim("[y] once  [a] always  [10] ten minutes  [n] no"))
+            print(amber("  │ ") + line)
+        if needs_app:
+            print(amber("  └ ") + dim("This one needs you in the AURA app.  [n] no, or Enter to leave it waiting"))
+        else:
+            print(amber("  └ ") + dim("[y] once  [n] no"))
+            if "window" in options or "always" in options:
+                print(dim("    Open AURA to allow this for longer."))
 
         try:
             answer = input("    > ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "n"
 
-        decision = {
-            "y": "once", "yes": "once", "": "once",
-            "a": "always", "always": "always",
-            "10": "window", "w": "window",
-        }.get(answer, "reject")
+        if needs_app:
+            if answer not in ("n", "no"):
+                print(dim("    left waiting"))
+                return
+            decision = "reject"
+        else:
+            decision = "once" if answer in ("y", "yes", "") else "reject"
 
-        resp = self._request(
-            "POST",
-            f"/api/pending-actions/{event['id']}",
-            json={"decision": decision, "minutes": 10},
-        )
+        resp = self._request("POST", f"/api/pending-actions/{event['id']}", json={"decision": decision})
         if resp.status_code != 200:
             print(red(f"    couldn't record that: {_detail(resp)}"))
             return
@@ -205,6 +218,10 @@ class Aura:
             print(dim("    turned down"))
         else:
             print(green("    ✓ ") + dim(str(body.get("message") or body.get("result") or "done")))
+        # An approval can free a paused task to carry on (the server says so with status "ready").
+        item = body.get("work_item") or {}
+        if item.get("status") == "ready" and item.get("id"):
+            self._stream("/api/chat/continue", {"work_item_id": item["id"]}, None)
 
     # --- device ---------------------------------------------------------
 
