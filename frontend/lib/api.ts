@@ -244,6 +244,8 @@ export interface Conversation {
   id: string;
   title: string;
   pinned: boolean;
+  /** True when "do not use memory in this chat" is on. */
+  memory_off?: boolean;
   created_at: string;
   updated_at: string;
   messages?: Message[];
@@ -370,6 +372,8 @@ export interface PendingAction {
   origin?: "chat" | "schedule" | "automation" | "inbound" | string;
   reason?: string;
   work_item_id?: string | null;
+  /** The conversation the waiting task belongs to (used to mark it in the sidebar). */
+  conversation_id?: string | null;
   /**
    * Stored with the action (folder path, app id and tier, proposed rule text).
    * The permissions API lists it in the data model but not by name among the
@@ -431,7 +435,6 @@ export interface SyncResult {
 export interface AppSettings {
   briefing_time: string;
   briefing_enabled: boolean;
-  tone: string;
   theme: "warm" | "dark" | "light";
   heartbeat_enabled: boolean;
   heartbeat_interval_minutes: number;
@@ -460,7 +463,8 @@ export interface SkillItem {
   run_count: number;
   success_count: number;
   last_run_at: string | null;
-  learned_notes: string[];
+  /** Read-only until the backend drops it; preferences replace it. */
+  learned_notes?: string[];
 }
 
 export interface SkillRun {
@@ -1055,6 +1059,58 @@ export const api = {
   searchMemories: (q: string) => get<MemoryItem[]>(`/api/memories/search?q=${encodeURIComponent(q)}`),
   deleteMemory: (id: string) => del<{ message: string }>(`/api/memories/${id}`),
   pinMemory: (id: string) => patch<MemoryItem>(`/api/memories/${id}/pin`),
+  updateMemory: (id: string, body: { content?: string; kind?: string; pinned?: boolean }) =>
+    patch<MemoryItem>(`/api/memories/${id}`, body),
+
+  // --- Work items (task memory) -------------------------------------------
+  workItems: (q: WorkItemQuery = {}) => {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) {
+      if (v !== undefined && v !== "") params.set(k, String(v));
+    }
+    const qs = params.toString();
+    return get<WorkItemOut[]>(`/api/work-items${qs ? `?${qs}` : ""}`);
+  },
+  workItem: (id: string) => get<WorkItemDetail>(`/api/work-items/${id}`),
+  updateWorkItem: (
+    id: string,
+    body: { title?: string; task_type?: string; summary?: string; recallable?: boolean }
+  ) => patch<WorkItemDetail>(`/api/work-items/${id}`, body),
+  deleteWorkItem: (id: string) => del<{ message: string }>(`/api/work-items/${id}`),
+  workItemFeedback: (id: string, rating: "up" | "down", note = "") =>
+    post<WorkItemDetail>(`/api/work-items/${id}/feedback`, { rating, note }),
+  taskTypes: () => get<TaskTypeOption[]>("/api/task-types"),
+  /** Stop a running, waiting or ready task. */
+  stopWork: (workItemId: string) =>
+    post<{ id: string; status: WorkStatus }>("/api/chat/stop", { work_item_id: workItemId }),
+
+  // --- Preferences ----------------------------------------------------------
+  preferences: (opts: { task_type?: string; include_inactive?: boolean } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.task_type) params.set("task_type", opts.task_type);
+    if (opts.include_inactive) params.set("include_inactive", "true");
+    const qs = params.toString();
+    return get<PreferenceItem[]>(`/api/preferences${qs ? `?${qs}` : ""}`);
+  },
+  addPreference: (body: { text: string; task_type: string; system_scope?: string }) =>
+    post<PreferenceItem>("/api/preferences", { system_scope: "", ...body }),
+  updatePreference: (
+    id: string,
+    body: { text?: string; task_type?: string; system_scope?: string; active?: boolean }
+  ) => patch<PreferenceItem>(`/api/preferences/${id}`, body),
+  deletePreference: (id: string) => del<{ message: string }>(`/api/preferences/${id}`),
+
+  // --- Memory controls ------------------------------------------------------
+  memorySettings: () => get<MemorySettings>("/api/memory/settings"),
+  setMemoryPaused: (paused: boolean) => patch<MemorySettings>("/api/memory/settings", { paused }),
+  resetMemory: (scope: MemoryResetScope) =>
+    post<{ deleted: { preferences: number; work_items: number; memories: number } }>(
+      "/api/memory/reset",
+      { scope, confirm: "RESET" }
+    ),
+  /** "Do not use memory in this chat". */
+  setConversationMemoryOff: (id: string, memory_off: boolean) =>
+    patch<Conversation>(`/api/chat/conversations/${id}/memory`, { memory_off }),
 
   automations: () => get<Automation[]>("/api/automations"),
   createAutomation: (natural_language: string, approval_mode: ApprovalMode = "ask") =>
@@ -1096,9 +1152,6 @@ export const api = {
   skillActivity: (limit = 40) => get<SkillRun[]>(`/api/skills/activity?limit=${limit}`),
   toggleSkill: (code: string, enabled: boolean) =>
     patch<SkillItem>(`/api/skills/${code}`, { enabled }),
-  teachSkill: (code: string, note: string) =>
-    post<SkillItem>(`/api/skills/${code}/teach`, { note }),
-  clearSkillNotes: (code: string) => del<{ message: string }>(`/api/skills/${code}/notes`),
 
   // --- Identity -----------------------------------------------------------
   assistant: () => get<Assistant>("/api/assistant"),
@@ -1289,28 +1342,216 @@ export const api = {
 };
 
 // ---------------------------------------------------------------------------
+// Work items, preferences, memory controls (task-loop spec sections 2, 11, 13)
+// ---------------------------------------------------------------------------
+
+export type WorkStatus =
+  | "running"
+  | "waiting"
+  | "ready"
+  | "done"
+  | "partly_done"
+  | "failed"
+  | "stopped";
+
+export type PlanStepStatus = "todo" | "doing" | "done" | "skipped" | "failed";
+
+export interface PlanStep {
+  index: number;
+  text: string;
+  status: PlanStepStatus;
+  note: string;
+}
+
+export interface VerificationResult {
+  status: "passed" | "failed" | "partial" | "none";
+  checks?: Array<{ method: string; passed: boolean; evidence: string }>;
+}
+
+export interface WorkItemOut {
+  id: string;
+  title: string;
+  task_type: string;
+  status: WorkStatus;
+  trigger: string;
+  conversation_id: string | null;
+  outcome: string;
+  /** Spec lists "verification.status"; shaped as the object or the bare string. */
+  verification?: VerificationResult | { status: string } | string | null;
+  steps_total: number;
+  cost_usd: number;
+  recallable: boolean;
+  created_at: string;
+  finished_at: string | null;
+}
+
+/**
+ * The spec names this type but not its fields; these follow the work_steps
+ * table (section 2.2). Only kind/status/summary are relied on, all defensively.
+ */
+export interface WorkStepOut {
+  id?: string;
+  seq: number;
+  step_no?: number;
+  kind: "plan" | "tool" | "approval" | "reviewer_block" | "verification" | "note" | string;
+  tool_name?: string;
+  system?: string;
+  status: string;
+  summary?: string;
+  detail?: Record<string, any>;
+}
+
+export interface WorkItemDetail extends WorkItemOut {
+  instruction: string;
+  plan: PlanStep[];
+  systems_used: string[];
+  tools_used: string[];
+  summary: string;
+  report: string;
+  user_feedback: { rating?: "up" | "down"; note?: string } | null;
+  pending_action_ids: string[];
+  steps: WorkStepOut[];
+}
+
+export interface WorkItemQuery {
+  status?: WorkStatus | string;
+  task_type?: string;
+  conversation_id?: string;
+  q?: string;
+  limit?: number;
+  before?: string;
+}
+
+export interface TaskTypeOption {
+  value: string;
+  label: string;
+}
+
+export interface PreferenceItem {
+  id: string;
+  task_type: string;
+  system_scope: string;
+  text: string;
+  /** "stated" = you said it; "correction" = learned from a correction. */
+  source: "stated" | "correction" | string;
+  origin: string;
+  active: boolean;
+  superseded_by: string | null;
+  use_count: number;
+  last_used_at: string | null;
+  created_at: string;
+}
+
+export interface MemorySettings {
+  paused: boolean;
+}
+
+export type MemoryResetScope = "preferences" | "task_memory" | "facts" | "all";
+
+// ---------------------------------------------------------------------------
 // Chat streaming (SSE over POST)
 // ---------------------------------------------------------------------------
 
 export type StreamEvent =
   | { type: "start"; conversation_id: string }
   | { type: "status"; value: string; step?: number }
-  /** A tool has started; `label` is what to show while it runs. */
-  | { type: "tool_start"; name: string; code: string; label: string }
-  | { type: "skill"; code: string; name: string; summary: string; ok: boolean; tool?: string }
-  | { type: "learned"; value: string }
-  | { type: "memory"; count: number }
+  | { type: "delta"; value: string }
+  | { type: "capped"; value: boolean }
   | {
-      type: "pending_action";
-      id: string;
+      type: "done";
+      conversation_id: string;
+      message_id: string;
+      latency_ms: number;
+      steps: number;
+      work_item_id: string | null;
+      work_status: WorkStatus | null;
+    }
+  | { type: "error"; message: string }
+  // Task-loop events (spec section 8).
+  | { type: "recall"; work_items: number; preferences: number; memories: number }
+  | {
+      type: "task";
+      work_item_id: string;
+      title: string;
+      task_type: string;
+      status: WorkStatus;
+      resumed: boolean;
+    }
+  | { type: "plan"; work_item_id: string; steps: PlanStep[] }
+  | {
+      type: "step_started";
+      work_item_id: string;
+      step_no: number;
+      seq: number;
+      tool: string;
+      system: string;
+      label: string;
+    }
+  | {
+      type: "step_finished";
+      work_item_id: string;
+      step_no: number;
+      seq: number;
+      tool: string;
+      ok: boolean;
+      summary: string;
+      code: string;
+    }
+  | {
+      type: "approval_needed";
+      work_item_id: string;
+      pending_action_id: string;
       tool_name: string;
       skill_code: string;
       preview: string;
+      expires_at: string | null;
     }
-  | { type: "delta"; value: string }
-  | { type: "capped"; value: boolean }
-  | { type: "done"; conversation_id: string; message_id: string; latency_ms: number; steps: number }
-  | { type: "error"; message: string };
+  | {
+      type: "reviewer_block";
+      work_item_id: string;
+      tool: string;
+      reason: string;
+      streak: number;
+      total: number;
+    }
+  | {
+      type: "verification";
+      work_item_id: string;
+      passed: boolean;
+      method: string;
+      evidence: string;
+    }
+  | {
+      type: "preference_noted";
+      id: string;
+      text: string;
+      task_type: string;
+      superseded_id: string | null;
+    }
+  | {
+      type: "waiting";
+      work_item_id: string;
+      pending_action_ids: string[];
+      expires_at: string | null;
+    }
+  | { type: "continue"; work_item_id: string; reason: "segment_budget" | "segment_time" }
+  | {
+      type: "report";
+      work_item_id: string;
+      status: WorkStatus;
+      title: string;
+      outcome: string;
+      verification: string;
+    };
+
+/** POST /api/chat/stream answered 409: a run still holds this conversation. */
+export class StillWorkingError extends ApiError {
+  workItemId: string | null;
+  constructor(workItemId: string | null) {
+    super(409, "AURA is still working on this conversation");
+    this.workItemId = workItemId;
+  }
+}
 
 async function readEventStream(
   res: Response,
@@ -1371,6 +1612,15 @@ export async function streamChat(
     body: JSON.stringify({ message, conversation_id: conversationId }),
     signal,
   });
+  if (res.status === 409) {
+    let id: string | null = null;
+    try {
+      id = (await res.json())?.work_item_id ?? null;
+    } catch {
+      /* no body */
+    }
+    throw new StillWorkingError(id);
+  }
   await readEventStream(res, onEvent);
 }
 

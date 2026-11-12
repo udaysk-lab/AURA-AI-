@@ -406,7 +406,7 @@ export function Toggle({
       aria-label={label}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative h-5 w-9 shrink-0 rounded-full border border-line transition disabled:opacity-50 ${
+      className={`relative h-5 w-9 shrink-0 rounded-full border border-line transition before:absolute before:-inset-x-1 before:-inset-y-3.5 before:content-[''] disabled:opacity-50 ${
         checked ? "bg-accent shadow-glow-sm" : "bg-raised"
       }`}
     >

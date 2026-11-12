@@ -8,17 +8,23 @@ import {
   ArrowUp,
   GraduationCap,
   RotateCcw,
+  ShieldAlert,
   Sparkles,
+  Square,
   Zap,
 } from "lucide-react";
 import {
   Conversation,
   Message,
   PendingAction,
+  StillWorkingError,
+  WorkItemDetail,
   api,
   streamChat,
   StreamEvent,
 } from "@/lib/api";
+import { driveTask, resetContinues } from "@/lib/taskrun";
+import TaskPanel, { TaskPanelState } from "@/components/TaskPanel";
 import { useAssistant } from "@/lib/assistant";
 import ApprovalCard from "@/components/ApprovalCard";
 import Mascot from "@/components/Mascot";
@@ -31,6 +37,7 @@ import {
   CHAT_EVENT,
   ChatEventDetail,
   Spinner,
+  Toggle,
   fmtRelative,
   refreshBadges,
   refreshConversations,
@@ -52,11 +59,61 @@ interface LiveSkill {
   ok: boolean;
 }
 
-/** The tool running right now, while a reply is being worked out. */
-interface RunningTool {
-  code: string;
+/** One step line while a task runs: started, then finished. */
+interface LiveStep {
+  seq: number;
+  tool: string;
   label: string;
+  code: string;
+  done: boolean;
+  ok: boolean;
+  summary: string;
 }
+
+interface RunCtx {
+  convoId: string | null;
+  error: string;
+  finished: boolean;
+  more: boolean;
+  workItemId: string | null;
+}
+
+const EMPTY_PANEL: TaskPanelState = {
+  workItemId: null,
+  title: "",
+  taskType: "",
+  status: "starting",
+  plan: [],
+  systems: [],
+  recall: null,
+  noted: [],
+  outcome: "",
+  verification: "",
+};
+
+function verifStatus(v: WorkItemDetail["verification"]): string {
+  if (!v) return "";
+  if (typeof v === "string") return v;
+  return v.status ?? "";
+}
+
+function panelFromDetail(d: WorkItemDetail): TaskPanelState {
+  return {
+    workItemId: d.id,
+    title: d.title,
+    taskType: d.task_type,
+    status: d.status,
+    plan: d.plan ?? [],
+    systems: d.systems_used ?? [],
+    recall: null,
+    noted: [],
+    outcome: d.outcome,
+    verification: verifStatus(d.verification),
+  };
+}
+
+const isLive = (s: TaskPanelState["status"]) =>
+  s === "running" || s === "waiting" || s === "ready";
 
 /**
  * Where to look at what a skill touched. A reply that read your calendar
@@ -100,6 +157,14 @@ const recallLine = (n: number) => `Recalled ${n} relevant memor${n === 1 ? "y" :
 const showRecall = (n: number, skills: LiveSkill[]) =>
   n > 0 && !skills.some((s) => s.code === "MM01" && s.summary === recallLine(n));
 
+function recallText(r: { work_items: number; preferences: number; memories: number }): string {
+  const parts: string[] = [];
+  if (r.work_items) parts.push(`${r.work_items} similar past task${r.work_items === 1 ? "" : "s"}`);
+  if (r.preferences) parts.push(`${r.preferences} preference${r.preferences === 1 ? "" : "s"}`);
+  if (r.memories) parts.push(`${r.memories} saved fact${r.memories === 1 ? "" : "s"}`);
+  return parts.length ? `Recalled ${parts.join(", ")}` : "";
+}
+
 export default function ChatPage() {
   const { assistant, refresh: refreshAssistant } = useAssistant();
   const toast = useToast();
@@ -109,23 +174,40 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [draft, setDraft] = useState("");
-  const [liveSkills, setLiveSkills] = useState<LiveSkill[]>([]);
-  const [running, setRunning] = useState<RunningTool | null>(null);
+  const [liveSteps, setLiveSteps] = useState<LiveStep[]>([]);
+  const [notices, setNotices] = useState<string[]>([]);
+  const [verifyLine, setVerifyLine] = useState("");
+  const [recallLineText, setRecallLineText] = useState("");
   const [step, setStep] = useState(1);
   const [deviceControl, setDeviceControl] = useState(false);
-  const [memoryHits, setMemoryHits] = useState(0);
   const [learned, setLearned] = useState("");
   const [pending, setPending] = useState<PendingAction[]>([]);
+  const [panel, setPanel] = useState<TaskPanelState>(EMPTY_PANEL);
+  const [stopping, setStopping] = useState(false);
+  // A task another request is still running: shown, polled, not an error.
+  const [watchId, setWatchId] = useState<string | null>(null);
+  const [banner, setBanner] = useState("");
+  // Set when the automatic continue cap was reached with work still to do.
+  const [capped, setCapped] = useState<string | null>(null);
   // Shown under the thread until the next message. It used to be appended to
   // the live draft, which disappears the moment streaming stops — so every
   // failure was invisible and the question just sat there unanswered.
   const [failure, setFailure] = useState<{ message: string; retry: string } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
   // Mirrors `streaming` for code that runs outside a render (event handlers
   // registered once, a quick double Enter before React re-renders).
   const streamingRef = useRef(false);
   const sendRef = useRef<(text?: string) => Promise<void>>(async () => {});
+  const continueRef = useRef<(id: string) => Promise<void>>(async () => {});
+  const reloadRef = useRef<(id: string) => Promise<void>>(async () => {});
+
+  const activeConvo = conversations.find((c) => c.id === activeId);
+  const memoryOff = !!activeConvo?.memory_off;
+  const panelVisible = !!panel.workItemId;
+  const taskLive = panelVisible && isLive(panel.status);
+  const canStop = streaming || taskLive;
 
   const loadConversations = useCallback(async () => {
     try {
@@ -186,7 +268,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, draft, liveSkills, failure]);
+  }, [messages, draft, liveSteps, failure, notices]);
 
   // Grow the composer with its content, up to its max height.
   useEffect(() => {
@@ -196,12 +278,274 @@ export default function ChatPage() {
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, [input]);
 
+  const resetLive = () => {
+    setDraft("");
+    setLiveSteps([]);
+    setNotices([]);
+    setVerifyLine("");
+    setRecallLineText("");
+    setLearned("");
+    setStep(1);
+  };
+
+  const reloadThread = useCallback(async (id: string) => {
+    try {
+      setMessages((await api.conversation(id)).messages ?? []);
+    } catch {
+      /* keep what is on screen */
+    }
+  }, []);
+  reloadRef.current = reloadThread;
+
+  /** Every event of section 8 lands here, for a new message and for a continued task alike. */
+  const applyEvent = (e: StreamEvent, ctx: RunCtx) => {
+    switch (e.type) {
+      case "start":
+        ctx.convoId = e.conversation_id;
+        setActiveId(e.conversation_id);
+        break;
+      case "status":
+        if (e.step) setStep(e.step);
+        break;
+      case "recall": {
+        setRecallLineText(recallText(e));
+        setPanel((p) => ({ ...p, recall: { work_items: e.work_items, preferences: e.preferences, memories: e.memories } }));
+        break;
+      }
+      case "task":
+        ctx.workItemId = e.work_item_id;
+        setPanel((p) =>
+          p.workItemId === e.work_item_id
+            ? { ...p, title: e.title, taskType: e.task_type, status: e.status }
+            : { ...p, workItemId: e.work_item_id, title: e.title, taskType: e.task_type, status: e.status, plan: [], systems: [], outcome: "", verification: "" }
+        );
+        break;
+      case "plan":
+        ctx.workItemId = e.work_item_id;
+        setPanel((p) => ({ ...p, workItemId: e.work_item_id, plan: e.steps }));
+        break;
+      case "step_started":
+        setLiveSteps((l) => [
+          ...l.filter((x) => x.seq !== e.seq),
+          { seq: e.seq, tool: e.tool, label: e.label, code: "", done: false, ok: true, summary: "" },
+        ]);
+        if (e.system) {
+          setPanel((p) => (p.systems.includes(e.system) ? p : { ...p, systems: [...p.systems, e.system] }));
+        }
+        break;
+      case "step_finished":
+        setLiveSteps((l) =>
+          l.some((x) => x.seq === e.seq)
+            ? l.map((x) => (x.seq === e.seq ? { ...x, done: true, ok: e.ok, summary: e.summary, code: e.code } : x))
+            : [...l, { seq: e.seq, tool: e.tool, label: e.tool, code: e.code, done: true, ok: e.ok, summary: e.summary }]
+        );
+        break;
+      case "approval_needed":
+        setPanel((p) => ({ ...p, status: "waiting" }));
+        void loadPending(true);
+        refreshBadges();
+        break;
+      case "waiting":
+        setPanel((p) => ({ ...p, status: "waiting" }));
+        void loadPending(true);
+        refreshBadges();
+        break;
+      case "reviewer_block":
+        setNotices((n) => [
+          ...n,
+          `A safety check stopped “${e.tool.replace(/_/g, " ")}”: ${e.reason}`,
+        ]);
+        break;
+      case "verification":
+        setVerifyLine(`${e.passed ? "Checked" : "Check failed"}: ${e.evidence || e.method}`);
+        break;
+      case "preference_noted":
+        setLearned(e.text);
+        setPanel((p) => ({ ...p, noted: [...p.noted, e.text] }));
+        break;
+      case "continue":
+        ctx.more = true;
+        break;
+      case "report":
+        setPanel((p) => ({
+          ...p,
+          status: e.status,
+          title: e.title || p.title,
+          outcome: e.outcome,
+          verification: e.verification,
+        }));
+        break;
+      case "delta":
+        setDraft((d) => d + e.value);
+        break;
+      case "done":
+        ctx.finished = true;
+        if (e.work_status) setPanel((p) => ({ ...p, status: e.work_status as TaskPanelState["status"] }));
+        break;
+      case "error":
+        ctx.error = e.message;
+        break;
+    }
+  };
+
+  /**
+   * One run on screen: a new message, or a task being carried on. Keeps the
+   * Stop button, the live lines and the panel in step, and follows `continue`
+   * signals up to the cap in lib/taskrun.ts.
+   */
+  const runFlow = async (opts: { content?: string; continueId?: string; convoId?: string }) => {
+    if (streamingRef.current) return;
+    const content = opts.content;
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    streamingRef.current = true;
+    setStreaming(true);
+    setStopping(false);
+    resetLive();
+    setFailure(null);
+    setBanner("");
+    setCapped(null);
+    if (content !== undefined) {
+      setInput("");
+      setPanel(EMPTY_PANEL);
+      setMessages((prev) => [
+        ...prev,
+        { id: `local-${Date.now()}`, role: "user", content, meta: {}, created_at: new Date().toISOString() },
+      ]);
+    }
+
+    const ctx: RunCtx = { convoId: opts.convoId ?? activeId, error: "", finished: false, more: false, workItemId: opts.continueId ?? null };
+    let busyWith: string | null = null;
+    let notSent = false;
+    const onEvent = (e: StreamEvent) => applyEvent(e, ctx);
+
+    const follow = async (id: string) => {
+      const r = await driveTask(id, onEvent, ctrl.signal);
+      if (r.busy) busyWith = id;
+      if (r.capped) setCapped(id);
+      if (r.error) ctx.error = r.error;
+    };
+
+    try {
+      if (content !== undefined) {
+        await streamChat(content, activeId, onEvent, ctrl.signal);
+        if (!ctx.finished && !ctx.error && !ctrl.signal.aborted) {
+          ctx.error = "The reply was cut off before it finished. Please try again.";
+        }
+        if (ctx.more && ctx.workItemId && !ctx.error && !ctrl.signal.aborted) {
+          ctx.more = false;
+          await follow(ctx.workItemId);
+        }
+      } else if (opts.continueId) {
+        await follow(opts.continueId);
+      }
+    } catch (err) {
+      if (err instanceof StillWorkingError) {
+        // Not a failure: the task is still running. Show it, and give the message back.
+        notSent = true;
+        busyWith = err.workItemId;
+        setBanner("AURA is still working on this chat. Your message wasn't sent; it's back in the box for when the task finishes.");
+      } else if (ctrl.signal.aborted || (err instanceof Error && err.name === "AbortError")) {
+        ctx.error = "";
+      } else {
+        ctx.error = err instanceof Error ? err.message : "Couldn't reach your assistant. Please try again.";
+      }
+    }
+
+    const convoId = ctx.convoId;
+    let saved: Message[] | null = null;
+    if (convoId) {
+      try {
+        saved = (await api.conversation(convoId)).messages ?? [];
+      } catch {
+        saved = null; // keep the local copy
+      }
+    }
+    if (notSent && content !== undefined) {
+      setInput(content);
+      setMessages((prev) => prev.filter((m) => !(m.id.startsWith("local-") && m.role === "user" && m.content === content)));
+    } else if (saved) {
+      const kept = content === undefined || saved.some((m) => m.role === "user" && m.content === content);
+      setMessages(
+        kept || !ctx.error
+          ? saved
+          : [...saved, { id: `local-${Date.now()}`, role: "user", content: content!, meta: {}, created_at: new Date().toISOString() }]
+      );
+    }
+    setFailure(ctx.error && content !== undefined ? { message: ctx.error, retry: content } : ctx.error ? { message: ctx.error, retry: "" } : null);
+    resetLive();
+    abortRef.current = null;
+    streamingRef.current = false;
+    setStreaming(false);
+    setStopping(false);
+    if (busyWith) setWatchId(busyWith);
+    await Promise.all([loadConversations(), loadPending(true), refreshAssistant()]);
+  };
+
+  const send = async (text?: string) => {
+    const content = (text ?? input).trim();
+    if (!content || streamingRef.current) return;
+    await runFlow({ content });
+  };
+  sendRef.current = send;
+  continueRef.current = (id: string) => runFlow({ continueId: id });
+
+  const stop = async () => {
+    const id = panel.workItemId;
+    setStopping(true);
+    abortRef.current?.abort();
+    if (id) {
+      try {
+        const r = await api.stopWork(id);
+        setPanel((p) => ({ ...p, status: r.status }));
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Couldn't stop that task");
+      }
+    }
+    setWatchId(null);
+    setStopping(false);
+    if (activeId) await reloadThread(activeId);
+    await Promise.all([loadPending(true), loadConversations()]);
+    refreshBadges();
+  };
+
+  // A task another request holds: poll it until it stops running.
+  useEffect(() => {
+    if (!watchId) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const d = await api.workItem(watchId);
+        if (cancelled) return;
+        setPanel(panelFromDetail(d));
+        if (d.status !== "running") {
+          setWatchId(null);
+          if (d.conversation_id) await reloadRef.current(d.conversation_id);
+          void loadPending(true);
+          if (d.status === "ready" && !streamingRef.current) void continueRef.current(d.id);
+        }
+      } catch {
+        /* try again on the next tick */
+      }
+    };
+    void tick();
+    const t = setInterval(() => void tick(), 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [watchId, loadPending]);
+
   // Switching thread mid-reply would pour the live reply into the other
   // thread and then overwrite it with this one, so the rail waits.
   const openConversation = async (id: string) => {
     if (streamingRef.current) return;
     setActiveId(id);
     setFailure(null);
+    setBanner("");
+    setCapped(null);
+    setWatchId(null);
+    setPanel(EMPTY_PANEL);
     try {
       const convo = await api.conversation(id);
       setMessages(convo.messages ?? []);
@@ -209,19 +553,39 @@ export default function ChatPage() {
       setMessages([]);
       toast.error(e instanceof Error ? e.message : "Couldn't open that conversation");
     }
-    setDraft("");
-    setLiveSkills([]);
-    setRunning(null);
-    setLearned("");
+    resetLive();
+
+    // Show the task this conversation is on, and carry on any that are ready.
+    try {
+      const [items, ready] = await Promise.all([
+        api.workItems({ conversation_id: id, limit: 10 }),
+        api.workItems({ conversation_id: id, status: "ready" }),
+      ]);
+      const current = items.find((i) => isLive(i.status)) ?? items[0];
+      if (current) {
+        const detail = await api.workItem(current.id);
+        setPanel(panelFromDetail(detail));
+        if (detail.status === "running") setWatchId(detail.id);
+      }
+      for (const r of ready) {
+        if (streamingRef.current) break;
+        resetContinues(r.id);
+        await runFlow({ continueId: r.id, convoId: id });
+      }
+    } catch {
+      /* the thread is shown without a task panel */
+    }
   };
 
   const newChat = () => {
     if (streamingRef.current) return;
     setActiveId(null);
     setMessages([]);
-    setDraft("");
-    setLiveSkills([]);
-    setLearned("");
+    resetLive();
+    setPanel(EMPTY_PANEL);
+    setWatchId(null);
+    setBanner("");
+    setCapped(null);
     setFailure(null);
     textareaRef.current?.focus();
   };
@@ -241,138 +605,54 @@ export default function ChatPage() {
     return () => window.removeEventListener(CHAT_EVENT, onShell);
   }, []);
 
-  const send = async (text?: string) => {
-    const content = (text ?? input).trim();
-    if (!content || streamingRef.current) return;
-
-    setInput("");
-    streamingRef.current = true;
-    setStreaming(true);
-    setDraft("");
-    setLiveSkills([]);
-    setRunning(null);
-    setStep(1);
-    setMemoryHits(0);
-    setLearned("");
-    setFailure(null);
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: `local-${Date.now()}`,
-        role: "user",
-        content,
-        meta: {},
-        created_at: new Date().toISOString(),
-      },
-    ]);
-
-    let convoId = activeId;
-    let streamError = "";
-    let finished = false;
-    try {
-      await streamChat(content, activeId, (e: StreamEvent) => {
-        switch (e.type) {
-          case "start":
-            convoId = e.conversation_id;
-            setActiveId(e.conversation_id);
-            break;
-          case "status":
-            if (e.step) setStep(e.step);
-            break;
-          case "tool_start":
-            setRunning({ code: e.code, label: e.label });
-            break;
-          case "skill":
-            setRunning(null);
-            setLiveSkills((s) => [
-              ...s,
-              { code: e.code, name: e.name, summary: e.summary, ok: e.ok },
-            ]);
-            break;
-          case "learned":
-            setLearned(e.value);
-            break;
-          case "memory":
-            setMemoryHits(e.count);
-            break;
-          case "pending_action":
-            setRunning(null);
-            void loadPending(true);
-            refreshBadges();
-            break;
-          case "delta":
-            setDraft((d) => d + e.value);
-            break;
-          case "done":
-            finished = true;
-            break;
-          case "error":
-            streamError = e.message;
-            break;
-        }
-      });
-      if (!finished && !streamError) {
-        streamError = "The reply was cut off before it finished. Please try again.";
-      }
-    } catch (err) {
-      streamError =
-        err instanceof Error ? err.message : "Couldn't reach your assistant. Please try again.";
-    }
-
-    // Reload what the server kept, so the thread shows the saved turn (and
-    // the new title in the rail) rather than a local copy. Everything below is
-    // set in one go, so the live turn and the saved one never show together.
-    let saved: Message[] | null = null;
-    if (convoId) {
-      try {
-        saved = (await api.conversation(convoId)).messages ?? [];
-      } catch {
-        saved = null; // keep the local copy
-      }
-    }
-    if (saved) {
-      const kept = saved.some((m) => m.role === "user" && m.content === content);
-      setMessages(
-        kept || !streamError
-          ? saved
-          : [
-              ...saved,
-              {
-                id: `local-${Date.now()}`,
-                role: "user",
-                content,
-                meta: {},
-                created_at: new Date().toISOString(),
-              },
-            ]
-      );
-    }
-    setFailure(streamError ? { message: streamError, retry: content } : null);
-    setDraft("");
-    setLiveSkills([]);
-    setRunning(null);
-    setLearned("");
-    streamingRef.current = false;
-    setStreaming(false);
-    await Promise.all([loadConversations(), loadPending(true), refreshAssistant()]);
-  };
-  sendRef.current = send;
-
-  // The card records the answer (and carries the task on if it says so); the
-  // thread then reloads to show what happened.
+  // The card records the answer and hands the task to continueFor; the thread
+  // then reloads to show what happened.
   const onDecided = async () => {
     await loadPending(true);
     refreshBadges();
-    // Mid-reply, the thread reloads itself when the reply lands.
+    // Mid-run, the thread reloads itself when the run ends.
     if (activeId && !streamingRef.current) await openConversation(activeId);
   };
 
-  const activeTitle = conversations.find((c) => c.id === activeId)?.title;
+  const continueFor = (a: PendingAction) => (workItemId: string) => {
+    // A card for another conversation's task is carried on quietly.
+    if (a.conversation_id && a.conversation_id !== activeId) {
+      return driveTask(workItemId).then(() => undefined);
+    }
+    return continueRef.current(workItemId);
+  };
+
+  const toggleMemory = async () => {
+    if (!activeId) return;
+    const next = !memoryOff;
+    setConversations((cs) => cs.map((c) => (c.id === activeId ? { ...c, memory_off: next } : c)));
+    try {
+      await api.setConversationMemoryOff(activeId, next);
+      toast.success(next ? "AURA won't use memory in this chat" : "AURA can use memory in this chat");
+    } catch (e) {
+      setConversations((cs) => cs.map((c) => (c.id === activeId ? { ...c, memory_off: !next } : c)));
+      toast.error(e instanceof Error ? e.message : "Couldn't change that");
+    }
+  };
+
+  const activeTitle = activeConvo?.title;
+  const taskPending = pending.filter((p) => p.work_item_id && p.work_item_id === panel.workItemId);
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 flex-col lg:flex-row">
+      {panelVisible && (
+        <div className="order-first shrink-0 lg:order-last lg:flex lg:min-h-0">
+          <TaskPanel
+            state={panel}
+            waiting={taskPending}
+            canStop={canStop}
+            stopping={stopping}
+            onStop={() => void stop()}
+          />
+        </div>
+      )}
       {/* Thread */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 sm:py-8">
           <div className="mx-auto max-w-2xl space-y-5">
             {activeTitle && messages.length > 0 && (
@@ -397,7 +677,7 @@ export default function ChatPage() {
                     <button
                       key={s}
                       onClick={() => send(s)}
-                      className="rounded-full border border-line bg-raised/30 px-3 py-1.5 text-[12px] text-muted backdrop-blur-md transition hover:border-accent/40 hover:bg-raised/60 hover:text-ink"
+                      className="min-h-[44px] rounded-full border border-line bg-raised/30 px-3 py-1.5 text-[12px] text-muted backdrop-blur-md transition hover:border-accent/40 hover:bg-raised/60 hover:text-ink"
                     >
                       {s}
                     </button>
@@ -410,41 +690,72 @@ export default function ChatPage() {
               <MessageBubble key={m.id} message={m} />
             ))}
 
+            {banner && (
+              <div role="status" className="flex items-start gap-2 rounded-xl border border-amber/35 bg-amber/10 px-3 py-2 text-[12.5px] text-ink">
+                <Spinner className="mt-0.5 text-amber" />
+                <p className="min-w-0 flex-1 leading-relaxed">{banner}</p>
+              </div>
+            )}
+
+            {watchId && !streaming && !banner && (
+              <div role="status" className="flex items-center gap-2 text-[13px] text-muted">
+                <Spinner /> AURA is still working on this. Updates appear here.
+              </div>
+            )}
+
             {/* Live turn */}
             {streaming && (
               <div className="animate-fade-up space-y-2" aria-live="polite">
                 {learned && (
                   <div className="flex items-center gap-2 rounded-xl border border-sage/30 bg-sage/10 px-3 py-2 text-[12.5px] text-sage">
                     <GraduationCap size={13} />
-                    Learned: {learned}
+                    Noted: {learned}
                   </div>
                 )}
-                {(liveSkills.length > 0 || memoryHits > 0 || running) && (
+                {(liveSteps.length > 0 || recallLineText) && (
                   <div className="rounded-xl border border-line bg-raised/50 px-3 py-2">
-                    {showRecall(memoryHits, liveSkills) && (
-                      <SkillLine code="MM01" summary={recallLine(memoryHits)} />
-                    )}
-                    {liveSkills.map((s, i) => (
-                      <SkillLine key={i} code={s.code} summary={s.summary} ok={s.ok} />
-                    ))}
-                    {running && (
-                      <div className="flex items-center gap-2 py-1 text-[12.5px] text-muted">
-                        <Spinner className="h-3 w-3 text-accent-soft" />
-                        {running.code && (
-                          <span className="skill-line skill-code shrink-0">[SKILL·{running.code}]</span>
-                        )}
-                        <span className="min-w-0 truncate">{running.label}…</span>
-                      </div>
+                    {recallLineText && <SkillLine code="MM01" summary={recallLineText} />}
+                    {liveSteps.map((s) =>
+                      s.done ? (
+                        <SkillLine key={s.seq} code={s.code || s.tool} summary={s.summary || s.label} ok={s.ok} />
+                      ) : (
+                        <div key={s.seq} className="flex items-center gap-2 py-1 text-[12.5px] text-muted">
+                          <Spinner className="h-3 w-3 text-accent-soft" />
+                          <span className="min-w-0 truncate">{s.label}…</span>
+                        </div>
+                      )
                     )}
                   </div>
                 )}
+                {notices.map((n, i) => (
+                  <div key={i} role="status" className="flex items-start gap-2 rounded-xl border border-amber/35 bg-amber/10 px-3 py-2 text-[12.5px] text-ink">
+                    <ShieldAlert size={14} className="mt-0.5 shrink-0 text-amber" aria-hidden />
+                    <span className="min-w-0 flex-1">{n}</span>
+                  </div>
+                ))}
+                {verifyLine && <div className="text-[12px] text-muted">{verifyLine}</div>}
                 {draft ? (
                   <Markdown text={draft} />
-                ) : running ? null : (
-                  <div className="flex items-center gap-2 text-[13px] text-faint">
+                ) : liveSteps.some((s) => !s.done) ? null : (
+                  <div className="flex items-center gap-2 text-[13px] text-muted">
                     <Spinner /> {step > 1 ? `Working it out — step ${step}…` : "Thinking…"}
                   </div>
                 )}
+              </div>
+            )}
+
+            {capped && !streaming && (
+              <div role="status" className="flex flex-wrap items-center gap-3 rounded-xl border border-line bg-raised/50 px-3 py-2 text-[12.5px] text-muted">
+                <p className="min-w-0 flex-1">This task has run for a while. It paused so you can check in.</p>
+                <button
+                  className="btn-ghost min-h-[44px]"
+                  onClick={() => {
+                    resetContinues(capped);
+                    void continueRef.current(capped);
+                  }}
+                >
+                  Keep going
+                </button>
               </div>
             )}
 
@@ -455,22 +766,24 @@ export default function ChatPage() {
               >
                 <AlertTriangle size={15} className="mt-0.5 shrink-0" />
                 <p className="min-w-0 flex-1 leading-relaxed">{failure.message}</p>
-                <button
-                  onClick={() => {
-                    const retry = failure.retry;
-                    // Drop the unanswered copy; send() adds it back.
-                    setMessages((prev) => {
-                      const i = prev.map((m) => m.content).lastIndexOf(retry);
-                      return i >= 0 && prev[i].id.startsWith("local-")
-                        ? prev.filter((_, j) => j !== i)
-                        : prev;
-                    });
-                    void send(retry);
-                  }}
-                  className="btn-ghost shrink-0 py-1 text-[12px] text-ink"
-                >
-                  <RotateCcw size={12} /> Try again
-                </button>
+                {failure.retry && (
+                  <button
+                    onClick={() => {
+                      const retry = failure.retry;
+                      // Drop the unanswered copy; send() adds it back.
+                      setMessages((prev) => {
+                        const i = prev.map((m) => m.content).lastIndexOf(retry);
+                        return i >= 0 && prev[i].id.startsWith("local-")
+                          ? prev.filter((_, j) => j !== i)
+                          : prev;
+                      });
+                      void send(retry);
+                    }}
+                    className="btn-ghost min-h-[44px] shrink-0 py-1 text-[12px] text-ink"
+                  >
+                    <RotateCcw size={12} /> Try again
+                  </button>
+                )}
               </div>
             )}
 
@@ -478,7 +791,12 @@ export default function ChatPage() {
               <div className="space-y-3" aria-label="Waiting for your answer">
                 <div className="label text-amber">Needs your say-so</div>
                 {pending.map((p) => (
-                  <ApprovalCard key={p.id} action={p} onDecided={onDecided} />
+                  <ApprovalCard
+                    key={p.id}
+                    action={p}
+                    onDecided={onDecided}
+                    onContinue={continueFor(p)}
+                  />
                 ))}
               </div>
             )}
@@ -495,12 +813,12 @@ export default function ChatPage() {
                 className="-mx-1 mb-2.5 flex gap-1.5 overflow-x-auto px-1 pb-0.5"
                 aria-label="Quick actions"
               >
-                <Zap size={12} className="mt-1.5 shrink-0 text-faint" aria-hidden />
+                <Zap size={12} className="mt-3 shrink-0 text-faint" aria-hidden />
                 {[...QUICK_ACTIONS, ...(deviceControl ? [DEVICE_QUICK_ACTION] : [])].map((q) => (
                   <button
                     key={q}
                     onClick={() => send(q)}
-                    className="shrink-0 rounded-full border border-line bg-raised/30 px-2.5 py-1 text-[11.5px] text-muted transition hover:border-accent/40 hover:text-ink"
+                    className="min-h-[44px] shrink-0 rounded-full border border-line bg-raised/30 px-3 py-1 text-[11.5px] text-muted transition hover:border-accent/40 hover:text-ink"
                   >
                     {q}
                   </button>
@@ -526,6 +844,18 @@ export default function ChatPage() {
                   aria-label={`Message ${assistant?.name ?? "Aura"}`}
                   className="max-h-40 min-h-[44px] flex-1 resize-none bg-transparent px-3 py-2.5 text-[13.5px] placeholder:text-faint outline-none"
                 />
+                {canStop && (
+                  <button
+                    type="button"
+                    onClick={() => void stop()}
+                    disabled={stopping}
+                    aria-label="Stop the task"
+                    title="Stop the task"
+                    className="btn-ghost h-11 w-11 shrink-0 rounded-full p-0"
+                  >
+                    <Square size={14} aria-hidden />
+                  </button>
+                )}
                 <button
                   onClick={() => send()}
                   disabled={!input.trim() || streaming}
@@ -535,8 +865,19 @@ export default function ChatPage() {
                   {streaming ? <Spinner /> : <ArrowUp size={16} />}
                 </button>
               </div>
-              <div className="mt-1 border-t border-line px-1 pt-1.5">
+              <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 border-t border-line px-1 pt-1.5">
                 <ModePicker />
+                <div className="flex min-h-[44px] items-center gap-2">
+                  <span id="memory-off-label" className="text-[12px] text-muted">
+                    {activeId ? "Don't use memory in this chat" : "Memory off (after the first message)"}
+                  </span>
+                  <Toggle
+                    checked={memoryOff}
+                    onChange={() => void toggleMemory()}
+                    disabled={!activeId}
+                    label="Do not use memory in this chat"
+                  />
+                </div>
               </div>
             </div>
             <p className="mt-2 hidden text-center text-[11px] text-faint sm:block">
@@ -554,7 +895,13 @@ function MessageBubble({ message }: { message: Message }) {
   const isUser = message.role === "user";
   const skillRuns: LiveSkill[] = message.meta?.skill_runs ?? [];
   const memoriesUsed: string[] = message.meta?.memories_used ?? [];
-  const learned: string = message.meta?.learned ?? "";
+  const notedRaw: unknown = message.meta?.preferences_noted;
+  const learned: string = Array.isArray(notedRaw)
+    ? notedRaw
+        .map((n) => (typeof n === "string" ? n : (n as { text?: string })?.text ?? ""))
+        .filter((t) => t && !/^[0-9a-f-]{36}$/.test(t))
+        .join("; ")
+    : "";
 
   if (isUser) {
     return (
@@ -570,7 +917,7 @@ function MessageBubble({ message }: { message: Message }) {
     <div className="animate-fade-up space-y-2">
       {learned && (
         <div className="flex items-center gap-2 rounded-xl border border-sage/30 bg-sage/10 px-3 py-2 text-[12.5px] text-sage">
-          <GraduationCap size={13} /> Learned: {learned}
+          <GraduationCap size={13} /> Noted: {learned}
         </div>
       )}
       {(skillRuns.length > 0 || memoriesUsed.length > 0) && (

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { GraduationCap, Radio, Sparkles, Wand2, X } from "lucide-react";
+import { Brain, Radio, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { PluginItem, SkillItem, SkillRun, SkillStats, api } from "@/lib/api";
 import { useToast } from "@/components/Toast";
@@ -9,12 +9,10 @@ import {
   Badge,
   Card,
   EmptyState,
-  Modal,
   PageHeader,
   SectionTitle,
   SkillLine,
   Skeleton,
-  Spinner,
   Stat,
   Toggle,
   fmtRelative,
@@ -38,9 +36,6 @@ export default function SkillsPage() {
   const [stats, setStats] = useState<SkillStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
-  const [teaching, setTeaching] = useState<SkillItem | null>(null);
-  const [note, setNote] = useState("");
-  const [saving, setSaving] = useState(false);
   const [toggling, setToggling] = useState<string | null>(null);
   // Reached from a system (Systems page, "Skills"): ?system=<id> narrows the list.
   const [system, setSystem] = useState<PluginItem | null>(null);
@@ -96,32 +91,6 @@ export default function SkillsPage() {
     }
   };
 
-  const teach = async () => {
-    if (!teaching || !note.trim() || saving) return;
-    setSaving(true);
-    try {
-      await api.teachSkill(teaching.code, note.trim());
-      toast.success(`${teaching.name} will remember that`);
-      setNote("");
-      setTeaching(null);
-      await load();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Couldn't save that lesson");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const clearNotes = async (skill: SkillItem) => {
-    if (!window.confirm(`Forget everything ${skill.name} has learned?`)) return;
-    try {
-      await api.clearSkillNotes(skill.code);
-      await load();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Couldn't clear those lessons");
-    }
-  };
-
   const inSystem = system ? skills.filter((s) => system.skills.includes(s.code)) : skills;
   const categories = Array.from(new Set(inSystem.map((s) => s.category)));
   const visible = filter ? inSystem.filter((s) => s.category === filter) : inSystem;
@@ -140,11 +109,22 @@ export default function SkillsPage() {
         blurb={
           <>
             What your assistant can actually do in {system ? "this system" : "the systems you assigned"}. Turning one off removes it from their
-            reach entirely — they can&apos;t use what they can&apos;t see. Teach a skill
-            and the correction sticks.
+            reach entirely — they can&apos;t use what they can&apos;t see. What AURA should
+            remember about how you like things done lives in{" "}
+            <Link href="/memory" className="text-accent-soft underline-offset-2 hover:underline">
+              Memory
+            </Link>
+            .
           </>
         }
       />
+
+      <Link
+        href="/memory"
+        className="inline-flex min-h-[44px] items-center gap-2 text-[13px] text-accent-soft underline-offset-2 hover:underline"
+      >
+        <Brain size={14} aria-hidden /> Your preferences are in Memory
+      </Link>
 
       {system && (
         <Link href="/skills" className="inline-flex min-h-[44px] items-center text-[13px] text-accent-soft underline-offset-2 hover:underline">
@@ -246,36 +226,6 @@ export default function SkillsPage() {
                     </span>
                   </div>
 
-                  {s.learned_notes.length > 0 && (
-                    <div className="mb-3 rounded-xl border border-line bg-raised/50 p-3">
-                      <div className="label mb-1.5 flex items-center gap-1.5">
-                        <GraduationCap size={11} /> What it learned
-                      </div>
-                      <ul className="space-y-1">
-                        {s.learned_notes.map((n, i) => (
-                          <li key={i} className="text-[12px] leading-relaxed text-muted">
-                            — {n}
-                          </li>
-                        ))}
-                      </ul>
-                      <button
-                        onClick={() => clearNotes(s)}
-                        className="mt-2 text-[11px] text-faint transition hover:text-ink"
-                      >
-                        <X size={10} className="inline" /> clear
-                      </button>
-                    </div>
-                  )}
-
-                  <button
-                    onClick={() => {
-                      setTeaching(s);
-                      setNote("");
-                    }}
-                    className="btn-quiet px-0 py-0 text-[12px]"
-                  >
-                    <Wand2 size={12} /> Teach it something
-                  </button>
                 </div>
               ))}
             </div>
@@ -314,35 +264,6 @@ export default function SkillsPage() {
         )}
       </Card>
 
-      <Modal
-        open={!!teaching}
-        onClose={() => setTeaching(null)}
-        title={teaching ? `Teach ${teaching.name}` : ""}
-      >
-        <div className="space-y-3">
-          <p className="text-[12.5px] leading-relaxed text-muted">
-            Write it as an instruction. It gets replayed into the prompt every time this
-            skill is in scope, so keep it short and specific.
-          </p>
-          <textarea
-            className="input min-h-[90px]"
-            placeholder="Never schedule anything before 10am. Keep replies under three sentences."
-            aria-label="Lesson"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            maxLength={200}
-            autoFocus
-          />
-          <div className="text-right text-[11px] text-faint">{note.length}/200</div>
-          <button
-            onClick={teach}
-            disabled={saving || note.trim().length < 3}
-            className="btn-primary w-full"
-          >
-            {saving ? <Spinner /> : <GraduationCap size={14} />} Save lesson
-          </button>
-        </div>
-      </Modal>
     </div>
   );
 }

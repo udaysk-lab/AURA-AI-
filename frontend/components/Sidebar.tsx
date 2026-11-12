@@ -106,6 +106,11 @@ export default function Sidebar({
     void load();
   }, [pathname, load]);
 
+  // Conversations that have a question waiting for the user.
+  const waitingIds = new Set(
+    pending.map((p) => p.conversation_id).filter((id): id is string => !!id)
+  );
+
   // Whether this instance can operate a computer is fixed at startup, so ask
   // once per mount rather than on every navigation.
   useEffect(() => {
@@ -284,17 +289,26 @@ export default function Sidebar({
           >
             <button
               onClick={() => openConversation(c.id)}
-              className="min-w-0 flex-1 truncate text-left"
+              className="min-h-[44px] min-w-0 flex-1 truncate text-left"
               title={c.title}
             >
               {c.pinned && <Pin size={10} className="mr-1 inline text-accent-soft" />}
               {c.title}
             </button>
+            {waitingIds.has(c.id) && (
+              <span
+                className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber/35 bg-amber/14 px-1.5 py-px text-[10px] font-medium text-amber"
+                title="Waiting for your answer"
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-amber" aria-hidden />
+                Waiting<span className="sr-only"> on you</span>
+              </span>
+            )}
             <button
               onClick={() => removeConversation(c)}
               aria-label={`Delete conversation ${c.title}`}
               title="Delete conversation"
-              className="rounded p-0.5 opacity-0 transition focus-visible:opacity-100 group-hover:opacity-100"
+              className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded opacity-0 transition focus-visible:opacity-100 group-hover:opacity-100"
             >
               <Trash2 size={12} className="text-faint hover:text-rose" />
             </button>

@@ -16,8 +16,8 @@ import {
   PendingAction,
   StreamEvent,
   api,
-  continueChat,
 } from "@/lib/api";
+import { driveTask } from "@/lib/taskrun";
 import {
   OPTION_ORDER,
   describeProposedRule,
@@ -55,6 +55,12 @@ export interface ApprovalCardProps {
   onDecided?: (action: PendingAction, outcome: DecisionOutcome) => void;
   /** Gets the events of a continued task, if the screen wants to show them. */
   onContinueEvent?: (event: StreamEvent) => void;
+  /**
+   * A screen that shows the run itself (the chat) takes over carrying the task
+   * on, so its own Stop button and step lines cover it. Without this the card
+   * continues the task and keeps going within the per-page cap.
+   */
+  onContinue?: (workItemId: string) => void | Promise<void>;
 }
 
 /**
@@ -62,7 +68,12 @@ export interface ApprovalCardProps {
  * It shows what AURA wants to do, why, when the question lapses, and exactly
  * the answers the server offered. Nothing is added on this side.
  */
-export default function ApprovalCard({ action, onDecided, onContinueEvent }: ApprovalCardProps) {
+export default function ApprovalCard({
+  action,
+  onDecided,
+  onContinueEvent,
+  onContinue,
+}: ApprovalCardProps) {
   const toast = useToast();
   const [busy, setBusy] = useState<ApprovalOption | null>(null);
   const [error, setError] = useState("");
@@ -122,7 +133,13 @@ export default function ApprovalCard({ action, onDecided, onContinueEvent }: App
       // The answer is recorded; the paused task may now be ready to carry on.
       if (outcome.work_item?.status === "ready" && outcome.work_item.id) {
         try {
-          await continueChat(outcome.work_item.id, onContinueEvent);
+          if (onContinue) {
+            // Not awaited: the screen shows the run, and this card is done.
+            void onContinue(outcome.work_item.id);
+          } else {
+            const driven = await driveTask(outcome.work_item.id, onContinueEvent);
+            if (driven.error) throw new Error(driven.error);
+          }
         } catch (e) {
           toast.error(
             e instanceof Error
@@ -156,7 +173,7 @@ export default function ApprovalCard({ action, onDecided, onContinueEvent }: App
     >
       <div className="flex flex-wrap items-center gap-2">
         <Icon size={15} className="shrink-0 text-amber" aria-hidden />
-        <h3 id={headingId} className="min-w-0 flex-1 text-[14px] font-semibold">
+        <h3 id={headingId} tabIndex={-1} className="min-w-0 flex-1 text-[14px] font-semibold">
           {title}
         </h3>
         {origin && <Badge>{origin}</Badge>}

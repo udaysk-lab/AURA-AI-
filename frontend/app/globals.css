@@ -21,7 +21,7 @@
   --raised: 28 28 39;
   --ink: 240 240 249;
   --muted: 154 154 176;
-  --faint: 107 107 131;
+  --faint: 132 132 156;
 
   /* Accent — electric violet */
   --accent: 139 108 255;
@@ -60,8 +60,8 @@
   --panel: 255 253 250;
   --raised: 245 238 228;
   --ink: 40 33 28;
-  --muted: 124 111 99;
-  --faint: 166 154 142;
+  --muted: 94 83 73;
+  --faint: 112 100 89;
 
   --accent: 124 82 232;
   --accent-soft: 160 126 245;
