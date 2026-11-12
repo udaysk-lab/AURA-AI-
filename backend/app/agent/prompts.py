@@ -90,7 +90,10 @@ def device_block() -> str:
 
     return "\n" + DEVICE_GUIDE.format(
         facts=os_facts_line(),
-        roots=", ".join(settings.device_allowed_root_list),
+        roots=(
+            "only the folders the person has connected. If you need another folder, use the file tool on it "
+            "and AURA will ask the person to connect it; never try to get around that"
+        ),
         exec_mode=policy.describe_mode(),
     )
 

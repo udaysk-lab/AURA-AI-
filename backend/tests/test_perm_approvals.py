@@ -437,6 +437,8 @@ def _special(db, user, card, tool, args, payload):
 def test_folder_card_connects_then_runs(device):
     tmp, db = device
     user = mk(db)
+    db.query(models.DeviceFolder).delete()  # a user with no connected folder yet
+    db.commit()
     folder = tmp / "newdir"
     folder.mkdir()
     args = {"path": str(folder / "n.txt"), "content": "hello"}
@@ -452,6 +454,8 @@ def test_folder_card_connects_then_runs(device):
 def test_folder_card_is_undone_when_the_recheck_refuses(device):
     tmp, db = device
     user = mk(db)
+    db.query(models.DeviceFolder).delete()  # a user with no connected folder yet
+    db.commit()
     folder = tmp / "blocked"
     folder.mkdir()
     args = {"path": str(folder / "n.txt"), "content": "hello"}
@@ -466,6 +470,8 @@ def test_folder_card_is_undone_when_the_recheck_refuses(device):
 def test_folder_card_refuses_a_missing_folder_and_hosted_installs(device, monkeypatch):
     tmp, db = device
     user = mk(db)
+    db.query(models.DeviceFolder).delete()  # a user with no connected folder yet
+    db.commit()
     a = _special(db, user, "folder_access", "write_file", {"path": "x", "content": ""}, {"path": str(tmp / "ghost")})
     assert answer(db, user, a, "approve")["status"] == "refused"
     b = _special(db, user, "folder_access", "write_file", {"path": "y", "content": ""}, {"path": str(tmp)})
@@ -813,8 +819,12 @@ def test_the_caller_is_read_from_the_request():
     from app.api.assistant import _caller
     from app.security import create_access_token
 
+    from app.security import decode_access_token
+
     def req(device=None, authorization=""):
-        return SimpleNamespace(state=SimpleNamespace(remote_device_id=device), headers={"authorization": authorization})
+        claims = decode_access_token(authorization.split(" ", 1)[1]) if authorization else None
+        return SimpleNamespace(state=SimpleNamespace(remote_device_id=device, token_claims=claims),
+                               headers={"authorization": authorization})
 
     assert _caller(req("dev-1")) == Caller("remote", "dev-1")
     assert _caller(req(None, "Bearer " + create_access_token("u", {"amr": "local-open"}))) == Caller("local-open")

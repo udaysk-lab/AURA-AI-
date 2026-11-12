@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.config import settings
-from app.deps import CurrentUser, DbSession, LocalOwner, is_remote_session
+from app.deps import CurrentUser, DbSession, LocalOwner, PresentOwner, is_remote_session
 from app.models import PairedDevice, PairingCode, User, utcnow
 from app.schemas import UserOut
 from app.security import create_access_token
@@ -159,7 +159,7 @@ def remote_status(request: Request, user: CurrentUser) -> RemoteStatusOut:
 
 
 @router.post("/pairing", response_model=PairingOut)
-def start_pairing(owner: LocalOwner, db: DbSession) -> PairingOut:
+def start_pairing(owner: PresentOwner, db: DbSession) -> PairingOut:
     """A fresh code. Any earlier unused code stops working."""
     _require_enabled()
     now = utcnow()

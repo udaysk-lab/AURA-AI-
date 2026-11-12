@@ -1,7 +1,7 @@
-"""File operations, fenced to the allowed roots.
+"""File operations, fenced to the user's connected folders.
 
 The agent can read, write, edit, list, search, move and delete files on the
-machine — but only inside the directories you allowed, and never inside a
+machine — but only inside the folders you connected, and never inside a
 protected path. The fence is the important part: `resolve()` turns whatever the
 model wrote into an absolute real path (expanding `~`, collapsing `..`,
 following symlinks on the parts that exist) and refuses anything that lands
@@ -111,12 +111,16 @@ def resolve(path: str, *, must_exist: bool = False) -> str:
     # realpath resolves symlinks so a link inside a root can't point outside it.
     real = os.path.realpath(expanded)
 
-    roots = settings.device_allowed_root_list
+    # The connected folders of the user this call runs for (permissions/access.py). Nothing
+    # bound means no folders, so a call outside a gated tool call refuses.
+    from app.permissions import access
+
+    roots = access.roots()
     if not any(_within(real, root) for root in roots):
+        where = ", ".join(roots) if roots else "none connected yet"
         raise PathNotAllowed(
-            f"{path!r} is outside the folders AURA may touch. Allowed: "
-            + ", ".join(roots)
-            + ". Widen DEVICE_ALLOWED_ROOTS to change this."
+            f"{path!r} is outside the folders AURA may touch (connected: {where}). "
+            "Connect the folder in Settings, This computer, or let AURA ask."
         )
 
     if _protected(real):

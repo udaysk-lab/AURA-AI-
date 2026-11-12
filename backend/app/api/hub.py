@@ -10,9 +10,9 @@ from sqlalchemy import func, select
 from app import plugins as plugin_registry
 from app.agent import skills as skill_registry
 from app.config import settings
-from app.deps import CurrentUser, DbSession
+from app.deps import CurrentUser, DbSession, PresentUser
 from app.models import Delegation, Document, DocumentChunk, Schedule, User, utcnow
-from app.permissions import events as permission_events, reviewer
+from app.permissions import changes as perm_changes, events as permission_events, reviewer
 from app.schemas import (
     ChannelConnectIn,
     ChannelOut,
@@ -95,20 +95,24 @@ def plugin_summary(user: CurrentUser, db: DbSession) -> PluginSummaryOut:
 
 
 @router.post("/plugins/{plugin_id}/install", response_model=PluginOut)
-def install_plugin(plugin_id: str, user: CurrentUser, db: DbSession) -> PluginOut:
+def install_plugin(plugin_id: str, user: PresentUser, db: DbSession) -> PluginOut:
     ok, message = plugin_registry.install(db, user.id, plugin_id)
     if not ok:
         raise HTTPException(status_code=400, detail=message)
+    perm_changes.record(db, user, "system_changed", f"system added: {plugin_id}", widens=True, target=f"system:{plugin_id}",
+                   detail={"system": plugin_id, "installed": True})
     return _plugin_out(
         plugin_registry.CATALOG[plugin_id], plugin_registry.installed_ids(db, user.id)
     )
 
 
 @router.post("/plugins/{plugin_id}/uninstall", response_model=PluginOut)
-def uninstall_plugin(plugin_id: str, user: CurrentUser, db: DbSession) -> PluginOut:
+def uninstall_plugin(plugin_id: str, user: PresentUser, db: DbSession) -> PluginOut:
     ok, message = plugin_registry.uninstall(db, user.id, plugin_id)
     if not ok:
         raise HTTPException(status_code=400, detail=message)
+    perm_changes.record(db, user, "system_changed", f"system removed: {plugin_id}", target=f"system:{plugin_id}",
+                   detail={"system": plugin_id, "installed": False})
     return _plugin_out(
         plugin_registry.CATALOG[plugin_id], plugin_registry.installed_ids(db, user.id)
     )
@@ -168,7 +172,7 @@ def rotate_channel_token(kind: str, user: CurrentUser, db: DbSession) -> Channel
 
 @router.put("/channels/{kind}/owner", response_model=ChannelOut)
 def set_channel_owner(
-    kind: str, payload: ChannelOwnerIn, user: CurrentUser, db: DbSession
+    kind: str, payload: ChannelOwnerIn, user: PresentUser, db: DbSession
 ) -> ChannelOut:
     """Say who counts as the owner on a channel. Until this is set, nothing that arrives on the
     channel is acted on (it is kept as a notification); only the signed-in owner can set it."""
@@ -177,8 +181,8 @@ def set_channel_owner(
     if not spec or not spec.inbound or row is None:
         raise HTTPException(status_code=404, detail="Channel not connected")
     row = channel_service.set_owner(db, row, payload.owner_sender, payload.bridge_owner_only)
-    permission_events.append(
-        db, user.id, "system_changed", actor="user", target=f"channel:{kind}", outcome="allow",
+    perm_changes.record(
+        db, user, "system_changed", f"who counts as you on {kind} was changed", widens=True, target=f"channel:{kind}",
         detail={"channel": kind, "owner_sender_set": bool(channel_service.owner_sender_of(row)),
                 "bridge_owner_only": channel_service.bridge_owner_only_of(row)},
     )
@@ -360,7 +364,7 @@ def list_schedules(user: CurrentUser, db: DbSession) -> list[ScheduleOut]:
 
 
 @router.post("/schedules", response_model=ScheduleOut)
-def create_schedule(payload: ScheduleIn, user: CurrentUser, db: DbSession) -> ScheduleOut:
+def create_schedule(payload: ScheduleIn, user: PresentUser, db: DbSession) -> ScheduleOut:
     _check_auto(payload.approval_mode)
     row = schedule_service.create(
         db, user,
@@ -371,12 +375,15 @@ def create_schedule(payload: ScheduleIn, user: CurrentUser, db: DbSession) -> Sc
         deliver_to=payload.deliver_to,
         approval_mode=payload.approval_mode,
     )
+    if row.approval_mode == "auto":
+        perm_changes.record(db, user, "schedule_mode_changed", f"schedule “{row.name}” set to Auto", widens=True,
+                       target=f"schedule:{row.id}", detail={"kind": "schedule", "from": "ask", "to": "auto"})
     return _schedule_out(row)
 
 
 @router.patch("/schedules/{schedule_id}", response_model=ScheduleOut)
 def update_schedule(
-    schedule_id: str, payload: SchedulePatch, user: CurrentUser, db: DbSession
+    schedule_id: str, payload: SchedulePatch, user: PresentUser, db: DbSession
 ) -> ScheduleOut:
     row = db.get(Schedule, schedule_id)
     if not row or row.user_id != user.id:
@@ -393,8 +400,9 @@ def update_schedule(
     db.commit()
     db.refresh(row)
     if row.approval_mode != old_mode:
-        permission_events.append(
-            db, user.id, "schedule_mode_changed", actor="user", target=f"schedule:{row.id}", outcome="allow",
+        perm_changes.record(
+            db, user, "schedule_mode_changed", f"schedule “{row.name}” approval mode: {old_mode} to {row.approval_mode}",
+            widens=row.approval_mode == "auto", target=f"schedule:{row.id}",
             detail={"kind": "schedule", "from": old_mode, "to": row.approval_mode},
         )
     return _schedule_out(row)

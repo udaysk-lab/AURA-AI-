@@ -44,7 +44,7 @@ from app.models import (
     User,
     utcnow,
 )
-from app.permissions import catalogue, events, gate, match
+from app.permissions import access, catalogue, events, gate, match
 from app.permissions import rules as rules_store
 
 log = logging.getLogger("aura.approvals")
@@ -504,9 +504,7 @@ def _already(action: PendingAction) -> ApprovalError:
 # ---------------------------------------------------------------------------
 
 
-def path_key(real_path: str) -> str:
-    """sha256 of the folded realpath: how a connected folder is recognised (spec 2.5)."""
-    return hashlib.sha256(match.fold(real_path).encode("utf-8")).hexdigest()
+path_key = access.path_key  # sha256 of the folded realpath: how a connected folder is recognised (spec 2.5)
 
 
 def _card_folder(action: PendingAction) -> str:
@@ -533,22 +531,30 @@ def _apply_special_card(db: Session, user: User, action: PendingAction) -> list:
         row = db.scalars(
             select(DeviceFolder).where(DeviceFolder.user_id == user.id, DeviceFolder.path_key == key)
         ).first()
-        if card == "folder_access":
+        if card == "folder_access" or (card == "delete_permission" and (row is None or row.revoked_at is not None)):
+            connect_delete = card == "delete_permission"
+            if card == "delete_permission" and not payload.get("connect"):
+                raise _Refused("That folder is no longer connected.")
             if not os.path.isdir(real):
                 raise _Refused("That folder does not exist.")
+            if not access.within_ceiling(real):
+                raise _Refused("That folder is outside the limit this install sets.")
+            if os.path.dirname(real) == real:
+                raise _Refused("A whole drive cannot be connected.")
             if row is None:
-                row = DeviceFolder(user_id=user.id, path=real, path_key=key, can_delete=False, source="request")
+                row = DeviceFolder(user_id=user.id, path=real, path_key=key, can_delete=connect_delete, source="request")
                 db.add(row)
                 db.flush()
                 undo.append(lambda r=row: _undo_folder(db, user, r, revoke=True))
             elif row.revoked_at is not None:
-                row.revoked_at, row.can_delete, row.source = None, False, "request"
+                row.revoked_at, row.can_delete, row.source = None, connect_delete, "request"
                 db.flush()
                 undo.append(lambda r=row: _undo_folder(db, user, r, revoke=True))
             else:
                 return undo  # already connected: nothing to add
             events.append(db, user.id, "folder_added", actor="user", tool=action.tool_name, target=real,
                           outcome="allow", detail={"folder_id": row.id, "via": "approval_card",
+                                                   "can_delete": connect_delete,
                                                    "pending_action_id": action.id})
         else:
             if row is None or row.revoked_at is not None:

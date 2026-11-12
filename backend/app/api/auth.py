@@ -15,7 +15,14 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select, update
 
 from app.config import settings
-from app.deps import CurrentUser, DbSession, is_local_owner, local_os_user, local_owner_email
+from app.deps import (
+    CurrentUser,
+    DbSession,
+    check_local_key,
+    is_local_owner,
+    local_os_user,
+    local_owner_email,
+)
 from app.version import __version__
 from app.models import OAuthAccount, Schedule, User, UserSettings, utcnow
 from app.schemas import (
@@ -125,7 +132,7 @@ def _no_other_accounts_here() -> None:
         raise HTTPException(status_code=403, detail=LOCAL_INSTALL_ONLY_OWNER)
 
 
-def _issue(db, user: User) -> TokenOut:
+def _issue(db, user: User, amr: str = "password") -> TokenOut:
     user.last_login_at = utcnow()
     existing = db.scalars(
         select(UserSettings).where(UserSettings.user_id == user.id)
@@ -141,7 +148,7 @@ def _issue(db, user: User) -> TokenOut:
     channel_service.ensure_web(db, user.id)
     db.refresh(user)
     return TokenOut(
-        access_token=create_access_token(user.id), user=UserOut.model_validate(user)
+        access_token=create_access_token(user.id, {"amr": amr}), user=UserOut.model_validate(user)
     )
 
 
@@ -250,7 +257,12 @@ def local_login(
             log.exception("Seeding sample data for the local owner failed")
             db.rollback()
 
-    return _issue(db, user)
+    # How this session was opened decides what it may do: a session opened with a key (the
+    # configured one, or the one made at startup) can change permissions; one opened without
+    # cannot (spec 8.5).
+    offered = (payload.key if payload else "") or ""
+    amr = "local-key" if (expected or check_local_key(offered)) else "local-open"
+    return _issue(db, user, amr=amr)
 
 
 @router.post("/register", response_model=TokenOut, status_code=201)
@@ -456,7 +468,7 @@ def demo_login(payload: DemoLoginIn, db: DbSession) -> TokenOut:
         db.add(UserSettings(user_id=user.id))
         db.commit()
         demo_service.seed_user(db, user)
-    return _issue(db, user)
+    return _issue(db, user, amr="demo")
 
 
 def _fail(mode: str, reason: str) -> RedirectResponse:
@@ -640,7 +652,7 @@ def google_callback(
             query = "google=partial"
         return RedirectResponse(f"{settings.frontend_url}/settings?{query}")
 
-    token = create_access_token(user.id)
+    token = create_access_token(user.id, {"amr": "oauth"})
     return RedirectResponse(f"{settings.frontend_url}/auth/callback#token={token}")
 
 

@@ -68,7 +68,7 @@ class GateContext:
     origin_id: str = ""  # schedule / automation id, channel kind
     owner_verified: bool = True
     run_key: str = ""
-    present: bool = False  # UI presence at decide time (filled by work package 8)
+    present: bool = False  # UI presence at decide time (filled by build_context)
     # Interim only: the 1.0 autonomy tier of the run, until the legacy data migration (WP11).
     legacy_tier: str | None = None
 
@@ -77,6 +77,10 @@ def build_context(db: Session | None, user: User | None, trigger: str, **kw: Any
     if trigger not in TRIGGERS:
         raise ValueError(f"unknown trigger {trigger!r}")
     ctx = GateContext(trigger=trigger, **kw)
+    if "present" not in kw and user is not None:
+        from app.permissions import access
+
+        ctx.present = access.is_present(user.id)
     if not ctx.run_key:
         ctx.run_key = ctx.work_item_id or str(uuid.uuid4())
     return ctx
@@ -224,8 +228,18 @@ def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> De
                      user_id=user.id)
 
     dialect = _dialect(policy)
+    front = None
+    extra: dict[str, Any] = {}
+    if policy.system == "device-control" and settings.device_control_enabled:
+        from app.device import windows
+
+        if policy.kind in ("screen_read", "screen_input"):
+            front = windows.frontmost()
+            extra["frontmost"] = front.app_id if front else None
+        if any(t.kind == "pid" for t in policy.targets):
+            extra["pid_app"] = windows.app_for_pid
     try:
-        targets = match.extract(policy, args, dialect=dialect)
+        targets = match.extract(policy, args, dialect=dialect, **extra)
     except BadArgs as exc:
         return _deny("system", "BAD_ARGS", f"The request could not be read safely: {exc}", tool=tool, digest=digest,
                      user=user, policy=policy)
@@ -249,7 +263,7 @@ def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> De
         return deny("floor", "INSTALL_OFF", "Screen control is turned off on this install.")
 
     # 3. floors
-    fl = floors.check(db, user, policy, targets, ctx)
+    fl = floors.check(db, user, policy, targets, ctx, front=front)
     if fl.deny:
         return deny("floor", fl.code, fl.reason)
 
@@ -318,6 +332,10 @@ def _allow(pre: _Pre, source: str, code: str, reason: str, *, rule_id: str | Non
 # ---------------------------------------------------------------------------
 
 
+_CARD_CODES = {"folder_access": "NEEDS_FOLDER", "app_grant": "NEEDS_APP_GRANT",
+               "delete_permission": "NEEDS_DELETE_PERMISSION"}
+
+
 def decide(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> Decision:
     d = _decide(db, user, tool, args, ctx)
     return _finish(db, user, d, ctx)
@@ -329,7 +347,12 @@ def _decide(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> 
         return pre
     policy = pre.policy
 
-    # 6. always needs the user
+    # 6. always needs the user (a folder, app or delete-permission card is one such question)
+    if pre.floor.card:
+        return _make(kind="ask", source="always_user", reason_code=_CARD_CODES[pre.floor.card],
+                     reason=pre.floor.reason, tool=tool, args_digest=pre.digest, targets=pre.targets,
+                     tool_kind=policy.kind, always_user=True, card=pre.floor.card,
+                     card_payload=dict(pre.floor.card_payload), options=ONCE_ONLY, user_id=user.id)
     if policy.always_user or pre.floor.always_user:
         why = ("Permanently deleting files always needs your approval."
                if policy.always_user else
@@ -464,6 +487,11 @@ def decide_approved(db: Session, user: User, action: PendingAction) -> Decision:
         if d.kind == "allow":  # loop bookkeeping never reaches an approval
             d = _deny("system", "UNKNOWN_TOOL", "That cannot be approved.", tool=action.tool_name,
                       digest=args_digest(args), user=user)
+    elif pre.floor.card:
+        # What the user approved is not what the call still needs (a folder disconnected, another
+        # folder involved, an app no longer allowed): the approval does not stretch to cover it.
+        d = _deny("floor", pre.floor.refuse_code or "FLOOR_OUTSIDE_FOLDERS", pre.floor.reason, tool=action.tool_name,
+                  digest=args_digest(args), user=user, policy=pre.policy, targets=pre.targets)
     else:
         d = _allow(pre, "rule", "APPROVED_BY_USER", "You approved this.", user=user, tool=action.tool_name)
     return _finish(db, user, d, ctx)

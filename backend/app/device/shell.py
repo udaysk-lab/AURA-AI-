@@ -71,7 +71,9 @@ def _workdir(workdir: str | None) -> str:
         return files.resolve(workdir, must_exist=True)
 
     home = os.path.abspath(os.path.expanduser("~"))
-    roots = settings.device_allowed_root_list
+    from app.permissions import access
+
+    roots = access.roots()
     if any(files._within(home, root) for root in roots) and os.path.isdir(home):
         return home
     for root in roots:

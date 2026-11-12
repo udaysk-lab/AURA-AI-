@@ -70,6 +70,11 @@ async def lifespan(_: FastAPI):
         get_provider().name,
     )
 
+    if settings.local_mode:
+        from app import deps
+
+        deps.ensure_local_key()
+
     if settings.device_control_enabled:
         from app.device.runtime import capabilities
 
@@ -78,7 +83,7 @@ async def lifespan(_: FastAPI):
             "Device control ON | %s %s | shell=%s | screen=%s | roots=%s",
             caps["os"], caps["arch"], caps["shell"]["kind"],
             "yes" if caps["screen_control"] else "no",
-            ", ".join(settings.device_allowed_root_list),
+            ", ".join(settings.device_allowed_roots.split(",")) if settings.device_allowed_roots.strip() else "set in the app",
         )
 
     # On a local install one launch should do everything, so the background

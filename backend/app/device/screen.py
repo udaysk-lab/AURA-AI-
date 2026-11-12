@@ -6,8 +6,7 @@ line — the GUI equivalent of the shell. It degrades to a clear "unavailable"
 when the package or the display is missing, so a headless box just reports that
 screen control is off rather than erroring deep in a tool.
 
-Coordinates are screen pixels. A screenshot is saved under the first allowed
-root (in an `.aura-screens` folder) and its path returned; the agent views it
+Coordinates are screen pixels. A screenshot is saved under AURA's own data folder and its path returned; the agent views it
 with the normal image path, and the bytes never balloon the model's context.
 """
 
@@ -36,8 +35,10 @@ def _gui():
 
 
 def _screens_dir() -> str:
-    base = settings.device_allowed_root_list[0]
-    path = os.path.join(base, ".aura-screens")
+    # Screenshots live in AURA's own data folder, never in a folder the user connected.
+    from app.device.runtime import data_dir
+
+    path = data_dir("screens")
     os.makedirs(path, exist_ok=True)
     return path
 

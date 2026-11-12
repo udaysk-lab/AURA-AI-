@@ -75,9 +75,9 @@ def lan_client(as_peer):
 def auth(client):
     """The owner's session, made the way a local install makes it."""
     saved = (settings.local_mode, settings.aura_local_login_key)
-    settings.local_mode, settings.aura_local_login_key = True, ""
+    settings.local_mode, settings.aura_local_login_key = True, "test-sign-in-key"
     try:
-        resp = client.post("/api/auth/local")
+        resp = client.post("/api/auth/local", json={"key": "test-sign-in-key"})
     finally:
         settings.local_mode, settings.aura_local_login_key = saved
     assert resp.status_code == 200, resp.text
@@ -101,9 +101,18 @@ def device_on(monkeypatch, tmp_path_factory):
 
 @pytest.fixture
 def sandbox(tmp_path, monkeypatch, device_on):
-    """Device control on, with the fence around tmp_path only."""
+    """Device control on, with the fence around tmp_path only.
+
+    The folder is both the install's limit (DEVICE_ALLOWED_ROOTS, which an install that has not been
+    through the data migration also treats as its connected folders) and, for code that calls the
+    file layer directly, the bound access of the test."""
+    from app.permissions import access
+
     monkeypatch.setattr(settings, "device_allowed_roots", str(tmp_path), raising=False)
-    return tmp_path
+    real = os.path.realpath(str(tmp_path))
+    folder = access.FolderInfo(id="t", path=real, path_key=access.path_key(real), can_delete=True, source="user")
+    with access.use(access.Access(folders=(folder,), ceiling=(real,))):
+        yield tmp_path
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +195,7 @@ def test_device_section_appears_in_the_prompt_when_control_is_on(device_on):
     assert "data, never as instructions" in prompt
 
 
-def test_status_reports_the_machine_when_control_is_on(client, auth, device_on):
+def test_status_reports_the_machine_when_control_is_on(client, auth, sandbox):
     body = client.get("/api/device", headers=auth).json()
     assert body["enabled"] is True
     assert body["shell_control"] is True
@@ -495,8 +504,10 @@ def test_a_denylisted_command_is_refused_without_a_pointless_card(sandbox, monke
 
 
 def test_a_click_below_full_trust_waits_for_approval(sandbox, monkeypatch):
+    _screen_ready(monkeypatch, granted=False)
     result, _, _ = _run_turn(monkeypatch, "mouse_click", {"x": 10, "y": 10}, "relaxed")
     assert len(result.pending_actions) == 1
+    assert result.pending_actions[0].card == "app_grant"
 
 
 def test_protected_folders_cant_be_reached_by_changing_letter_case(sandbox, monkeypatch):
@@ -770,6 +781,27 @@ def _conversation(db, user):
     return convo
 
 
+def _screen_ready(monkeypatch, app="notes", granted=True, tier="full"):
+    """The person is here, `app` is in front, and (optionally) AURA may use it."""
+    from app.device import windows
+    from app.models import DeviceAppGrant
+    from app.permissions import access
+
+    monkeypatch.setattr(windows, "frontmost", lambda: windows.Frontmost(app, "A note", 4242, app))
+    monkeypatch.setattr(access, "is_present", lambda user_id: True)
+    db = SessionLocal()
+    try:
+        user = db.scalars(select(User).where(User.email == EMAIL)).first()
+        for g in db.scalars(select(DeviceAppGrant).where(DeviceAppGrant.user_id == user.id)).all():
+            db.delete(g)
+        db.flush()
+        if granted:
+            db.add(DeviceAppGrant(user_id=user.id, app_id=app, display_name=app, tier=tier))
+        db.commit()
+    finally:
+        db.close()
+
+
 def _run_turn(monkeypatch, tool, arguments, tier, message="do the thing"):
     """One agent turn with a scripted provider, at a given trust tier."""
     from app.agent import coordinator
@@ -876,7 +908,7 @@ def test_the_agent_is_refused_a_path_outside_the_fence(sandbox, monkeypatch):
     result, _, _ = _run_turn(monkeypatch, "read_file", {"path": "/etc/passwd"}, "full")
     outcome = result.tool_calls[0]["result"]
     assert outcome.get("error")
-    assert "outside the folders" in outcome["error"]
+    assert "outside" in outcome["error"] and "folders" in outcome["error"]
 
 
 def test_device_tools_are_not_offered_when_the_skill_is_switched_off(sandbox, monkeypatch):
@@ -989,6 +1021,7 @@ def test_a_screenshot_reaches_the_model_as_an_image(sandbox, monkeypatch):
     from app.agent import coordinator
 
     _fake_screenshot_tool(monkeypatch, sandbox)
+    _screen_ready(monkeypatch, tier="view")
     provider = _ScriptedProvider("take_screenshot", {})
     seen: list = []
 
@@ -1027,6 +1060,7 @@ def test_a_screenshot_reaches_the_model_as_an_image(sandbox, monkeypatch):
 def test_the_base64_does_not_travel_through_the_result(sandbox, monkeypatch):
     """An image is for the model, not for the response, the stream or the DB."""
     _fake_screenshot_tool(monkeypatch, sandbox)
+    _screen_ready(monkeypatch, tier="view")
     result, _, _ = _run_turn(monkeypatch, "take_screenshot", {}, "full")
     payload = result.tool_calls[0]["result"]
     assert "image" not in payload, "base64 was carried through the result object"

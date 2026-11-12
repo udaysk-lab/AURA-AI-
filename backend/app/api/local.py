@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.deps import DbSession, LocalOwner
+from app.deps import DbSession, LocalOwner, PresentOwner
 from app.llm import get_provider
 from app.services import local_config
 from app.services import usage as usage_service
@@ -114,7 +114,7 @@ def provider_settings(owner: LocalOwner) -> ProviderOut:
 
 
 @router.put("/provider", response_model=ProviderOut)
-def update_provider(payload: ProviderIn, owner: LocalOwner) -> ProviderOut:
+def update_provider(payload: ProviderIn, owner: PresentOwner, db: DbSession) -> ProviderOut:
     if not local_config.is_writable():
         raise HTTPException(
             status_code=409,
@@ -160,6 +160,10 @@ def update_provider(payload: ProviderIn, owner: LocalOwner) -> ProviderOut:
             setattr(settings, field, value)
         provider = get_provider(force_reload=True)
         log.info("Model settings changed on this computer; provider is now %s", provider.name)
+        from app.permissions import changes
+
+        changes.record(db, owner, "system_changed", "model settings changed", target="settings:model",
+                       detail={"fields": sorted(applied)})
     return _provider_out()
 
 
@@ -208,7 +212,7 @@ def remote_settings(owner: LocalOwner) -> RemoteSettingsOut:
 
 
 @router.put("/remote", response_model=RemoteSettingsOut)
-def update_remote(payload: RemoteSettingsIn, owner: LocalOwner) -> RemoteSettingsOut:
+def update_remote(payload: RemoteSettingsIn, owner: PresentOwner, db: DbSession) -> RemoteSettingsOut:
     """Saved for the next start: listening on the network is decided at launch.
 
     Turning it off also takes effect at once — paired devices stop working
@@ -229,4 +233,8 @@ def update_remote(payload: RemoteSettingsIn, owner: LocalOwner) -> RemoteSetting
     settings.remote_hostnames = names
     if not payload.enabled:
         settings.remote_access = False
+    from app.permissions import changes
+
+    changes.record(db, owner, "system_changed", f"remote access {'turned on' if payload.enabled else 'turned off'}",
+                   widens=payload.enabled, target="settings:remote", detail={"enabled": payload.enabled})
     return remote_settings(owner)

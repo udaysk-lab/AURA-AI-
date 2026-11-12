@@ -37,7 +37,7 @@ from app.models import (
     User,
     utcnow,
 )
-from app.permissions import approvals
+from app.permissions import access, approvals
 from app.services import google as google_service
 from app.services import identity as identity_service
 from app.services import memory as memory_service
@@ -123,7 +123,9 @@ def execute_tool(
     started = time.perf_counter()
     ctx = ToolContext(db=db, user=user, decision=decision)
     try:
-        result = entry.handler(ctx, args or {})
+        # The user's connected folders, read now, for exactly this call (permissions/access.py).
+        with access.bound(db, user):
+            result = entry.handler(ctx, args or {})
     except Exception as exc:
         log.exception("Tool %s failed", name)
         db.rollback()

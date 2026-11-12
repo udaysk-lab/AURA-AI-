@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from app.automation import engine as automation_engine
-from app.deps import CurrentUser, DbSession, get_user_settings, is_remote_session
+from app.deps import CurrentUser, DbSession, PresentUser, get_user_settings, guard_local_caller, is_remote_session, token_amr
 from app.models import (
     ActivityLog,
     AutomationRule,
@@ -37,7 +37,7 @@ from app.schemas import (
 )
 from app.services import briefing as briefing_service
 from app.services import demo as demo_service
-from app.permissions import approvals, events as permission_events, reviewer
+from app.permissions import approvals, changes as perm_changes, events as permission_events, reviewer
 from app.security import decode_access_token
 from app.services import memory as memory_service
 
@@ -187,7 +187,7 @@ def _check_mode(mode: str | None) -> None:
 
 
 @router.post("/automations", response_model=AutomationOut)
-def create_automation(payload: AutomationIn, user: CurrentUser, db: DbSession) -> AutomationOut:
+def create_automation(payload: AutomationIn, user: PresentUser, db: DbSession) -> AutomationOut:
     _check_mode(payload.approval_mode)
     try:
         rule, warnings = automation_engine.create_rule_checked(
@@ -197,12 +197,15 @@ def create_automation(payload: AutomationIn, user: CurrentUser, db: DbSession) -
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     out = AutomationOut.model_validate(rule)
     out.warnings = warnings
+    if rule.approval_mode == "auto":
+        perm_changes.record(db, user, "schedule_mode_changed", f"automation “{rule.name}” set to Auto", widens=True,
+                       target=f"automation:{rule.id}", detail={"kind": "automation", "from": "ask", "to": "auto"})
     return out
 
 
 @router.patch("/automations/{rule_id}", response_model=AutomationOut)
 def update_automation(
-    rule_id: str, payload: AutomationPatch, user: CurrentUser, db: DbSession
+    rule_id: str, payload: AutomationPatch, user: PresentUser, db: DbSession
 ) -> AutomationOut:
     rule = db.get(AutomationRule, rule_id)
     if not rule or rule.user_id != user.id:
@@ -218,9 +221,10 @@ def update_automation(
     db.commit()
     db.refresh(rule)
     if rule.approval_mode != old_mode:
-        permission_events.append(
-            db, user.id, "schedule_mode_changed", actor="user", target=f"automation:{rule.id}",
-            outcome="allow", detail={"kind": "automation", "from": old_mode, "to": rule.approval_mode},
+        perm_changes.record(
+            db, user, "schedule_mode_changed", f"automation “{rule.name}” approval mode: {old_mode} to {rule.approval_mode}",
+            widens=rule.approval_mode == "auto", target=f"automation:{rule.id}",
+            detail={"kind": "automation", "from": old_mode, "to": rule.approval_mode},
         )
     return AutomationOut.model_validate(rule)
 
@@ -271,9 +275,7 @@ def _caller(request: Request) -> approvals.Caller:
     """Who is answering: a paired device, the keyless local login (`amr` = local-open), or the owner."""
     if is_remote_session(request):
         return approvals.Caller("remote", str(getattr(request.state, "remote_device_id", "") or ""))
-    header = request.headers.get("authorization", "")
-    claims = decode_access_token(header.split(" ", 1)[1]) if header.lower().startswith("bearer ") else None
-    if claims and claims.get("amr") == "local-open":
+    if token_amr(request) == "local-open":
         return approvals.Caller("local-open")
     return approvals.Caller("session")
 
@@ -309,6 +311,9 @@ def decide_pending(
     answer gets 409 and changes nothing. A paired device or the terminal login may answer once or
     no only; the always-ask cards need the computer itself.
     """
+    # Any answer, "no" included, must come from the person: not from a program AURA started, and
+    # not within seconds of AURA's own clicks (spec 6.3 and 8.5).
+    guard_local_caller(request, db, user, f"answer approval {action_id}")
     try:
         return approvals.resolve(db, user, action_id, payload.decision, _caller(request))
     except approvals.ApprovalError as exc:

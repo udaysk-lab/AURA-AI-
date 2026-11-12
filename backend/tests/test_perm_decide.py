@@ -42,6 +42,8 @@ def device(env, monkeypatch):
     monkeypatch.setattr(settings, "aura_home", str(tmp / "aura-home"), raising=False)
     monkeypatch.setattr(settings, "device_command_denylist", "", raising=False)
     monkeypatch.setattr(settings, "device_exec_mode", "ask", raising=False)
+    # The install's folder limit; users made by mk() get it as a connected folder (as pm02 will do).
+    monkeypatch.setattr(settings, "device_allowed_roots", str(tmp), raising=False)
     # Command rules are tested in the POSIX dialect on every OS (the parser has its own tests).
     monkeypatch.setattr(gate, "_dialect", lambda policy: "posix")
     reset_cache()

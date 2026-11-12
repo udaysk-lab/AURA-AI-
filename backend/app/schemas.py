@@ -836,6 +836,68 @@ class DeviceStatusOut(BaseModel):
     # Device skills the user currently has switched on, so the screen can say
     # "shell is off" without the user hunting through the skills page.
     active_skills: list[str] = Field(default_factory=list)
+    # Presence pings are accepted from this session (the computer itself, not a paired device).
+    presence_accepted: bool = False
+    # AURA currently counts the person as being at the screen.
+    present: bool = False
+    # The user's own switch for mouse and keyboard use (the install setting is a ceiling above it).
+    screen_control_user: bool = True
+
+
+class DeviceFolderIn(BaseModel):
+    path: str = Field(min_length=1, max_length=2000)
+    can_delete: bool = False
+
+
+class DeviceFolderPatch(BaseModel):
+    can_delete: bool
+
+
+class DeviceFolderOut(BaseModel):
+    id: str
+    path: str
+    can_delete: bool
+    source: str
+    within_install_limit: bool = True
+    created_at: datetime | None = None
+
+
+class DeviceAppIn(BaseModel):
+    tier: Literal["view", "click", "full"]
+
+
+class DeviceAppGrantOut(BaseModel):
+    id: str | None = None
+    app_id: str
+    display_name: str = ""
+    tier: str
+
+
+class DeviceAppBlockOut(BaseModel):
+    id: str
+    app_id: str
+    match: str
+    source: str
+
+
+class DeviceRunningAppOut(BaseModel):
+    app_id: str
+    display_name: str = ""
+
+
+class DeviceAppsOut(BaseModel):
+    grants: list[DeviceAppGrantOut] = Field(default_factory=list)
+    blocks: list[DeviceAppBlockOut] = Field(default_factory=list)
+    running: list[DeviceRunningAppOut] = Field(default_factory=list)
+
+
+class DeviceBlockIn(BaseModel):
+    app_id: str = Field(min_length=1, max_length=120)
+    match: Literal["app", "keyword"] = "app"
+
+
+class ScreenControlIn(BaseModel):
+    enabled: bool
 
 
 class DeviceRunIn(BaseModel):

@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.agent import autonomy
 from app.agent import skills as skill_registry
-from app.deps import CurrentUser, DbSession, get_user_settings
+from app.deps import CurrentUser, DbSession, PresentUser, get_user_settings
 from app.models import HeartbeatReport
 from app.schemas import (
     AssistantOut,
@@ -159,7 +159,7 @@ def skill_activity(
 
 @router.patch("/skills/{code}", response_model=SkillOut)
 def update_skill(
-    code: str, payload: SkillPatch, user: CurrentUser, db: DbSession
+    code: str, payload: SkillPatch, user: PresentUser, db: DbSession
 ) -> SkillOut:
     code = code.upper()
     _require_visible(db, user, code)
@@ -168,8 +168,14 @@ def update_skill(
         skill_registry.ensure_user_skills(db, user.id)
         row = skill_registry.get_user_skill(db, user.id, code)
     if row and payload.enabled is not None:
+        was = bool(row.enabled)
         row.enabled = payload.enabled
         db.commit()
+        if was != bool(payload.enabled):
+            from app.permissions import changes
+
+            changes.record(db, user, "system_changed", f"skill {code} turned {'on' if payload.enabled else 'off'}",
+                           widens=bool(payload.enabled), target=f"skill:{code}", detail={"enabled": bool(payload.enabled)})
     return _skill_view(db, user, code)
 
 

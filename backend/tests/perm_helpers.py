@@ -34,7 +34,31 @@ def make_user(db, email="owner@example.com", level="conservative", mode=None, mi
     db.add(row)
     db.commit()
     db.refresh(user)
+    if migrated:
+        legacy_folders(db, user)
     return user
+
+
+def connect(db, user, path, can_delete=True, source="user"):
+    """A connected folder, as the user (or the data migration) would have made it."""
+    from app.permissions import access
+
+    real = os.path.realpath(str(path))
+    row = models.DeviceFolder(user_id=user.id, path=real, path_key=access.path_key(real), can_delete=can_delete,
+                              source=source)
+    db.add(row)
+    db.commit()
+    return row
+
+
+def legacy_folders(db, user):
+    """What the data migration does with DEVICE_ALLOWED_ROOTS: each root becomes a folder (spec 12)."""
+    from app.config import settings
+
+    if not (settings.device_control_enabled and settings.device_allowed_roots.strip()):
+        return
+    for root in settings.device_allowed_root_list:
+        connect(db, user, root, can_delete=True, source="legacy")
 
 
 def ctx(db, user, trigger="chat", **kw):

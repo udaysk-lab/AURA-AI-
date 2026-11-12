@@ -165,6 +165,12 @@ def _current_user() -> str:
         return os.environ.get("USER") or os.environ.get("USERNAME") or "unknown"
 
 
+def _ceiling() -> list[str]:
+    from app.permissions import access
+
+    return list(access.ceiling_roots())
+
+
 def capabilities(include_policy: bool = False) -> dict:
     """A snapshot of the machine and what AURA may do on it.
 
@@ -179,7 +185,9 @@ def capabilities(include_policy: bool = False) -> dict:
             data[key] = False
     if include_policy:
         data["policy"] = {
-            "allowed_roots": settings.device_allowed_root_list,
+            # The install's own limit on connected folders (empty: no limit). The folders
+            # themselves are the user's, in the database (permissions/access.py).
+            "allowed_roots": _ceiling(),
             "protected_paths": settings.device_protected_path_list,
             "exec_mode": settings.device_exec_mode,
             "exec_allowlist": settings.device_exec_allow_list,

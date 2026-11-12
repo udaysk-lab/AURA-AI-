@@ -11,10 +11,14 @@
 No rule, mode or earlier approval overrides a deny here. The gate evaluates floors
 before any rule (step 3 of the algorithm).
 
-What is NOT here yet (work package 8): the connected-folder fence and its
-`folder_access` / `delete_permission` cards, per-app screen grants and the
-frontmost-window floors. Until then the existing DEVICE_ALLOWED_ROOTS fence in
-`device/files.py` still bounds the file tools.
+Also here (spec 8.2 and 8.4): the connected-folder fence with its `folder_access` /
+`delete_permission` cards, the app floors (AURA's own window, blocked apps) and the screen
+floors (presence, front window known, per-app grants and tiers). These need the database,
+so `check(None, None, ...)` applies only the hard floors above.
+
+A "card" is not a deny: it is a question only the user can answer. The gate turns it into an
+always-user ask after the trigger limits and block rules have had their say. `refuse_code` is what
+the call is denied with if it still needs the card when the user approved something else.
 
 Residual risk, stated plainly (spec 8.6): a shell command runs unsandboxed as the
 user. The text checks below catch direct references only.
@@ -26,9 +30,11 @@ import os
 import platform
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.config import settings
+from app.device import appnames
+from app.permissions import access as access_mod
 from app.permissions import match
 from app.permissions.catalogue import ToolPolicy
 
@@ -48,6 +54,9 @@ class FloorResult:
     code: str = ""  # a deny code, or "" for no deny
     reason: str = ""
     always_user: bool = False
+    card: str = ""  # folder_access | app_grant | delete_permission
+    card_payload: dict = field(default_factory=dict)
+    refuse_code: str = ""  # the deny code when the card cannot be asked (or is unanswered at approval)
 
     @property
     def deny(self) -> bool:
@@ -252,7 +261,7 @@ def _path_like(tok: str) -> bool:
     return bool(tok) and ("/" in tok or "\\" in tok or tok.startswith(("~", ".")) or tok.casefold() in _SELF_NAMES)
 
 
-def _shell_floor(policy: ToolPolicy, targets) -> tuple[FloorResult, bool]:
+def _shell_floor(policy: ToolPolicy, targets, roots=None) -> tuple[FloorResult, bool]:
     """(floor result, needs the user every time)."""
     cmd = next((t for t in targets if t.kind == "command"), None)
     if cmd is None or cmd.parsed is None:
@@ -263,7 +272,7 @@ def _shell_floor(policy: ToolPolicy, targets) -> tuple[FloorResult, bool]:
     base = workdir or os.path.expanduser("~")
     # Where a relative path may really point: the working directory when one is given, else
     # wherever the shell starts (home, or the first allowed root when home is outside them).
-    bases = [workdir] if workdir else _unique([base, *settings.device_allowed_root_list])
+    bases = [workdir] if workdir else _unique([base, *(settings.device_allowed_root_list if roots is None else roots)])
 
     # 1. AURA's own files, by path or by name anywhere in the text.
     if workdir and in_self_path(workdir):
@@ -347,16 +356,165 @@ def _process_floor(targets) -> FloorResult:
 
 
 # ---------------------------------------------------------------------------
+# Connected folders (spec 8.2)
+# ---------------------------------------------------------------------------
+
+
+def _nearest_existing_dir(real: str) -> str:
+    """The folder a card would offer to connect: the target if it is a folder, else its closest existing parent."""
+    probe = real
+    while probe and not os.path.isdir(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    return probe
+
+
+def _is_fs_root(path: str) -> bool:
+    return os.path.dirname(path) == path
+
+
+def _cards_allowed(ctx) -> bool:
+    return ctx is not None and ctx.trigger == "chat"
+
+
+def _outside(acc, ctx, real: str, role: str) -> FloorResult:
+    """A target outside every usable connected folder: a card in chat, a deny anywhere else."""
+    folder = _nearest_existing_dir(real)
+    if not acc.within_ceiling(folder) or not acc.within_ceiling(real):
+        return _deny("FLOOR_OUTSIDE_FOLDERS",
+                     "That is outside the limit this install sets for the folders AURA may use "
+                     "(DEVICE_ALLOWED_ROOTS in its settings file).")
+    if not _cards_allowed(ctx) or not folder or _is_fs_root(folder):
+        return _deny("FLOOR_OUTSIDE_FOLDERS",
+                     "That is outside the folders connected to AURA. Connect the folder in Settings, This computer.")
+    if role == "delete":
+        return FloorResult(
+            card="delete_permission", refuse_code="FLOOR_NO_DELETE_PERMISSION",
+            card_payload={"path": folder, "connect": True},
+            reason=f"AURA wants to delete or move files in {folder}, which is not connected yet.",
+        )
+    return FloorResult(
+        card="folder_access", refuse_code="FLOOR_OUTSIDE_FOLDERS", card_payload={"path": folder},
+        reason=f"AURA wants to use files in {folder}, which is not connected yet.",
+    )
+
+
+def _fence_floor(acc, policy: ToolPolicy, targets, ctx) -> FloorResult:
+    for t in targets:
+        if t.kind != "path":
+            continue
+        real = t.value
+        if t.role == "exec":  # a shell's working directory
+            if not acc.covers(real):
+                return _outside(acc, ctx, real, "read")
+            continue
+        folder = acc.folder_for(real)
+        if folder is None:
+            return _outside(acc, ctx, real, t.role)
+        if t.role == "delete" and not folder.can_delete:
+            if not _cards_allowed(ctx):
+                return _deny("FLOOR_NO_DELETE_PERMISSION",
+                             f"Deleting is not allowed in {folder.path}. Turn it on in Settings, This computer.")
+            return FloorResult(
+                card="delete_permission", refuse_code="FLOOR_NO_DELETE_PERMISSION",
+                card_payload={"path": folder.path},
+                reason=f"AURA wants to delete or move files in {folder.path}, where deleting is not allowed yet.",
+            )
+    # A shell command with no working directory starts in the first connected folder.
+    if any(t.kind == "command" for t in targets) and not any(t.kind == "path" and t.role == "exec" for t in targets):
+        if not acc.roots:
+            return _deny("FLOOR_NO_FOLDERS",
+                         "No folder is connected yet, so there is nowhere to run commands. Give a workdir "
+                         "(AURA will ask to connect it) or connect a folder in Settings, This computer.")
+    return OK
+
+
+# ---------------------------------------------------------------------------
+# Apps and the screen (spec 8.4)
+# ---------------------------------------------------------------------------
+
+
+def _app_floor(acc, policy: ToolPolicy, targets) -> FloorResult:
+    """open_app / close_app / kill_process never touch a blocked app or AURA itself."""
+    if policy.kind not in ("app", "process"):
+        return OK
+    for t in targets:
+        if t.kind != "app":
+            continue
+        if access_mod.is_aura_app(t.value):
+            return _deny("FLOOR_AURA_WINDOW", "That is AURA itself.")
+        if acc.blocked(t.value):
+            return _deny("FLOOR_BLOCKED_APP", "That app is on your blocked list. AURA never opens, closes or uses it.")
+    return OK
+
+
+def _screen_floor(db, user, acc, policy: ToolPolicy, targets, ctx, front) -> FloorResult:
+    if policy.kind not in ("screen_read", "screen_input"):
+        return OK
+    if not access_mod.screen_control_user(db, user):
+        return _deny("FLOOR_SCREEN_OFF", "You turned screen control off. Turn it on in Settings, This computer.")
+    if access_mod.screen_suspended(user.id):
+        return _deny("FLOOR_SCREEN_SUSPENDED",
+                     "Screen control is paused for a minute because AURA's window or a blocked app came to the front.")
+    if ctx is None or ctx.trigger != "chat" or not ctx.present:
+        from app.permissions import triggers
+
+        if ctx is not None and triggers.check(policy, ctx) is not None:
+            return OK  # the trigger's own limit (step 4) says it better
+        return _deny("NOT_PRESENT", "AURA uses the screen only while the app is open and you are here.")
+    if front is None:
+        return _deny("FLOOR_FRONTMOST_UNKNOWN",
+                     "AURA cannot tell which window is in front on this computer, so it will not use the screen.")
+    title = (front.title or "").casefold()
+    if (front.pid and (front.pid == os.getpid() or _is_descendant(front.pid))) or "· aura" in title \
+            or access_mod.is_aura_app(front.app_id):
+        return _deny("FLOOR_AURA_WINDOW", "AURA's own window is in front. AURA never uses the screen on itself.")
+    if acc.blocked(front.app_id):
+        return _deny("FLOOR_BLOCKED_APP", "The app in front is on your blocked list. AURA never uses it.")
+    need = access_mod.need_tier(policy.name)
+    if need == "full" and (appnames.is_terminal(front.app_id) or appnames.is_ide(front.app_id)):
+        return _deny("FLOOR_APP_TIER",
+                     "Terminals and code editors are click and scroll only. Commands go through the shell, where your rules apply.")
+    grant = acc.grant(front.app_id)
+    if grant is None:
+        name = front.name or front.app_id
+        return FloorResult(
+            card="app_grant", refuse_code="FLOOR_NO_APP_GRANT",
+            card_payload={"app_id": front.app_id, "display_name": name, "tier": need},
+            reason=f"AURA wants to use {name} on screen ({_TIER_WORDS[need]}).",
+        )
+    if access_mod.TIER_RANK.get(grant.tier, -1) < access_mod.TIER_RANK[need]:
+        return _deny("FLOOR_APP_TIER", f"You allowed {grant.display_name} for {_TIER_WORDS[grant.tier]} only.")
+    return OK
+
+
+_TIER_WORDS = {"view": "look only", "click": "click and scroll", "full": "click, scroll and type"}
+
+
+def _is_descendant(pid: int) -> bool:
+    from app.device import windows
+
+    return windows.is_aura_process(pid)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 
-def check(db, user, policy: ToolPolicy, targets, ctx=None) -> FloorResult:
-    """Step 3 of decide(). `targets` are the call's extracted targets."""
+def check(db, user, policy: ToolPolicy, targets, ctx=None, *, front=None, access=None) -> FloorResult:
+    """Step 3 of decide(). `targets` are the call's extracted targets.
+
+    With a database and a user the folder, app and screen floors apply as well; `front` is the
+    front window (device/windows.py) the gate read for a screen tool, `access` a snapshot to reuse."""
+    live = db is not None and user is not None and policy.system == "device-control"
+    acc = (access if access is not None else access_mod.snapshot(db, user)) if live else None
     r = _file_floor(targets)
     if r.deny:
         return r
-    shell, always = _shell_floor(policy, targets)
+    shell, always = _shell_floor(policy, targets, None if acc is None else list(acc.roots))
     if shell.deny:
         return shell
     r = _fetch_floor(targets)
@@ -365,6 +523,22 @@ def check(db, user, policy: ToolPolicy, targets, ctx=None) -> FloorResult:
     r = _process_floor(targets)
     if r.deny:
         return r
+    if live and ctx is not None:
+        from app.permissions import triggers
+
+        if triggers.check(policy, ctx) is not None:
+            live = False  # the trigger's own limit (step 4) denies it, with the clearer reason
+    if live:
+        r = _app_floor(acc, policy, targets)
+        if r.deny:
+            return r
+        r = _screen_floor(db, user, acc, policy, targets, ctx, front)
+        if r.deny or r.card:
+            return r
+        r = _fence_floor(acc, policy, targets, ctx)
+        if r.deny or r.card:
+            return FloorResult(code=r.code, reason=r.reason, card=r.card, card_payload=r.card_payload,
+                               refuse_code=r.refuse_code, always_user=always)
     if always:
         return FloorResult(always_user=True)
     return OK

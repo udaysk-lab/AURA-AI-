@@ -40,6 +40,55 @@ def _safe(fn):
     return wrapper
 
 
+def _front_app(ctx: ToolContext) -> str | None:
+    """The app the gate saw in front when it allowed this call, if it was a screen call."""
+    decision = getattr(ctx, "decision", None)
+    for t in getattr(decision, "targets", ()) or ():
+        if t.kind == "app" and t.role == "frontmost":
+            return t.value
+    return None
+
+
+def _screen_call(ctx: ToolContext, fn):
+    """Run one screen tool: check the same window is still in front, then (for input) watch the aftermath.
+
+    The gate decided against the window in front a moment ago. If another one is in front now the
+    call is refused; after input, if AURA's own window or a blocked app came to the front, screen
+    control is paused for a minute and the event is logged (spec 8.4)."""
+    from app.device import windows
+    from app.device.runtime import require_enabled
+    from app.permissions import access, events
+
+    require_enabled()
+    expected = _front_app(ctx)
+    now = windows.frontmost()
+    if expected is None or now is None or now.app_id != expected:
+        raise DeviceUnavailable("The window in front changed since this was approved, so nothing was done.")
+    is_input = getattr(ctx.decision, "tool_kind", "") == "screen_input"
+    user_id = getattr(ctx.user, "id", "")
+    if is_input and user_id:
+        access.note_synthetic_input(user_id)
+    try:
+        return fn()
+    finally:
+        if is_input and user_id:
+            access.note_synthetic_input(user_id)
+            after = windows.frontmost()
+            bad = after is None
+            if after is not None:
+                acc = access.snapshot(ctx.db, ctx.user)
+                bad = (access.is_aura_app(after.app_id) or "· aura" in (after.title or "").casefold()
+                       or windows.is_aura_process(after.pid) or acc.blocked(after.app_id))
+            if bad:
+                access.suspend_screen(user_id)
+                try:
+                    events.append(ctx.db, user_id, "self_change_blocked", actor="system", tool=ctx.decision.tool,
+                                  outcome="deny", reason_code="SCREEN_SUSPENDED",
+                                  detail={"why": "AURA's window or a blocked app came to the front after input"})
+                except Exception:
+                    log.exception("could not log the screen suspension")
+
+
 # ---------------------------------------------------------------------------
 # Shell & processes
 # ---------------------------------------------------------------------------
@@ -422,7 +471,7 @@ def _desktop_notify(ctx: ToolContext, args: dict) -> dict:
 )
 @_safe
 def _take_screenshot(ctx: ToolContext, args: dict) -> dict:
-    result = screen.screenshot()
+    result = _screen_call(ctx, screen.screenshot)
     _log(ctx, "take_screenshot", result.get("path", ""))
     return result
 
@@ -447,7 +496,9 @@ def _take_screenshot(ctx: ToolContext, args: dict) -> dict:
 )
 @_safe
 def _mouse_click(ctx: ToolContext, args: dict) -> dict:
-    return screen.click(args.get("x"), args.get("y"), args.get("button") or "left", int(args.get("clicks") or 1))
+    return _screen_call(
+        ctx, lambda: screen.click(args.get("x"), args.get("y"), args.get("button") or "left", int(args.get("clicks") or 1))
+    )
 
 
 @tool(
@@ -459,7 +510,7 @@ def _mouse_click(ctx: ToolContext, args: dict) -> dict:
 )
 @_safe
 def _type_text(ctx: ToolContext, args: dict) -> dict:
-    return screen.type_text(args["text"])
+    return _screen_call(ctx, lambda: screen.type_text(args["text"]))
 
 
 @tool(
@@ -471,7 +522,7 @@ def _type_text(ctx: ToolContext, args: dict) -> dict:
 )
 @_safe
 def _press_keys(ctx: ToolContext, args: dict) -> dict:
-    return screen.press_keys(args["keys"])
+    return _screen_call(ctx, lambda: screen.press_keys(args["keys"]))
 
 
 @tool(
@@ -487,7 +538,7 @@ def _press_keys(ctx: ToolContext, args: dict) -> dict:
 )
 @_safe
 def _scroll_screen(ctx: ToolContext, args: dict) -> dict:
-    return screen.scroll(int(args["amount"]), args.get("x"), args.get("y"))
+    return _screen_call(ctx, lambda: screen.scroll(int(args["amount"]), args.get("x"), args.get("y")))
 
 
 # ---------------------------------------------------------------------------
