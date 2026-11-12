@@ -423,11 +423,18 @@ def test_aura_env_denied(command, dialect, home):
 
 def test_self_paths_by_absolute_path_and_workdir(tmp_path, home):
     db = os.path.realpath(str(tmp_path / "repo" / "backend" / "aura.db"))
-    assert floor_of(f"cat {db}").code == "FLOOR_SELF_PATH"
+    repo = os.path.realpath(str(tmp_path / "repo"))
+    # A POSIX shell eats backslashes, so paths are spelled with forward slashes for it.
+    assert floor_of(f"cat {db.replace(os.sep, '/')}").code == "FLOOR_SELF_PATH"
     assert floor_of("ls", workdir=floors.install_dir()).code == "FLOOR_SELF_PATH"
     assert floor_of("ls", workdir=str(home / ".aura")).code == "FLOOR_SELF_PATH"
     # deleting a parent of AURA's files takes them along
-    assert floor_of(f"rm -rf {tmp_path / 'repo'}").code == "FLOOR_SELF_PATH"
+    assert floor_of(f"rm -rf {repo.replace(os.sep, '/')}").code == "FLOOR_SELF_PATH"
+    # PowerShell and cmd keep backslashes: the native spelling must be caught there too
+    assert floor_of(f"Remove-Item -Recurse -Force {repo}", dialect=PWSH).code == "FLOOR_SELF_PATH"
+    assert floor_of(f"Get-Content {db}", dialect=PWSH).code == "FLOOR_SELF_PATH"
+    assert floor_of(f"rmdir /s /q {repo}", dialect=CMD).code == "FLOOR_SELF_PATH"
+    assert floor_of(f"type {db}", dialect=CMD).code == "FLOOR_SELF_PATH"
     assert not floor_of("ls", workdir=str(tmp_path)).deny
 
 
