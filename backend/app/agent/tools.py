@@ -44,6 +44,9 @@ log = logging.getLogger("aura.tools")
 class ToolContext:
     db: Session
     user: User
+    # The sealed gate decision that allowed this call (handlers may read its targets).
+    # Set by coordinator.execute_tool; None only for code that builds a context by hand.
+    decision: Any = None
 
 
 @dataclass
@@ -85,10 +88,12 @@ def tool_specs() -> list[ToolSpec]:
     return [t.spec for t in REGISTRY.values()]
 
 
-# NOTE: whether a tool needs approval is decided by agent/autonomy.py, which
-# owns the risk classes and trust tiers. The `destructive=True` flag on each tool
-# below is documentation for the reader; don't add a second gate here, because
-# two sources of truth for "is this dangerous" is how one of them ends up wrong.
+# NOTE: whether a tool may run is decided by permissions/gate.py (one function,
+# permissions.decide), and coordinator.execute_tool refuses to run a handler without
+# its sealed decision. The `destructive=True` flag on each tool below is documentation
+# for the reader; don't add a second gate here, because two sources of truth for
+# "is this dangerous" is how one of them ends up wrong. Only execute_tool may call
+# a handler (tests/test_perm_execute.py checks that).
 
 
 def _describe_record(

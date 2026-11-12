@@ -14,8 +14,14 @@ import os
 import platform
 import shutil
 import sys
+import uuid
 
 from app.config import settings
+
+# Made once per process. Every command the shell tools start carries it in its
+# environment (AURA_SPAWNED_BY), so a request that comes back to AURA's own API
+# from one of them can be recognised and refused (spec 10 section 8.5).
+INSTANCE_ID = uuid.uuid4().hex
 
 
 class DeviceUnavailable(RuntimeError):

@@ -1,8 +1,31 @@
 """Permissions: what AURA may do, and who decides (spec 10-permissions.md).
 
-This package grows over several work packages. So far: the tool catalogue
-(`catalogue`), the rule matchers (`match`) and the shell parser (`shellparse`).
-Nothing here is consulted when a tool runs yet; the gate that does so arrives
-with `permissions.gate`. Keep this module free of imports so any submodule can
-be loaded on its own.
+Submodules: `catalogue` (every tool, its system and kind), `match` and `shellparse`
+(rule matching), `floors` (what nobody can override), `rules` (storage and
+lookup), `events` (the hash-chained log), `triggers` (limits per trigger),
+`interim` (read-time stand-in for the legacy mapping until WP11), `reviewer`
+(the auto-mode safety reviewer, WP10) and `gate` (the single decision function).
+
+The public names the task loop uses are available here (`permissions.decide`,
+`GateContext`, `Decision`, `is_read_only`, `expiry_for`, `mode_label`,
+`build_context`); they load lazily so any submodule can still be imported on its
+own without pulling in the database layer.
 """
+
+from __future__ import annotations
+
+_GATE_NAMES = (
+    "decide", "decide_approved", "console_decision", "ui_decision", "build_context", "GateContext",
+    "Decision", "RuleDraft", "is_read_only", "expiry_for", "mode_label", "effective_mode", "args_digest",
+    "is_sealed",
+)
+
+__all__ = list(_GATE_NAMES)
+
+
+def __getattr__(name: str):
+    if name in _GATE_NAMES:
+        from app.permissions import gate
+
+        return getattr(gate, name)
+    raise AttributeError(f"module 'app.permissions' has no attribute {name!r}")

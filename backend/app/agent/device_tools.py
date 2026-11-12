@@ -507,9 +507,11 @@ def _scroll_screen(ctx: ToolContext, args: dict) -> dict:
 )
 @_safe
 def _fetch_url(ctx: ToolContext, args: dict) -> dict:
-    """GET only. This tool runs without asking at every trust tier because it
-    only reads; a POST can change things somewhere, so it isn't offered."""
+    """Reads one URL. Gated like any other outbound request; never reaches this
+    computer or its network (device/net.py checks every address and every redirect)."""
     import httpx
+
+    from app.device import net
 
     url = str(args.get("url") or "")
     if not url.startswith(("http://", "https://")):
@@ -517,10 +519,8 @@ def _fetch_url(ctx: ToolContext, args: dict) -> dict:
     if (args.get("method") or "GET").upper() != "GET":
         return {"error": "fetch_url only reads pages (GET)."}
     try:
-        resp = httpx.get(url, timeout=20, follow_redirects=True)
+        return net.safe_get(url)
+    except net.FetchDenied as exc:
+        return {"error": f"Refused: {exc.reason}"}
     except httpx.HTTPError as exc:
         return {"error": f"Couldn't fetch the URL: {exc}"}
-    body = resp.text
-    if len(body) > 20_000:
-        body = body[:20_000] + "\n…[truncated]…"
-    return {"url": str(resp.url), "status": resp.status_code, "content": body}

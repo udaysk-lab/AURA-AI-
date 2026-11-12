@@ -235,7 +235,8 @@ def run_one(db: Session, user: User, schedule: Schedule) -> dict:
 
     tier = get_user_settings(db, user).autonomy_level
     result = run_agent(
-        db, user, convo, schedule.prompt, autonomy_level=tier, trigger="schedule"
+        db, user, convo, schedule.prompt, autonomy_level=tier, trigger="schedule",
+        origin_id=schedule.id, approval_mode=schedule.approval_mode,
     )
     persist_exchange(db, convo, schedule.prompt, result)
 

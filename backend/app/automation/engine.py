@@ -20,9 +20,10 @@ from sqlalchemy.orm import Session
 
 from app import timeutil
 from app.agent.autonomy import risk_class
-from app.agent.coordinator import execute_tool
+from app import permissions
+from app.agent.coordinator import _queue_action, execute_tool
 from app.agent.prompts import AUTOMATION_COMPILER
-from app.llm import get_provider
+from app.llm import ToolCall, get_provider
 from app.models import (
     ActivityLog,
     AutomationRule,
@@ -192,10 +193,21 @@ def matches_email(rule: AutomationRule, email: EmailMessage) -> bool:
 
 
 def run_rule(db: Session, user: User, rule: AutomationRule, context: dict | None = None) -> dict:
-    """Execute a rule's actions. Destructive actions are queued, never auto-run."""
+    """Execute a rule's actions, each one through the permission gate.
+
+    An action the gate allows runs; one that needs the user is parked as a pending
+    approval (origin "automation", no conversation); one it refuses is reported in
+    the result. Rules decide per action tool, so a rule can only do what its
+    owner's permissions let an unattended run do (spec 4.5, 9.1).
+    """
     context = context or {}
     executed: list[dict] = []
     queued: list[str] = []
+    blocked: list[dict] = []
+    gate_ctx = permissions.build_context(
+        db, user, "automation",
+        approval_mode=rule.approval_mode, origin_id=rule.id, instruction=rule.natural_language or rule.name,
+    )
 
     for action in rule.actions or []:
         tool_name = action.get("tool", "")
@@ -205,31 +217,26 @@ def run_rule(db: Session, user: User, rule: AutomationRule, context: dict | None
         if tool_name in ("draft_reply", "get_email", "archive_email") and context.get("email_id"):
             args.setdefault("email_id", context["email_id"])
 
-        # An unattended rule never fires an irreversible action on its own.
-        if is_destructive(tool_name):
-            from app import timeutil
-            from app.agent import skills as skill_registry
-            from app.agent.tools import build_preview
+        decision = permissions.decide(db, user, tool_name, args, gate_ctx)
+        if decision.source == "reviewer":
+            if decision.kind == "allow":
+                gate_ctx.reviewer_streak = 0
+            else:
+                gate_ctx.reviewer_streak += 1
+                gate_ctx.reviewer_total += 1
 
-            skill = skill_registry.skill_for_tool(tool_name)
-            pending = PendingAction(
-                user_id=user.id,
-                tool_name=tool_name,
-                arguments=args,
-                preview=(
-                    f"Automation “{rule.name}” wants to:\n\n"
-                    + build_preview(
-                        tool_name, args, timeutil.user_zone(user), db=db, user_id=user.id
-                    )
-                ),
-                skill_code=skill.code if skill else "",
+        if decision.kind == "ask":
+            _queue_action(
+                db, user, None, ToolCall(id="", name=tool_name, arguments=args), decision, gate_ctx,
+                preview_prefix=f"Automation “{rule.name}” wants to:\n\n",
             )
-            db.add(pending)
-            db.commit()
             queued.append(tool_name)
             continue
+        if decision.kind == "deny":
+            blocked.append({"tool": tool_name, "reason": decision.reason, "reason_code": decision.reason_code})
+            continue
 
-        outcome = execute_tool(db, user, tool_name, args, trigger="automation")
+        outcome = execute_tool(db, user, tool_name, args, trigger="automation", decision=decision)
         executed.append({"tool": tool_name, "result": outcome})
 
     rule.last_run_at = utcnow()
@@ -240,11 +247,12 @@ def run_rule(db: Session, user: User, rule: AutomationRule, context: dict | None
             actor="automation",
             action=f"rule:{rule.name}"[:120],
             target=context.get("subject", "")[:300],
-            detail={"executed": [e["tool"] for e in executed], "queued": queued},
+            detail={"executed": [e["tool"] for e in executed], "queued": queued,
+                    "blocked": [b["tool"] for b in blocked]},
         )
     )
     db.commit()
-    return {"rule": rule.name, "executed": executed, "queued_for_approval": queued}
+    return {"rule": rule.name, "executed": executed, "queued_for_approval": queued, "blocked": blocked}
 
 
 def on_email_received(db: Session, user: User, email: EmailMessage) -> list[dict]:

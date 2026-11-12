@@ -202,6 +202,17 @@ def delete_event(event_id: str, user: CurrentUser, db: DbSession) -> dict:
     return {"message": "Deleted"}
 
 
+def _run_ui_tool(db, user, tool: str, args: dict):
+    """A read the user started with a button: decided by the gate as `user_ui`, then run."""
+    from app import permissions
+    from app.agent.coordinator import execute_tool
+
+    decision = permissions.ui_decision(db, user, tool, args)
+    if decision.kind != "allow":
+        raise HTTPException(status_code=403, detail=decision.reason)
+    return execute_tool(db, user, tool, args, trigger="user_ui", decision=decision)
+
+
 @router.get("/events/free-slots", response_model=list[FreeSlot])
 def free_slots(
     user: CurrentUser,
@@ -209,9 +220,7 @@ def free_slots(
     duration_minutes: int = Query(30, ge=15, le=480),
     days: int = Query(5, ge=1, le=21),
 ) -> list[FreeSlot]:
-    from app.agent.coordinator import execute_tool
-
-    slots = execute_tool(
+    slots = _run_ui_tool(
         db, user, "find_free_time",
         {"duration_minutes": duration_minutes, "days": days},
     )
@@ -247,9 +256,7 @@ def conflicts(user: CurrentUser, db: DbSession) -> list[ConflictOut]:
 
 @router.get("/events/{event_id}/brief")
 def meeting_brief(event_id: str, user: CurrentUser, db: DbSession) -> dict:
-    from app.agent.coordinator import execute_tool
-
-    result = execute_tool(db, user, "prepare_meeting", {"event_id": event_id})
+    result = _run_ui_tool(db, user, "prepare_meeting", {"event_id": event_id})
     if isinstance(result, dict) and result.get("error"):
         raise HTTPException(status_code=404, detail=result["error"])
     return result

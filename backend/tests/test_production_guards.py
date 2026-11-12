@@ -414,11 +414,19 @@ def test_send_email_tool_never_claims_a_send_it_didnt_make(client, auth):
 
     db = SessionLocal()
     try:
+        from app import permissions
+        from app.permissions import rules as permission_rules
+
         user = _user(db)
-        result = execute_tool(
-            db, user, "send_email",
-            {"to": "a@b.com", "subject": "Hello", "body": "Test"},
+        args = {"to": "a@b.com", "subject": "Hello", "body": "Test"}
+        # The tool itself is under test, so let the gate allow it with a standing rule.
+        rule = permission_rules.add(db, user, effect="allow", system="core-inbox", tool="send_email")
+        decision = permissions.decide(
+            db, user, "send_email", args, permissions.build_context(db, user, "chat")
         )
+        assert decision.kind == "allow"
+        result = execute_tool(db, user, "send_email", args, decision=decision)
+        permission_rules.revoke(db, user, rule.id)
         assert result["sent"] is False
         assert "nothing was sent" in result["message"].lower()
     finally:

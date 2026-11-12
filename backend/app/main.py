@@ -48,6 +48,12 @@ async def lifespan(_: FastAPI):
     # /api with 503, and preflight/logs carry the cause (spec 30, 1.5).
     schema = migrate.ensure_schema("api")
 
+    # Fail closed, and say so: a tool with no permission catalogue entry is hidden and denied.
+    from app.agent import tools as _tools
+    from app.permissions import catalogue as _catalogue
+
+    _catalogue.log_missing(_tools.REGISTRY)
+
     report = preflight.log_report(log)
     # In production a blocking failure means an insecure or non-functional
     # deployment. Refusing to start is kinder than serving it.

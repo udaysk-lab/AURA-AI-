@@ -103,10 +103,16 @@ def run_command(
                 "ask AURA in chat — commands then come to you for approval."
             ),
         )
-    try:
-        result = device_shell.run(payload.command, payload.workdir or None, payload.timeout)
-    except DeviceUnavailable as exc:
-        result = {"command": payload.command, "error": str(exc)}
+    from app import permissions
+
+    decision = permissions.console_decision(db, user, payload.command, payload.workdir or None)
+    if decision.kind != "allow":
+        result = {"command": payload.command, "error": f"Refused: {decision.reason}"}
+    else:
+        try:
+            result = device_shell.run(payload.command, payload.workdir or None, payload.timeout)
+        except DeviceUnavailable as exc:
+            result = {"command": payload.command, "error": str(exc)}
 
     db.add(
         ActivityLog(

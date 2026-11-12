@@ -5,7 +5,7 @@ feed results back -> repeat until it answers or the step budget runs out.
 
 The coordinator orchestrates; it doesn't know what any individual tool does.
 Capability lives in agent/tools.py, is grouped for the user in agent/skills.py,
-and is gated by agent/autonomy.py.
+and is gated by permissions/gate.py (every call goes through permissions.decide).
 """
 
 from __future__ import annotations
@@ -16,12 +16,14 @@ import re
 import time
 from collections.abc import Generator, Iterator
 from dataclasses import dataclass, field
+from datetime import timezone
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import timeutil
+from app import permissions
 from app.agent import autonomy
 from app.agent import skills as skill_registry
 from app.agent import tools as tool_registry
@@ -94,14 +96,33 @@ def execute_tool(
     args: dict,
     trigger: str = "chat",
     log_skill: bool = True,
+    *,
+    work_item_id: str | None = None,
+    decision: permissions.Decision,
 ) -> Any:
-    """Run a tool by name. Used by the agent loop, approvals, heartbeat and automations."""
+    """Run a tool by name, but only with the gate's sealed `allow` for exactly this call.
+
+    This is the only function that calls a tool handler. It raises PermissionError
+    for a missing, forged, refused or mismatched decision (wrong tool, wrong
+    arguments, wrong user), so no code path can run a tool the gate did not allow.
+    """
+    if decision is None or not permissions.is_sealed(decision):
+        raise PermissionError("no decision: a tool only runs with the permission gate's allow")
+    if decision.kind != "allow":
+        raise PermissionError(f"the gate did not allow {name} ({decision.reason_code})")
+    if decision.tool != name:
+        raise PermissionError("the decision is for a different tool")
+    if decision.args_digest != permissions.args_digest(args if args is not None else {}):
+        raise PermissionError("the arguments changed after the decision")
+    if decision.user_id and decision.user_id != user.id:
+        raise PermissionError("the decision is for a different user")
+
     entry = tool_registry.REGISTRY.get(name)
     if not entry:
         return {"error": f"Unknown tool: {name}"}
 
     started = time.perf_counter()
-    ctx = ToolContext(db=db, user=user)
+    ctx = ToolContext(db=db, user=user, decision=decision)
     try:
         result = entry.handler(ctx, args or {})
     except Exception as exc:
@@ -125,23 +146,81 @@ def execute_tool(
     return result
 
 
+def run_gated(
+    db: Session,
+    user: User,
+    name: str,
+    args: dict,
+    ctx: permissions.GateContext,
+    *,
+    trigger: str | None = None,
+    log_skill: bool = True,
+) -> Any:
+    """decide() then execute_tool(), for callers that never park a call for approval
+    (the heartbeat, a user's own button). A call the gate does not allow comes back as
+    {"error", "blocked": True, "reason_code"} and nothing runs."""
+    decision = permissions.decide(db, user, name, args, ctx)
+    if decision.kind != "allow":
+        return {"error": decision.reason, "blocked": True, "reason_code": decision.reason_code}
+    return execute_tool(db, user, name, args, trigger or ctx.trigger, log_skill,
+                        work_item_id=ctx.work_item_id, decision=decision)
+
+
 def _queue_action(
-    db: Session, user: User, conversation_id: str | None, call: ToolCall
+    db: Session,
+    user: User,
+    conversation_id: str | None,
+    call: ToolCall,
+    decision: permissions.Decision | None = None,
+    ctx: permissions.GateContext | None = None,
+    preview_prefix: str = "",
 ) -> PendingAction:
+    """Park a call for the user's answer. Minimal form of the spec's approvals.queue_action
+    (WP6 moves it and adds the card text and notifications)."""
     skill = skill_registry.skill_for_tool(call.name)
+    preview = preview_prefix + tool_registry.build_preview(
+        call.name, call.arguments, timeutil.user_zone(user), db=db, user_id=user.id
+    )
+    extra: dict[str, Any] = {}
+    if decision is not None:
+        preview = f"{preview}\n\nWhy I'm asking: {decision.reason}"
+        extra = dict(
+            card=decision.card or "tool",
+            card_payload=dict(decision.card_payload or {}),
+            options=list(decision.options),
+            always_user=decision.always_user,
+            reason_code=decision.reason_code,
+            reason=decision.reason,
+            args_digest=decision.args_digest,
+        )
+    if ctx is not None:
+        extra.update(
+            work_item_id=ctx.work_item_id,
+            origin=ctx.trigger if ctx.trigger in ("chat", "schedule", "automation", "inbound") else "chat",
+            origin_id=ctx.origin_id or "",
+            expires_at=permissions.expiry_for(ctx, extra.get("card", "tool")),
+        )
     action = PendingAction(
         user_id=user.id,
         conversation_id=conversation_id,
         tool_name=call.name,
         arguments=call.arguments,
-        preview=tool_registry.build_preview(
-            call.name, call.arguments, timeutil.user_zone(user), db=db, user_id=user.id
-        ),
+        preview=preview,
         skill_code=skill.code if skill else "",
+        **extra,
     )
     db.add(action)
     db.commit()
     db.refresh(action)
+    if decision is not None:
+        from app.permissions import events
+
+        events.append(
+            db, user.id, "approval_created", actor="aura", tool=call.name, outcome="ask",
+            reason_code=decision.reason_code, run_key=(ctx.run_key if ctx else ""),
+            detail={"pending_action_id": action.id, "digest": decision.args_digest,
+                    "options": list(decision.options)},
+        )
     return action
 
 
@@ -317,6 +396,8 @@ def iter_agent(
     user_message: str,
     autonomy_level: str = "conservative",
     trigger: str = "chat",
+    origin_id: str = "",
+    approval_mode: str | None = None,
 ) -> Generator[dict, None, AgentResult]:
     """The agent loop, reporting as it goes.
 
@@ -347,6 +428,13 @@ def iter_agent(
 
     provider = get_provider()
     specs = _available_specs(db, user)
+    # One gate context per run. `legacy_tier` keeps the 1.0 tier in force until the
+    # legacy data migration has turned it into a permission mode and rules (WP11).
+    gate_ctx = permissions.build_context(
+        db, user, trigger,
+        conversation_id=conversation.id, instruction=user_message,
+        origin_id=origin_id, approval_mode=approval_mode, legacy_tier=tier,
+    )
     cheap_model = (
         settings.background_model
         if settings.background_model and trigger != "chat"
@@ -403,8 +491,16 @@ def iter_agent(
         for call in response.tool_calls:
             skill = skill_registry.skill_for_tool(call.name)
 
-            if autonomy.requires_approval(db, user.id, call.name, tier, call.arguments):
-                action = _queue_action(db, user, conversation.id, call)
+            decision = permissions.decide(db, user, call.name, call.arguments, gate_ctx)
+            if decision.source == "reviewer":
+                if decision.kind == "allow":
+                    gate_ctx.reviewer_streak = 0
+                else:
+                    gate_ctx.reviewer_streak += 1
+                    gate_ctx.reviewer_total += 1
+
+            if decision.kind == "ask":
+                action = _queue_action(db, user, conversation.id, call, decision, gate_ctx)
                 result.pending_actions.append(action)
                 yield {
                     "type": "pending_action",
@@ -415,6 +511,8 @@ def iter_agent(
                 }
                 payload: Any = {
                     "status": "awaiting_approval",
+                    "approval_id": action.id,
+                    "reason": decision.reason,
                     "message": (
                         f"{call.name} is queued and waiting for the user to approve it. "
                         "Tell them what is pending, then stop."
@@ -422,6 +520,16 @@ def iter_agent(
                     "preview": action.preview,
                     "pending_action_id": action.id,
                 }
+            elif decision.kind == "deny":
+                payload = {
+                    "status": "blocked",
+                    "error": decision.reason,  # what clients of the old refusal shape read
+                    "reason": decision.reason,
+                    "reason_code": decision.reason_code,
+                    "message": "Not run. Try another acceptable way, or explain to the user.",
+                }
+                if decision.source == "reviewer":
+                    payload["reviewer"] = True
             else:
                 yield {
                     "type": "tool_start",
@@ -429,7 +537,9 @@ def iter_agent(
                     "code": skill.code if skill else "",
                     "label": skill_registry.activity_label(call.name, call.arguments),
                 }
-                payload = execute_tool(db, user, call.name, call.arguments, trigger=trigger)
+                payload = execute_tool(
+                    db, user, call.name, call.arguments, trigger=trigger, decision=decision
+                )
                 if skill:
                     run = {
                         "code": skill.code,
@@ -502,11 +612,14 @@ def run_agent(
     user_message: str,
     autonomy_level: str = "conservative",
     trigger: str = "chat",
+    origin_id: str = "",
+    approval_mode: str | None = None,
 ) -> AgentResult:
     """The whole turn, without the running commentary."""
     events = iter_agent(
         db, user, conversation, user_message,
         autonomy_level=autonomy_level, trigger=trigger,
+        origin_id=origin_id, approval_mode=approval_mode,
     )
     while True:
         try:
@@ -630,6 +743,12 @@ def resolve_pending(
         return {"error": f"Action already {action.status}"}
     if decision not in DECISIONS:
         return {"error": f"Unknown decision: {decision}"}
+    expires = action.expires_at
+    if expires is not None and (expires if expires.tzinfo else expires.replace(tzinfo=timezone.utc)) <= utcnow():
+        action.status = "expired"
+        action.resolved_at = utcnow()
+        db.commit()
+        return {"error": "This approval has expired. Ask AURA to try again."}
 
     if decision == "reject":
         action.status = "rejected"
@@ -642,6 +761,19 @@ def resolve_pending(
         )
         db.commit()
         return {"message": f"Cancelled — {action.tool_name} was not run."}
+
+    # The user said yes, but things may have changed since the card was shown (a block
+    # rule added, a folder gone): the gate looks again before anything runs.
+    gate_decision = permissions.decide_approved(db, user, action)
+    if gate_decision.kind != "allow":
+        action.status = "refused"
+        action.reason = gate_decision.reason[:2000]
+        action.resolved_at = utcnow()
+        db.commit()
+        return {
+            "status": "refused",
+            "message": f"It was approved, but is no longer allowed: {gate_decision.reason}",
+        }
 
     action.status = "approved"
     action.resolved_at = utcnow()
@@ -656,7 +788,10 @@ def resolve_pending(
             target=autonomy.grant_target(action.tool_name, action.arguments),
         )
 
-    outcome = execute_tool(db, user, action.tool_name, action.arguments, trigger="manual")
+    outcome = execute_tool(
+        db, user, action.tool_name, action.arguments, trigger="manual",
+        work_item_id=action.work_item_id, decision=gate_decision,
+    )
     db.add(
         ActivityLog(
             user_id=user.id, actor="user", action=f"approve:{action.tool_name}",

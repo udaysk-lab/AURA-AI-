@@ -139,3 +139,125 @@ def test_shell_home_forms_expand(monkeypatch, tmp_path):
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     for form in ("~/x", "$HOME/x", "${HOME}/x"):
         assert match.normalize_path(form) == match.normalize_path(str(tmp_path / "x")), form
+
+
+# ---------------------------------------------------------------------------
+# Floors for file tools (spec 10 section 8.2), WP4
+# ---------------------------------------------------------------------------
+
+import sys  # noqa: E402
+
+from app.config import settings  # noqa: E402
+from app.permissions import floors  # noqa: E402
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    """An isolated home folder, so `~` never means the developer's real one."""
+    h = tmp_path / "home"
+    h.mkdir()
+    monkeypatch.setenv("HOME", str(h))
+    monkeypatch.setenv("USERPROFILE", str(h))
+    monkeypatch.setattr(settings, "aura_home", "", raising=False)
+    monkeypatch.setattr(settings, "device_extra_protected_paths", "", raising=False)
+    return h
+
+
+def floor_for(tool, **args):
+    return floors.check(None, None, CATALOGUE[tool], match.extract(CATALOGUE[tool], args))
+
+
+def test_self_paths_from_source_run(tmp_path, monkeypatch, home):
+    """A from-source run keeps ./aura.db, .env and ../.env next to the code; all are AURA's own."""
+    work = tmp_path / "repo" / "backend"
+    work.mkdir(parents=True)
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(settings, "database_url", "sqlite:///./aura.db", raising=False)
+    monkeypatch.setattr(settings, "aura_config_file", "", raising=False)
+    own = floors.self_paths()
+    real = os.path.realpath
+    for name in ("aura.db", "aura.db-wal", "aura.db-shm", "aura.db-journal", ".env"):
+        assert real(str(work / name)) in own, name
+    assert real(str(work.parent / ".env")) in own
+    assert real(str(home / ".aura")) in own
+    # the code's own folder (the directory holding the `app` package)
+    import app
+
+    assert real(os.path.join(os.path.dirname(app.__file__), os.pardir)) in own
+    for name in ("aura.db", "aura.db-wal", ".env"):
+        f = floor_for("read_file", path=str(work / name))
+        assert f.code == "FLOOR_SELF_PATH", name
+    assert floor_for("write_file", path=str(work.parent / ".env"), content="x").code == "FLOOR_SELF_PATH"
+    # an ordinary file next to it is not
+    assert not floor_for("read_file", path=str(tmp_path / "notes.txt")).deny
+
+
+def test_desktop_home_and_install(tmp_path, monkeypatch, home):
+    """The desktop app: its data folder, config file and install folder (or .app bundle)."""
+    data = tmp_path / "AuraData"
+    monkeypatch.setattr(settings, "aura_home", str(data), raising=False)
+    monkeypatch.setattr(settings, "aura_config_file", str(data / "aura.env"), raising=False)
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{data / 'aura.db'}", raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    flat = tmp_path / "Programs" / "AURA"
+    flat.mkdir(parents=True)
+    monkeypatch.setattr(sys, "executable", str(flat / "AURA.exe"))
+    assert floors.install_dir() == os.path.realpath(flat)
+
+    bundle = tmp_path / "Applications" / "AURA.app"
+    (bundle / "Contents" / "MacOS").mkdir(parents=True)
+    monkeypatch.setattr(sys, "executable", str(bundle / "Contents" / "MacOS" / "AURA"))
+    assert floors.install_dir() == os.path.realpath(bundle)
+
+    own = floors.self_paths()
+    for p in (data, data / "aura.env", data / "aura.db", bundle):
+        assert os.path.realpath(str(p)) in own
+    for target in (data / "aura.env", data / "logs" / "x.log", bundle / "Contents" / "Resources" / "app.py"):
+        assert floor_for("read_file", path=str(target)).code == "FLOOR_SELF_PATH", target
+    assert floor_for("list_directory", path=str(data)).code == "FLOOR_SELF_PATH"
+
+
+def test_protected_paths_any_role_and_any_spelling(tmp_path, monkeypatch, home):
+    secret = tmp_path / "keys"
+    secret.mkdir()
+    monkeypatch.setattr(settings, "device_extra_protected_paths", str(secret), raising=False)
+    for tool, args in (
+        ("read_file", {"path": str(secret / "id")}),
+        ("write_file", {"path": str(secret / "id"), "content": "x"}),
+        ("list_directory", {"path": str(secret)}),
+        ("read_file", {"path": str(secret / "sub" / ".." / "id")}),
+        ("read_file", {"path": str(secret).upper() + "/id"}),  # case folded on every OS
+    ):
+        assert floor_for(tool, **args).code == "FLOOR_PROTECTED_PATH", (tool, args)
+    # a symlink out of a harmless folder into the protected one
+    link = tmp_path / "harmless"
+    try:
+        os.symlink(secret, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not available")
+    assert floor_for("read_file", path=str(link / "id")).code == "FLOOR_PROTECTED_PATH"
+
+
+def test_delete_or_move_of_a_folder_holding_a_protected_path(tmp_path, monkeypatch, home):
+    inner = tmp_path / "Library" / "LaunchAgents"
+    inner.mkdir(parents=True)
+    monkeypatch.setattr(settings, "device_extra_protected_paths", str(inner), raising=False)
+    assert floor_for("move_file", source=str(tmp_path / "Library"), destination=str(tmp_path / "x")).code == "FLOOR_PROTECTED_PATH"
+    assert floor_for("delete_file", path=str(tmp_path / "Library")).code == "FLOOR_PROTECTED_PATH"
+    # reading or listing the parent is fine
+    assert not floor_for("list_directory", path=str(tmp_path / "Library")).deny
+
+
+def test_git_hooks_and_config_cannot_be_written(tmp_path, home):
+    for rel in (".git/hooks/pre-commit", ".git/config"):
+        assert floor_for("write_file", path=str(tmp_path / rel), content="x").code == "FLOOR_PROTECTED_PATH"
+        assert floor_for("edit_file", path=str(tmp_path / rel), old="a", new="b").code == "FLOOR_PROTECTED_PATH"
+    assert not floor_for("read_file", path=str(tmp_path / ".git" / "config")).deny
+    assert not floor_for("write_file", path=str(tmp_path / ".git" / "info" / "exclude"), content="x").deny
+
+
+def test_pid_of_aura_itself_is_refused():
+    assert floors.check(None, None, CATALOGUE["kill_process"], match.extract(CATALOGUE["kill_process"], {"pid": os.getpid()})).code == "FLOOR_AURA_PROCESS"
+    far = os.getpid() + 100000
+    assert not floors.check(None, None, CATALOGUE["kill_process"], match.extract(CATALOGUE["kill_process"], {"pid": far})).deny

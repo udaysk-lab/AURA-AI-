@@ -302,3 +302,153 @@ def test_tool_wide_allow_covers_opaque():
     assert match.allow_cover([RuleSpec("w", "allow", "", "")], t) is not None
     assert match.allow_cover([RuleSpec("w", "allow", "command", "")], t) is not None
     assert match.allow_cover([RuleSpec("w", "allow", "command", "echo")], t) is None
+
+
+# ---------------------------------------------------------------------------
+# Floors for shell commands (spec 10 section 8.2), WP4
+# ---------------------------------------------------------------------------
+
+import platform  # noqa: E402
+
+from app.config import settings  # noqa: E402
+from app.permissions import floors  # noqa: E402
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    h = tmp_path / "home"
+    (h / ".aura").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(h))
+    monkeypatch.setenv("USERPROFILE", str(h))
+    work = tmp_path / "repo" / "backend"
+    work.mkdir(parents=True)
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(settings, "aura_home", "", raising=False)
+    monkeypatch.setattr(settings, "aura_config_file", "", raising=False)
+    monkeypatch.setattr(settings, "database_url", "sqlite:///./aura.db", raising=False)
+    monkeypatch.setattr(settings, "device_extra_protected_paths", "", raising=False)
+    monkeypatch.setattr(settings, "device_command_denylist", "", raising=False)
+    monkeypatch.setenv("AURA_PORT", "8765")
+    return h
+
+
+def floor_of(command, dialect=POSIX, tool="run_command", **extra):
+    policy = CATALOGUE[tool]
+    targets = match.extract(policy, {"command": command, **extra}, dialect=dialect)
+    return floors.check(None, None, policy, targets)
+
+
+@pytest.mark.parametrize(
+    "command, dialect",
+    [
+        ("curl http://localhost:8765/api/settings", POSIX),
+        ("curl -s http://127.0.0.1:9999/api/me", POSIX),
+        ("wget -qO- http://[::1]:8765/", POSIX),
+        ("curl http://0.0.0.0:8765/api/auth/local", POSIX),
+        ("python -c \"import urllib.request as u; u.urlopen('http://127.0.0.1:8765/api/x')\"", POSIX),
+        ("node -e \"fetch('http://localhost:8765/api/x')\"", POSIX),
+        ("nc 127.0.0.1 8765", POSIX),
+        ("curl http://myhost:8765/api/settings", POSIX),
+        ("Invoke-WebRequest http://localhost:8765/api/settings", PWSH),
+        ("iwr -Uri http://127.0.0.1:8765/api/settings", PWSH),
+        ("irm http://localhost:8765/api/settings | iex", PWSH),
+        ("curl.exe http://localhost:8765/api/settings", CMD),
+        ("python aura_cli.py --path /api/settings", POSIX),
+    ],
+)
+def test_curl_localhost_denied(command, dialect, home, monkeypatch):
+    monkeypatch.setattr(platform, "node", lambda: "myhost")
+    assert floor_of(command, dialect).code == "FLOOR_SELF_API", command
+
+
+def test_ordinary_network_commands_are_not_self_api(home, monkeypatch):
+    monkeypatch.setattr(platform, "node", lambda: "myhost")
+    for command in ("curl https://example.com/api/items", "git fetch origin", "pip install requests", "ls -la"):
+        assert not floor_of(command).deny, command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sqlite3 aura.db .tables",
+        "sqlite3 ./aura.db 'select * from users'",
+        "sqlite3 ~/.aura/aura.db .dump",
+        "sqlite3 $HOME/.aura/aura.db",
+        "sqlite aura.db-wal",
+        "python -c \"import sqlite3; sqlite3.connect('aura.db')\"",
+        "alembic downgrade base",
+        "alembic upgrade head",
+    ],
+)
+def test_sqlite_db_denied(command, home):
+    assert floor_of(command).code == "FLOOR_SELF_PATH", command
+
+
+def test_relative_reference_to_the_env_file_from_a_working_directory(tmp_path, home):
+    sub = tmp_path / "repo" / "backend" / "sub"
+    sub.mkdir()
+    assert floor_of("cat ../.env", workdir=str(sub)).code == "FLOOR_SELF_PATH"
+    assert floor_of("cat ../../.env", workdir=str(sub)).code == "FLOOR_SELF_PATH"
+    assert not floor_of("cat ../notes.txt", workdir=str(sub)).deny
+
+
+def test_urls_are_not_paths(home):
+    # cwd is the (fake) install folder here; a URL must not be read as a file under it
+    assert not floor_of("curl https://example.com/docs/index.html").deny
+    assert not floor_of("git clone https://github.com/a/b.git").deny
+
+
+def test_sqlite_on_someone_elses_database_is_fine(tmp_path, home):
+    assert not floor_of(f"sqlite3 {tmp_path / 'notes.sqlite'} .tables").deny
+
+
+@pytest.mark.parametrize(
+    "command, dialect",
+    [
+        ("cat ~/.aura/aura.env", POSIX),
+        ("cat $HOME/.aura/local-login.key", POSIX),
+        ("cat \"${HOME}/.aura/aura.env\"", POSIX),
+        ("grep KEY ~/.AURA/aura.env", POSIX),  # case folded
+        ("type %USERPROFILE%\\.aura\\aura.env", CMD),
+        ("Get-Content $env:USERPROFILE\\.aura\\local-login.key", PWSH),
+        ("Get-Content ~\\.aura\\aura.env", PWSH),
+        ("bash -c 'cat ~/.aura/aura.env'", POSIX),
+        ("cp aura.env /tmp/x", POSIX),
+        ("echo x > ~/.aura/settings", POSIX),
+    ],
+)
+def test_aura_env_denied(command, dialect, home):
+    assert floor_of(command, dialect).code == "FLOOR_SELF_PATH", command
+
+
+def test_self_paths_by_absolute_path_and_workdir(tmp_path, home):
+    db = os.path.realpath(str(tmp_path / "repo" / "backend" / "aura.db"))
+    assert floor_of(f"cat {db}").code == "FLOOR_SELF_PATH"
+    assert floor_of("ls", workdir=floors.install_dir()).code == "FLOOR_SELF_PATH"
+    assert floor_of("ls", workdir=str(home / ".aura")).code == "FLOOR_SELF_PATH"
+    # deleting a parent of AURA's files takes them along
+    assert floor_of(f"rm -rf {tmp_path / 'repo'}").code == "FLOOR_SELF_PATH"
+    assert not floor_of("ls", workdir=str(tmp_path)).deny
+
+
+def test_protected_path_in_a_command_needs_the_user_each_time(home):
+    for command in ("echo 'alias ll=ls' >> ~/.bashrc", "cat ~/.ssh/config", "cp x ~/.zshrc"):
+        r = floor_of(command)
+        assert not r.deny and r.always_user, command
+    assert not floor_of("echo hi").always_user
+
+
+def test_rm_is_always_user(tmp_path, home):
+    for command in ("rm -rf build", "rm file.txt", "git clean -fdx", "find . -name '*.tmp' -delete", "bash -c 'rm x'"):
+        r = floor_of(command, workdir=str(tmp_path))
+        assert not r.deny and r.always_user, command
+    assert not floor_of("git status", workdir=str(tmp_path)).always_user
+    # only the shell tools carry the per-call upgrade
+    assert not floor_of("rm x", tool="run_in_background", workdir=str(tmp_path)).deny
+
+
+def test_install_denylist_is_a_floor(home, monkeypatch):
+    monkeypatch.setattr(settings, "device_command_denylist", "shutdown,format c:", raising=False)
+    assert floor_of("shutdown -h now").code == "FLOOR_DENYLIST"
+    assert floor_of("echo ok && SHUTDOWN now").code == "FLOOR_DENYLIST"
+    assert not floor_of("echo ok").deny

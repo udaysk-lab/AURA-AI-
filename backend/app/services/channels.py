@@ -233,7 +233,9 @@ def handle_inbound(db: Session, user: User, kind: str, text: str, thread_key: st
 
     convo = conversation_for(db, user, kind, thread_key)
     tier = get_user_settings(db, user).autonomy_level
-    result = run_agent(db, user, convo, text, autonomy_level=tier, trigger="inbound")
+    result = run_agent(
+        db, user, convo, text, autonomy_level=tier, trigger="inbound", origin_id=kind
+    )
     persist_exchange(db, convo, text, result)
 
     reply = result.text
