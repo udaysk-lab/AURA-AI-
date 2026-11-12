@@ -340,52 +340,54 @@ def test_rejecting_does_not_run_the_action(client, auth):
 # ---------------------------------------------------------------------------
 
 
-def test_assistant_exists_and_starts_as_a_stranger(client, auth):
+ASSISTANT_FIELDS = {"id", "name", "personality", "avatar", "pronoun", "goals"}
+
+
+def test_assistant_shape_has_only_identity_fields(client, auth):
     body = client.get("/api/assistant", headers=auth).json()
+    assert set(body) == ASSISTANT_FIELDS
     assert body["name"]
-    assert body["stage"] in ("stranger", "acquaintance", "colleague", "chief_of_staff")
-    assert set(body["signals"]) == {"interactions", "memories", "actions"}
 
 
-def test_hatching_seeds_memory_and_sets_autonomy(client, auth):
-    resp = client.post(
-        "/api/assistant/hatch",
+def test_assistant_patch_updates_only_identity_fields(client, auth):
+    resp = client.patch(
+        "/api/assistant",
         headers=auth,
-        json={
-            "name": "Nova",
-            "personality": "dry",
-            "avatar": "amber",
-            "pronoun": "she",
-            "goals": ["Protect my mornings"],
-            "role": "Founder at a seed-stage fintech",
-            "about": "I write in British English.",
-            "autonomy_level": "relaxed",
-        },
-    ).json()
-    assert resp["name"] == "Nova" and resp["onboarded"] is True
-
-    assert client.get("/api/settings", headers=auth).json()["autonomy_level"] == "relaxed"
-
-    memories = client.get("/api/memories", headers=auth).json()
-    contents = " ".join(m["content"] for m in memories)
-    assert "fintech" in contents and "British English" in contents
-
-
-def test_stage_thresholds_are_monotonic():
-    from app.services.identity import STAGES, compute_stage
-
-    assert compute_stage({"interactions": 0, "memories": 0, "actions": 0}).key == "stranger"
-    assert (
-        compute_stage({"interactions": 999, "memories": 999, "actions": 999}).key
-        == "chief_of_staff"
+        json={"name": "Nova", "personality": "dry", "avatar": "amber", "pronoun": "she",
+              "goals": ["Protect my mornings"]},
     )
-    # Every signal must clear the bar, not just one.
-    assert (
-        compute_stage({"interactions": 999, "memories": 0, "actions": 999}).key == "stranger"
-    )
-    for earlier, later in zip(STAGES, STAGES[1:]):
-        assert later.interactions >= earlier.interactions
-        assert later.memories >= earlier.memories
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert set(body) == ASSISTANT_FIELDS
+    assert body["name"] == "Nova" and body["goals"] == ["Protect my mornings"]
+    # A field outside the list is refused, not silently written.
+    for bad in ({"stage": "chief_of_staff"}, {"onboarded": False}, {"interactions": 9}):
+        assert client.patch("/api/assistant", headers=auth, json=bad).status_code == 422
+    assert set(client.get("/api/assistant", headers=auth).json()) == ASSISTANT_FIELDS
+
+
+def test_hatch_route_is_gone(client, auth):
+    resp = client.post("/api/assistant/hatch", headers=auth, json={"name": "Nova"})
+    assert resp.status_code in (404, 405)
+
+
+def test_new_user_can_chat_right_after_sign_in(client):
+    resp = client.post("/api/auth/demo", json={"email": "fresh@aura.ai", "name": "Fresh"})
+    assert resp.status_code == 200, resp.text
+    headers = {"Authorization": f"Bearer {resp.json()['access_token']}"}
+    # No onboarding call in between.
+    chat = client.post("/api/chat", headers=headers, json={"message": "hello"})
+    assert chat.status_code == 200, chat.text
+    assert chat.json()["conversation_id"]
+
+
+def test_persona_prompt_is_the_same_for_every_user():
+    from app.models import Assistant
+    from app.services.identity import persona_prompt
+
+    text = persona_prompt(Assistant(name="Nova", personality="dry"))
+    assert "Nova" in text
+    assert "Act on clear tasks at once" in text and "ambiguous or risky" in text
 
 
 # ---------------------------------------------------------------------------

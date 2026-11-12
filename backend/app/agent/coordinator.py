@@ -228,7 +228,7 @@ def _prelude(
     db: Session, user: User, user_message: str, tier: str
 ) -> tuple[list[dict], list[str]]:
     memory_block, memory_ids = memory_service.build_context_block(db, user.id, user_message)
-    assistant = identity_service.refresh_stage(db, user)
+    assistant = identity_service.get_or_create(db, user)
 
     # The vault contributes key *names* only — never values. See services/vault.py.
     learned = skill_registry.learned_notes_block(db, user.id)
@@ -302,7 +302,6 @@ def maybe_learn(db: Session, user: User, conversation: Conversation, message: st
     memory_service.remember(
         db, user.id, lesson, kind="preference", source="correction", confidence=0.95
     )
-    identity_service.record_correction(db, user)
     return lesson
 
 
@@ -492,7 +491,6 @@ def iter_agent(
     if not result.text:
         result.text = "Done."
 
-    identity_service.record_interaction(db, user, actions=len(result.skill_runs))
     result.latency_ms = int((time.perf_counter() - started) * 1000)
     return result
 

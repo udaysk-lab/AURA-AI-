@@ -15,7 +15,6 @@ from app.schemas import (
     AssistantPatch,
     CompactionOut,
     GrantOut,
-    HatchIn,
     HeartbeatOut,
     SkillOut,
     SkillPatch,
@@ -182,7 +181,6 @@ def teach_skill(
     code = code.upper()
     _require_visible(db, user, code)
     skill_registry.teach(db, user.id, code, payload.note.strip())
-    identity_service.record_correction(db, user)
     return _skill_view(db, user, code)
 
 
@@ -211,47 +209,12 @@ def update_assistant(
     payload: AssistantPatch, user: CurrentUser, db: DbSession
 ) -> AssistantOut:
     assistant = identity_service.get_or_create(db, user)
-    for key, value in payload.model_dump(exclude_unset=True).items():
-        setattr(assistant, key, value)
+    changes = payload.model_dump(exclude_unset=True)
+    # Explicit fields only: nothing outside this list can be written here.
+    for field in ("name", "personality", "avatar", "pronoun", "goals"):
+        if field in changes and changes[field] is not None:
+            setattr(assistant, field, changes[field])
     db.commit()
-    return AssistantOut(**identity_service.profile(db, user))
-
-
-@router.post("/assistant/hatch", response_model=AssistantOut)
-def hatch(payload: HatchIn, user: CurrentUser, db: DbSession) -> AssistantOut:
-    """Onboarding. Names the assistant and seeds what it knows about you."""
-    assistant = identity_service.get_or_create(db, user)
-    assistant.name = payload.name.strip()
-    assistant.personality = payload.personality
-    assistant.avatar = payload.avatar
-    assistant.pronoun = payload.pronoun
-    assistant.goals = payload.goals
-    assistant.onboarded = True
-    db.commit()
-
-    settings_row = get_user_settings(db, user)
-    settings_row.autonomy_level = payload.autonomy_level
-    db.commit()
-
-    # Everything the user told us during onboarding becomes memory immediately —
-    # that's what makes the first real conversation feel informed.
-    if payload.role:
-        memory_service.remember(
-            db, user.id, f"Their role: {payload.role}", kind="fact",
-            source="onboarding", confidence=1.0, pinned=True,
-        )
-    if payload.about:
-        memory_service.remember(
-            db, user.id, payload.about, kind="fact",
-            source="onboarding", confidence=1.0, pinned=True,
-        )
-    for goal in payload.goals[:5]:
-        memory_service.remember(
-            db, user.id, f"Goal: {goal}", kind="project",
-            source="onboarding", confidence=1.0, pinned=True,
-        )
-
-    skill_registry.ensure_user_skills(db, user.id)
     return AssistantOut(**identity_service.profile(db, user))
 
 

@@ -322,26 +322,6 @@ def test_password_sign_up_gets_sample_data_and_can_remove_it(client):
 
 
 # ---------------------------------------------------------------------------
-# Growth
-# ---------------------------------------------------------------------------
-
-
-def test_progress_moves_even_while_one_signal_is_zero():
-    from app.services import identity
-
-    stranger = identity.STAGES[0]
-    progress = identity.progress_to_next(
-        {"interactions": 3, "memories": 0, "actions": 7}, stranger
-    )
-    assert 0 < progress["percent"] < 100
-    assert progress["needs"] == {"interactions": 2, "memories": 3, "actions": 0}
-    done = identity.progress_to_next(
-        {"interactions": 99, "memories": 2, "actions": 99}, stranger
-    )
-    assert done["percent"] < 100  # a stage not yet reached never reads 100%
-
-
-# ---------------------------------------------------------------------------
 # Review follow-ups
 # ---------------------------------------------------------------------------
 

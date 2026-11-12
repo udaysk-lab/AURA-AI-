@@ -356,9 +356,11 @@ class PendingAction(Base, TimestampMixin):
 
 
 class Assistant(Base, TimestampMixin):
-    """The user's assistant: name, personality, and how far it has grown.
+    """The user's assistant: name, personality, avatar.
 
-    One per user. `stage` is derived, never set by hand — see services/identity.py.
+    One per user. The table still has six 1.0.0 columns that are deliberately
+    unmapped. Each has a server default (revision 0002) and is listed in
+    migration_ops.LEGACY_PENDING_DROP until a contract revision drops it.
     """
 
     __tablename__ = "assistants"
@@ -373,17 +375,7 @@ class Assistant(Base, TimestampMixin):
     avatar: Mapped[str] = mapped_column(String(30), default="teal")
     # teal | amber | rose | violet | sage — maps to a mascot colourway
     pronoun: Mapped[str] = mapped_column(String(20), default="it")
-    hatched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-    # Growth signals. Stage is computed from these.
-    interactions: Mapped[int] = mapped_column(Integer, default=0)
-    actions_taken: Mapped[int] = mapped_column(Integer, default=0)
-    corrections: Mapped[int] = mapped_column(Integer, default=0)
-    stage: Mapped[str] = mapped_column(String(30), default="stranger")
-    # stranger | acquaintance | colleague | chief_of_staff
-
     goals: Mapped[list] = mapped_column(JSON, default=list)
-    onboarded: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class UserSkill(Base, TimestampMixin):

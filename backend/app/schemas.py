@@ -459,33 +459,16 @@ class AssistantOut(BaseModel):
     avatar: str
     pronoun: str
     goals: list[str] = Field(default_factory=list)
-    onboarded: bool
-    hatched_at: datetime
-    stage: str
-    stage_label: str
-    stage_blurb: str
-    signals: dict[str, int]
-    progress: dict[str, Any] | None = None
-    days_together: int
 
 
 class AssistantPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=1, max_length=60)
     personality: Literal["concise", "warm", "dry", "formal", "encouraging"] | None = None
     avatar: Literal["teal", "amber", "rose", "violet", "sage"] | None = None
     pronoun: Literal["it", "she", "he", "they"] | None = None
     goals: list[str] | None = None
-
-
-class HatchIn(BaseModel):
-    name: str = Field(min_length=1, max_length=60)
-    personality: Literal["concise", "warm", "dry", "formal", "encouraging"] = "concise"
-    avatar: Literal["teal", "amber", "rose", "violet", "sage"] = "teal"
-    pronoun: Literal["it", "she", "he", "they"] = "it"
-    goals: list[str] = Field(default_factory=list)
-    role: str = ""
-    about: str = ""
-    autonomy_level: Literal["strict", "conservative", "relaxed", "full"] = "conservative"
 
 
 # ---------------------------------------------------------------------------
