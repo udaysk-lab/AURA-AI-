@@ -235,6 +235,21 @@ def integrity_check(db_file: Path) -> None:
         raise SchemaError(State.PARTIAL, "database file is damaged")
 
 
+def _reserve_backup_name(folder: Path, base: str) -> Path:
+    """Create the final backup file exclusively (O_EXCL), so two backups can never
+    share a name, even within one second. The empty placeholder is closed at once
+    and later replaced by os.replace, so no handle is open when that happens."""
+    n = 1
+    while True:
+        candidate = folder / (f"{base}.db" if n == 1 else f"{base}-{n}.db")
+        try:
+            os.close(os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666))
+        except FileExistsError:
+            n += 1
+            continue
+        return candidate
+
+
 def backup_sqlite(db_file: Path, from_label: str, state: State) -> Path:
     folder = db_file.parent / "backups"
     folder.mkdir(parents=True, exist_ok=True)
@@ -246,11 +261,7 @@ def backup_sqlite(db_file: Path, from_label: str, state: State) -> Path:
         raise SchemaError(state, "not enough disk space for a backup")
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    final = folder / f"{db_file.stem}-{from_label}-{stamp}.db"
-    n = 1
-    while final.exists():
-        n += 1
-        final = folder / f"{db_file.stem}-{from_label}-{stamp}-{n}.db"
+    final = _reserve_backup_name(folder, f"{db_file.stem}-{from_label}-{stamp}")
     part = final.with_name(final.name + ".part")
     src = sqlite3.connect(str(db_file))
     dst = sqlite3.connect(str(part))
@@ -284,6 +295,77 @@ def _rotate_backups(db_file: Path) -> None:
 # ---------------------------------------------------------------------------
 # Locking
 # ---------------------------------------------------------------------------
+
+
+_PATH_LOCKS: dict[str, threading.Lock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+POLL_S = 0.05
+
+
+def _try_lock_file(fd: int) -> bool:
+    """Non-blocking exclusive lock on byte 0. OS-level, so it vanishes with the process."""
+    if sys.platform == "win32":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+    import fcntl
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _unlock_file(fd: int) -> None:
+    if sys.platform == "win32":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+@contextmanager
+def sqlite_process_lock(db_file: Path, wait: float):
+    """Serialise the whole SQLite sequence (classify, integrity check, backup,
+    upgrade) across processes and across threads of this process.
+
+    A lock file beside the database holds an OS lock (flock / msvcrt.locking). The
+    OS drops it when the process dies, so a crash never blocks the next start; the
+    file itself is never deleted or renamed. A per-path threading lock covers
+    threads (Windows byte-range locks are per handle, but this keeps it explicit).
+    Only the slow path comes here: a database at head never creates or locks a file.
+    """
+    lock_path = db_file.with_name(db_file.name + ".migrate-lock")
+    deadline = _monotonic() + wait
+    with _PATH_LOCKS_GUARD:
+        thread_lock = _PATH_LOCKS.setdefault(str(lock_path), threading.Lock())
+    if not thread_lock.acquire(timeout=max(0.0, wait)):
+        raise SchemaBusy(f"another thread holds the migration lock (waited {wait:g}s)")
+    try:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
+        try:
+            while not _try_lock_file(fd):
+                if _monotonic() >= deadline:
+                    raise SchemaBusy(f"another process holds the migration lock (waited {wait:g}s)")
+                time.sleep(POLL_S)
+            try:
+                yield
+            finally:
+                _unlock_file(fd)
+        finally:
+            os.close(fd)
+    finally:
+        thread_lock.release()
 
 
 @contextmanager
@@ -363,12 +445,20 @@ def upgrade_to_head(
         return _report(State.AT_HEAD, EXPECTED_HEAD, EXPECTED_HEAD, started, cached=True)
 
     # Fast path: one connection, one query, no alembic import.
-    with engine.connect() as conn:
-        try:
-            rows = conn.exec_driver_sql("SELECT version_num FROM alembic_version").all()
-        except DBAPIError:
-            rows = None
-        conn.rollback()
+    try:
+        with engine.connect() as conn:
+            try:
+                rows = conn.exec_driver_sql("SELECT version_num FROM alembic_version").all()
+            except DBAPIError:
+                rows = None
+            conn.rollback()
+    except OperationalError:
+        # SQLite only: the app engine's connect hook switches the journal mode, which
+        # can fail with "database is locked" while another runner does the same. The
+        # slow path retries this under the process lock.
+        if engine.dialect.name != "sqlite":
+            raise
+        rows = None
     if rows is not None and len(rows) == 1 and rows[0][0] == EXPECTED_HEAD:
         _CACHE[key] = EXPECTED_HEAD
         return _report(State.AT_HEAD, EXPECTED_HEAD, EXPECTED_HEAD, started)
@@ -382,7 +472,6 @@ def upgrade_to_head(
 
 
 def _slow_path(engine, key, started, allow_migrate, backup, lock_wait_s, progress) -> MigrationReport:
-    from alembic import command
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(alembic_config())
@@ -396,15 +485,37 @@ def _slow_path(engine, key, started, allow_migrate, backup, lock_wait_s, progres
     sqlite = engine.dialect.name == "sqlite"
     db_file = _sqlite_file(engine.url) if sqlite else None
 
-    # Outside the lock: only to decide on a backup, and on AHEAD / PARTIAL.
-    try:
-        with engine.connect() as conn:
-            pre = classify(conn, known)
-            conn.rollback()
-    except DatabaseError as exc:
-        if sqlite and not isinstance(exc, OperationalError):
-            raise SchemaError(State.PARTIAL, "database file is damaged") from exc
-        raise
+    if db_file is None:
+        return _classify_and_upgrade(engine, key, started, allow_migrate, backup, lock_wait_s, progress, known, None)
+    with sqlite_process_lock(db_file, lock_wait_s):
+        return _classify_and_upgrade(engine, key, started, allow_migrate, backup, lock_wait_s, progress, known, db_file)
+
+
+def _classify_and_upgrade(
+    engine, key, started, allow_migrate, backup, lock_wait_s, progress, known, db_file
+) -> MigrationReport:
+    from alembic import command
+
+    sqlite = engine.dialect.name == "sqlite"
+
+    # SQLite file: inside the process lock, so the second runner sees head and stops here.
+    # Postgres and in-memory SQLite: outside any lock, only to decide on a backup,
+    # and on AHEAD / PARTIAL.
+    retry_until = _monotonic() + (lock_wait_s if db_file is not None else 0.0)
+    while True:
+        try:
+            with engine.connect() as conn:
+                pre = classify(conn, known)
+                conn.rollback()
+            break
+        except DatabaseError as exc:
+            if sqlite and not isinstance(exc, OperationalError):
+                raise SchemaError(State.PARTIAL, "database file is damaged") from exc
+            # Under the process lock, a transient "locked" (a journal-mode switch by a
+            # process that does not take our lock) is retried until the lock wait ends.
+            if db_file is None or "locked" not in str(exc).lower() or _monotonic() >= retry_until:
+                raise
+            time.sleep(POLL_S)
 
     if pre.state == State.PARTIAL:
         raise SchemaError(State.PARTIAL, pre.detail)

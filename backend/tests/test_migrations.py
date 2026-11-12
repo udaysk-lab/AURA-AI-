@@ -462,9 +462,13 @@ def test_preview_does_not_migrate(engine, sqlite_0001_template, tmp_path, monkey
 # ---------------------------------------------------------------------------
 
 
+ROUNDS = 4
+
+
 def test_lock_serialises_two_runners(kind, engine, sqlite_0001_template, tmp_path):
-    make_unstamped(engine, sqlite_0001_template, tmp_path)
-    seed(engine)
+    if kind == "postgres":
+        make_unstamped(engine, sqlite_0001_template, tmp_path)
+        seed(engine)
     reports: list[dict] = []
     if kind == "postgres":
         results: list = []
@@ -485,21 +489,91 @@ def test_lock_serialises_two_runners(kind, engine, sqlite_0001_template, tmp_pat
             t.join(120)
         reports = [{"actions": r.actions} for r in results]
     else:
-        env = {**os.environ, "DATABASE_URL": f"sqlite:///{tmp_path / 'aura.db'}"}
-        procs = [
-            subprocess.Popen(
-                [sys.executable, "-m", "app.migrate", "upgrade"],
-                cwd=BACKEND, env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        # Fresh unstamped 1.0.0 file each round; both processes import first, then
+        # start at the same wall-clock instant, so they really collide.
+        for round_no in range(ROUNDS):
+            folder = tmp_path / f"race{round_no}"
+            folder.mkdir()
+            eng = create_engine(f"sqlite:///{folder / 'aura.db'}", poolclass=NullPool)
+            make_unstamped(eng, sqlite_0001_template, folder)
+            seed(eng)
+            go = time.time() + 1.0
+            env = {**os.environ, "DATABASE_URL": f"sqlite:///{folder / 'aura.db'}"}
+            code = (
+                "import sys, time; from app import migrate; "
+                f"time.sleep(max(0.0, {go!r} - time.time())); sys.exit(migrate.main(['upgrade']))"
             )
-            for _ in range(2)
-        ]
-        for p in procs:
-            out, _ = p.communicate(timeout=120)
-            assert p.returncode == 0, out
-            reports.append(json.loads(out.strip().splitlines()[-1]))
+            procs = [
+                subprocess.Popen(
+                    [sys.executable, "-c", code],
+                    cwd=BACKEND, env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                )
+                for _ in range(2)
+            ]
+            round_reports = []
+            for p in procs:
+                out, _ = p.communicate(timeout=60)
+                assert p.returncode == 0, out
+                round_reports.append(json.loads(out.strip().splitlines()[-1]))
+            assert all(r["ok"] for r in round_reports), round_reports
+            assert sum(1 for r in round_reports if r["actions"]) == 1, round_reports
+            assert sum(1 for r in round_reports if r["backup_path"]) == 1, round_reports
+            assert len(backups(folder)) == 1
+            assert version_rows(eng) == [migrate.EXPECTED_HEAD] and counts(eng) == SEEDED
+            eng.dispose()
+            reports = round_reports
     assert len(reports) == 2
     assert sum(1 for r in reports if r["actions"]) == 1
+    if kind == "postgres":
+        assert version_rows(engine) == [migrate.EXPECTED_HEAD] and counts(engine) == SEEDED
+
+
+def test_lock_serialises_two_threads_sqlite(kind, engine, sqlite_0001_template, tmp_path):
+    _sqlite_only(kind)
+    make_unstamped(engine, sqlite_0001_template, tmp_path)
+    seed(engine)
+    url = engine.url
+    barrier = threading.Barrier(2)
+    results: list = []
+    errors: list = []
+
+    def run():
+        eng = create_engine(url, poolclass=NullPool, connect_args={"check_same_thread": False})
+        try:
+            barrier.wait(10)
+            results.append(migrate.upgrade_to_head(eng))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+        finally:
+            eng.dispose()
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
+    assert errors == [] and len(results) == 2
+    assert sum(1 for r in results if r.actions) == 1
+    assert sum(1 for r in results if r.backup_path) == 1 and len(backups(tmp_path)) == 1
     assert version_rows(engine) == [migrate.EXPECTED_HEAD] and counts(engine) == SEEDED
+
+
+def test_backup_names_never_collide(tmp_path):
+    folder = tmp_path / "backups"
+    folder.mkdir()
+    names = {migrate._reserve_backup_name(folder, "aura-x-20260101T000000Z") for _ in range(5)}
+    assert len(names) == 5 and all(p.exists() for p in names)
+
+
+def test_head_database_creates_no_lock_file(kind, engine, tmp_path):
+    _sqlite_only(kind)
+    migrate.upgrade_to_head(engine)
+    migrate._CACHE.clear()
+    migrate.upgrade_to_head(engine)
+    before = set(tmp_path.iterdir())
+    migrate._CACHE.clear()
+    migrate.upgrade_to_head(engine)
+    assert set(tmp_path.iterdir()) == before
 
 
 def test_lock_timeout_raises_busy(kind, engine, tmp_path):
