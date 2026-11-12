@@ -536,3 +536,214 @@ def test_sending_a_request_anywhere_asks_below_relaxed_trust():
 
     assert autonomy.risk_class("read_file") == "read"
     assert autonomy.risk_class("fetch_url") == "external"
+
+
+# ---------------------------------------------------------------------------
+# The database schema at launch, and the packaged migration scripts
+# ---------------------------------------------------------------------------
+
+
+def _report(**over):
+    from app.migrate import MigrationReport, State
+
+    fields = dict(
+        state_before=State.AT_HEAD, revision_before=None, revision_after=None, actions=[],
+        backup_path=None, cached=False, duration_ms=1, ok=True, transient=False, error=None,
+    )
+    fields.update(over)
+    return MigrationReport(**fields)
+
+
+@pytest.fixture
+def launch(monkeypatch, tmp_path):
+    """Runs aura_desktop.main() with everything around the schema step stubbed
+    out, and records what was called, in order."""
+    import aura_desktop
+
+    calls: list[str] = []
+    state = {"report": _report(), "errors": [], "server_built": False}
+
+    monkeypatch.chdir(tmp_path)  # main() does os.chdir(home); this restores it afterwards
+    monkeypatch.setattr(aura_desktop, "running_aura", lambda port: None)
+    monkeypatch.setattr(aura_desktop, "setup_logging", lambda home, console: home / "logs" / "aura.log")
+    monkeypatch.setattr(aura_desktop, "apply_environment", lambda *a, **k: calls.append("environment"))
+    monkeypatch.setattr(aura_desktop, "show_error", lambda message: state["errors"].append(message))
+
+    def fake_upgrade():
+        calls.append("schema")
+        report = state["report"]
+        if isinstance(report, Exception):
+            raise report
+        return report
+
+    monkeypatch.setattr("app.migrate.ensure_schema", lambda context: (calls.append(f"schema:{context}"), fake_upgrade())[1])
+
+    class FakeServer:
+        def __init__(self, host, port):
+            calls.append("server")
+            state["server_built"] = True
+            raise RuntimeError("stop here: the test only needs to know the server was reached")
+
+    monkeypatch.setattr(aura_desktop, "Server", FakeServer)
+
+    def run(*argv):
+        home = tmp_path / "aura-home"
+        return aura_desktop.main([*argv, "--data-dir", str(home)])
+
+    return run, calls, state, tmp_path
+
+
+def test_desktop_migrates_before_server(launch):
+    run, calls, state, _ = launch
+    assert run("--headless") == 1  # 1 = the stub server refusing, i.e. the schema step passed
+    assert calls == ["environment", "schema:desktop", "schema", "server"]
+
+
+def test_desktop_failure_shows_backup_and_exits_3(launch, monkeypatch):
+    import aura_desktop
+    from app.migrate import State
+
+    run, calls, state, tmp_path = launch
+    backup = str(tmp_path / "backups" / "aura-0001_initial-20261112T090000Z.db")
+    state["report"] = _report(
+        ok=False, state_before=State.PARTIAL, backup_path=backup,
+        error="missing: users.email, users.name",
+    )
+    monkeypatch.setattr(aura_desktop, "tk_available", lambda: True)  # a person at a screen
+
+    assert run() == 3
+    assert not state["server_built"] and "server" not in calls
+    assert len(state["errors"]) == 1
+    message = state["errors"][0]
+    assert "AURA couldn't update its database" in message
+    assert "PARTIAL" in message and "missing: users.email" in message
+    assert "Your data is unchanged" in message
+    assert backup in message
+    assert str(tmp_path / "aura-home" / "logs" / "aura.log") in message
+
+
+def test_desktop_failure_without_a_state_or_backup(launch, monkeypatch):
+    """state_before is None when the failure was not a SchemaError."""
+    import aura_desktop
+
+    run, calls, state, _ = launch
+    state["report"] = _report(ok=False, state_before=None, error="OperationalError: unable to open database file")
+    monkeypatch.setattr(aura_desktop, "tk_available", lambda: True)
+
+    assert run() == 3
+    message = state["errors"][0]
+    assert "unknown: OperationalError" in message
+    assert "a copy was saved" not in message and "None" not in message
+
+
+def test_desktop_failure_headless_prints_instead_of_a_dialog(launch, capsys):
+    from app.migrate import State
+
+    run, calls, state, _ = launch
+    state["report"] = _report(ok=False, state_before=State.AHEAD, error="database is at zz99, newer than this build")
+    assert run("--headless") == 3
+    assert state["errors"] == []  # no dialog
+    assert "newer than this build" in capsys.readouterr().err
+    assert "server" not in calls
+
+
+def test_desktop_failure_is_written_to_the_smoke_report(launch):
+    import json
+
+    run, calls, state, tmp_path = launch
+    state["report"] = _report(ok=False, state_before=None, error="boom")
+    report_file = tmp_path / "smoke.json"
+    assert run("--smoke-test", "--smoke-report", str(report_file)) == 3
+    written = json.loads(report_file.read_text(encoding="utf-8"))
+    assert written["failed"] == ["database upgrade"] and written["error"] == "boom"
+    assert "server" not in calls
+
+
+def test_desktop_survives_the_runner_crashing(monkeypatch):
+    """An exception out of ensure_schema becomes a failed report, not a traceback."""
+    import aura_desktop
+
+    def boom(context):
+        raise RuntimeError("engine could not be built")
+
+    monkeypatch.setattr("app.migrate.ensure_schema", boom)
+    report = aura_desktop.upgrade_database()
+    assert report.ok is False and report.state_before is None
+    assert "engine could not be built" in report.error
+
+
+def test_desktop_refuses_a_database_from_a_newer_build(tmp_path, monkeypatch):
+    """The real runner against a real file: AHEAD fails closed, and the file is untouched."""
+    import sqlite3
+
+    import aura_desktop
+    from app import db, migrate
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import NullPool
+
+    path = tmp_path / "aura.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY)")
+    conn.execute("INSERT INTO alembic_version VALUES ('zz99_from_the_future')")
+    conn.commit()
+    conn.close()
+    before = path.read_bytes()
+
+    eng = create_engine(f"sqlite:///{path.as_posix()}", poolclass=NullPool)
+    monkeypatch.setattr(db, "engine", eng)
+    monkeypatch.setattr(migrate, "_CACHE", {})
+    monkeypatch.setattr(migrate, "_LAST", None)
+
+    report = aura_desktop.upgrade_database()
+    eng.dispose()
+    assert report.ok is False
+    assert str(report.state_before) == "AHEAD"
+    assert "zz99_from_the_future" in report.error
+    assert path.read_bytes() == before
+    assert not (tmp_path / "backups").exists()
+
+
+def test_the_smoke_test_checks_one_version_row_at_head(tmp_path):
+    import sqlite3
+
+    import aura_desktop
+
+    path = tmp_path / "aura.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
+    conn.execute("INSERT INTO alembic_version VALUES ('head1')")
+    conn.commit()
+    assert aura_desktop.schema_row_check(path, "head1")[1] is True
+    assert aura_desktop.schema_row_check(path, "other")[1] is False
+    conn.execute("INSERT INTO alembic_version VALUES ('head1')")
+    conn.commit()
+    conn.close()
+    assert aura_desktop.schema_row_check(path, "head1")[1] is False  # two rows
+    assert aura_desktop.schema_row_check(tmp_path / "missing" / "x.db", "head1")[1] is False
+
+
+def test_spec_ships_migrations_and_alembic():
+    """desktop/aura.spec must not exclude alembic or mako and must ship the scripts
+    where app.migrate looks for them when frozen ("aura_migrations")."""
+    import re
+
+    root = Path(__file__).resolve().parents[2]
+    text = (root / "desktop" / "aura.spec").read_text(encoding="utf-8")
+
+    excludes = re.search(r"^excludes\s*=\s*\[(.*?)\]", text, re.S | re.M).group(1)
+    names = re.findall(r'"([^"]+)"', excludes)
+    assert names, "could not read the excludes list"
+    assert "alembic" not in names and "mako" not in names
+
+    assert re.search(r'collect_submodules\(\s*"alembic"', text)
+    assert re.search(r'collect_submodules\(\s*"mako"', text)
+    assert 'BACKEND / "alembic" / "env.py"), "aura_migrations"' in text
+    assert 'BACKEND / "alembic" / "script.py.mako"), "aura_migrations"' in text
+    assert 'BACKEND / "alembic" / "versions" / "*.py"), "aura_migrations/versions"' in text
+
+    # What the spec points at exists, and the folder name matches the runner's.
+    backend = root / "backend"
+    assert (backend / "alembic" / "env.py").is_file()
+    assert (backend / "alembic" / "script.py.mako").is_file()
+    assert len(list((backend / "alembic" / "versions").glob("*.py"))) >= 2
+    assert 'Path(sys._MEIPASS) / "aura_migrations"' in (backend / "app" / "migrate.py").read_text(encoding="utf-8")

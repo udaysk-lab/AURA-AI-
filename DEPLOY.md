@@ -105,19 +105,72 @@ paused project can be restored for up to a year.
 
 ### Database migrations
 
-The app creates its tables on start-up (`AUTO_CREATE_SCHEMA`, on by default)
-and adds new columns itself; it never drops or changes one. To hand the schema
-to Alembic instead:
+Alembic is the only thing that changes the schema, and the app runs it by
+itself at start-up: there is no setting to turn on and no command to run on the
+hosted site. The first cold start after a deploy takes a lock, upgrades the
+database in one transaction (a few seconds), and any other instance that starts
+at the same time waits for it. If the upgrade fails, nothing is half-applied:
+the database stays at the old revision.
 
-```
-cd backend
-DATABASE_URL=<the direct, non-pooler URL> alembic stamp head   # an existing database
-# then set AUTO_CREATE_SCHEMA=false on Vercel
-```
+- A new, empty database is built from the migrations.
+- A 1.0.0 database (made by the old start-up, with no `alembic_version` table,
+  or stamped at `0001_initial`) is recognised and brought up to date. You do not
+  run `alembic stamp`. On SQLite (the desktop app and local runs) a consistent
+  copy is saved first in `backups/` next to the database file, and the three
+  newest are kept.
+- A database that is neither (columns missing from the 1.0.0 shape, or two
+  `alembic_version` rows) is left alone and reported; AURA does not guess.
+- `AUTO_CREATE_SCHEMA` is gone. If it is still set it is ignored (one warning in
+  the log); remove it from Vercel.
+- A Vercel **Preview** deployment never migrates, because Preview often shares
+  the production `DATABASE_URL`. It answers `503 schema_not_ready` on `/api`
+  instead. Set `MIGRATE_ON_PREVIEW=true` only on a Preview that has its own
+  database.
+- The migration needs the app's own `DATABASE_URL`; there is no separate
+  migration URL. Locks are transaction-scoped, so the Supabase transaction
+  pooler (port 6543) is fine.
 
-A new, empty database takes `alembic upgrade head`. After a model change:
-`alembic revision --autogenerate -m "what changed"`. CI checks the migrations
-still match the models.
+**Releasing a version that has migrations**
+
+1. Before merging, confirm Preview does not use the production database (above).
+2. Deploy as usual. The first cold start migrates.
+3. Open `https://<your-site>/health`. `"schema"` must equal the release's
+   revision (desktop/RELEASE_NOTES.md lists it for each release). Then open
+   `/api/health/preflight`: "Database schema: ok". Sign in, open the chat and
+   Settings.
+4. If `/api` answers 503 `schema_not_ready` for more than two minutes, read the
+   preflight detail and the Vercel log line `aura.migrate ERROR`, then
+   Vercel → Deployments → the previous deployment → **Instant Rollback**. The
+   database is unchanged, so the old code works. Send both to the developer;
+   redeploy the same build at most once. A lock timeout is retried by the app
+   every 30 seconds; a real error is not retried until the next cold start.
+5. If the deploy is healthy but the new code misbehaves, Instant Rollback is
+   safe while only additive revisions have run: the database is then newer than
+   the old code, which ignores the new columns and tables (the app serves
+   normally and preflight shows a warning).
+6. A release that drops old columns or tables ships separately, only after step
+   3 has passed on the additive release and the site has run for 24 hours.
+   After that release, rolling back to older code needs a database restore
+   (Supabase backups, done by the owner), so do not roll back past it.
+
+**The desktop app** upgrades `aura.db` every time it starts, before anything
+else. If it cannot (for example the database came from a newer AURA), it opens a
+dialog that names the reason, the backup file and the log, then exits. Nothing is
+changed. To go back to the version you had, reinstall it and copy the file in
+`~/.aura/backups/` over `~/.aura/aura.db`.
+
+**Docker / your own server.** `docker compose up` needs nothing extra: the api
+and the worker both check the schema when they start, and the lock makes them
+safe together. To upgrade without starting the app:
+`python -m app.migrate upgrade` (prints a JSON report; exit 0 ok, 1 failed,
+2 the database is newer than this build). `python -m app.migrate status` shows
+where a database stands without changing it.
+
+**Writing a migration** (developers): after a model change,
+`alembic revision --autogenerate -m "what changed"` from `backend/`, then follow
+the conventions in `docs/design/2.0/30-migrations.md` (section 6). CI builds a
+1.0.0 database both ways on SQLite and PostgreSQL, upgrades it, and runs
+`alembic check` to confirm the migrations still match the models.
 
 ---
 

@@ -499,10 +499,17 @@ def smoke_test(base: str, key: str) -> list[tuple[str, bool, str]]:
     def check(name: str, ok: bool, detail: str = "") -> None:
         results.append((name, bool(ok), detail[:300]))
 
+    from app.migrate import EXPECTED_HEAD
+
     status, _, text = _request(f"{base}/health")
-    check("health", status == 200 and json.loads(text).get("app") == APP_NAME, text)
+    health = json.loads(text) if status == 200 else {}
+    check("health", status == 200 and health.get("app") == APP_NAME, text)
+    check("database schema at head", health.get("schema") == EXPECTED_HEAD, text)
 
     status, _, text = _request(f"{base}/api/auth/config")
+    # The schema guard answers every /api path with 503 while the schema is not
+    # ready, so this is also what would catch it.
+    check("no schema guard", status == 200, f"{status} {text[:120]}")
     config = json.loads(text) if status == 200 else {}
     check("local mode on", config.get("local_mode") is True and config.get("device_control") is True, text)
     check("sign-in key required", config.get("local_login_key_required") is True, text)
@@ -557,6 +564,59 @@ def smoke_test(base: str, key: str) -> list[tuple[str, bool, str]]:
     )
     check("chat answers", status == 200 and '"type": "done"' in text, text[-300:])
     return results
+
+
+# ---------------------------------------------------------------------------
+# The database schema: upgraded before the server starts, or AURA doesn't start
+# ---------------------------------------------------------------------------
+
+SCHEMA_FAILED_EXIT_CODE = 3
+
+
+def upgrade_database():
+    """Bring aura.db to this build's schema. Returns the runner's report; ok=False
+    means the app must not start. Never raises: even a failure to build the
+    engine becomes a report, so the person sees a message, not a traceback."""
+    try:
+        from app import migrate
+
+        return migrate.ensure_schema("desktop")
+    except Exception as exc:
+        log.exception("The database upgrade crashed")
+        from app.migrate import MigrationReport
+
+        return MigrationReport(
+            state_before=None, revision_before=None, revision_after=None, actions=[],
+            backup_path=None, cached=False, duration_ms=0, ok=False, transient=False,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
+def schema_failure_message(report, log_file: Path) -> str:
+    """What the person is told when the database can't be brought up to date."""
+    state = str(report.state_before) if report.state_before else "unknown"
+    saved = f"; a copy was saved at {report.backup_path}" if report.backup_path else ""
+    return (
+        f"AURA couldn't update its database ({state}: {report.error}). "
+        f"Your data is unchanged{saved}.\n\nDetails: {log_file}"
+    )
+
+
+def schema_row_check(db_file: Path, expected: str) -> tuple[str, bool, str]:
+    """The smoke test's last check, run once the server has stopped: aura.db has
+    exactly one alembic_version row and it is this build's head."""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(str(db_file))
+        try:
+            rows = conn.execute("SELECT version_num FROM alembic_version").fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:
+        return "one alembic_version row", False, repr(exc)
+    ok = len(rows) == 1 and rows[0][0] == expected
+    return "one alembic_version row", ok, f"{rows}"
 
 
 # ---------------------------------------------------------------------------
@@ -640,6 +700,27 @@ def main(argv: list[str] | None = None) -> int:
     apply_environment(home, config, port, bind_host, web)
     os.chdir(home)
 
+    # The schema comes first: nothing else (server, worker, window) touches the
+    # database until it is at this build's head. The server's own start-up check
+    # then finds it done and costs nothing.
+    schema = upgrade_database()
+    if not schema.ok:
+        message = schema_failure_message(schema, log_file)
+        log.error("Not starting: %s", message.replace("\n", " "))
+        if headless:
+            print(message, file=sys.stderr)
+        else:
+            show_error(message)
+        if smoke and args.smoke_report:
+            Path(args.smoke_report).write_text(
+                json.dumps({
+                    "version": __version__, "failed": ["database upgrade"],
+                    "error": schema.error, "log": str(log_file),
+                }),
+                encoding="utf-8",
+            )
+        return SCHEMA_FAILED_EXIT_CODE
+
     try:
         server = Server(bind_host, port)
     except Exception as exc:
@@ -669,10 +750,19 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # a crash in the checks is a failed check
             log.exception("Smoke test crashed")
             results = [("smoke test ran", False, repr(exc))]
+        server.stop()
+        from app.db import engine as app_engine
+        from app.migrate import EXPECTED_HEAD
+
+        # The file the app really used (a DATABASE_URL in the environment wins
+        # over the default), else the default.
+        db_file = home / "aura.db"
+        if app_engine.url.drivername.startswith("sqlite") and app_engine.url.database:
+            db_file = Path(app_engine.url.database)
+        results.append(schema_row_check(db_file, EXPECTED_HEAD))
         width = max(len(name) for name, _, _ in results)
         for name, ok, detail in results:
             print(f"{'PASS' if ok else 'FAIL'}  {name.ljust(width)}  {'' if ok else detail}")
-        server.stop()
         failed = [name for name, ok, _ in results if not ok]
         print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
         if args.smoke_report:

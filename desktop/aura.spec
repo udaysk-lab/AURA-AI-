@@ -33,9 +33,14 @@ IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 NAME = "aura-ai" if sys.platform.startswith("linux") else "AURA AI"
 
+# The database is upgraded by Alembic every time the app starts, so Alembic and
+# its template engine (Mako, imported by alembic.util) ship in the app, and so
+# do the migration scripts below.
 hiddenimports = (
     collect_submodules("app")
     + collect_submodules("uvicorn")
+    + collect_submodules("alembic", filter=lambda name: not name.startswith("alembic.testing"))
+    + collect_submodules("mako")
     + ["worker", "tzdata"]
 )
 
@@ -43,11 +48,20 @@ datas = [
     (str(WEB), "web"),
     (str(ASSETS / "aura-icon.png"), "assets"),
 ]
+# The migration scripts. app.migrate looks for them in "aura_migrations" (not
+# "alembic", which must never shadow the package). The versions glob keeps
+# __pycache__ out. Frozen Python runs these .py files from disk.
+datas += [
+    (str(BACKEND / "alembic" / "env.py"), "aura_migrations"),
+    (str(BACKEND / "alembic" / "script.py.mako"), "aura_migrations"),
+    (str(BACKEND / "alembic" / "versions" / "*.py"), "aura_migrations/versions"),
+]
 datas += collect_data_files("tzdata")
 datas += collect_data_files("certifi")
 
 # Not needed on a desktop install, and each adds weight: the desktop app keeps
 # its data in SQLite and its rate limits in memory, and ships no tests.
+# (alembic and mako are NOT here: the app migrates its own database.)
 excludes = [
     "psycopg",
     "psycopg_binary",
@@ -58,8 +72,6 @@ excludes = [
     "IPython",
     "matplotlib",
     "numpy",
-    "alembic",
-    "mako",
 ]
 
 a = Analysis(

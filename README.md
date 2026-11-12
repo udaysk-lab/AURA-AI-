@@ -429,11 +429,10 @@ Honest list, because these are what will bite first:
 - **Never load-tested.** The test suite runs on three operating systems and the
   desktop builds are started and checked end to end, but nobody has measured
   how it behaves under real traffic.
-- **Schema: two modes.** By default `init_db()` runs `create_all` then patches in
-  missing columns (`db.py: apply_additive_migrations`) so an existing database
-  survives a model change — additive only, never drops or retypes. To hand the
-  schema to Alembic, set `AUTO_CREATE_SCHEMA=false` and follow DEPLOY.md; CI
-  checks the migrations still match the models.
+- **Schema changes are Alembic revisions; the app applies them at start-up.**
+  There is no `create_all` and no setting to choose (`AUTO_CREATE_SCHEMA` is
+  ignored). A 1.0.0 database is recognised and upgraded; SQLite is backed up
+  first. Details and the release checklist are in DEPLOY.md, Database migrations.
 - **One worker process only.** Schedule de-duplication is per-process, so a second
   worker double-fires everything. A Redis lock around `run_due` is the fix.
 - **Background work on the hosted site runs three times a day.** Vercel's Hobby

@@ -50,14 +50,171 @@ jobs:
           if [ "${{ matrix.extras }}" = "device" ]; then pip install -r requirements-device.txt; fi
       - name: Test
         run: python -m pytest -q -p no:cacheprovider
+      # tests/test_migrations.py is part of the run above, so the migration
+      # runner is also tested on SQLite on all three systems. The PostgreSQL
+      # cases and the 1.0.0 upgrade paths run in the "migrations" job below.
       - name: Migrations match the models
         if: matrix.os == 'ubuntu-latest' && matrix.extras == 'device'
         env:
           DATABASE_URL: sqlite:///./migration-check.db
-          AUTO_CREATE_SCHEMA: "false"
         run: |
           python -m alembic upgrade head
           python -m alembic check
+
+  # Alembic is the only way the schema changes, so this job proves the two ways a
+  # real 1.0.0 database can reach the current head, on both databases AURA runs
+  # on:
+  #   unstamped  what 1.0.0's own start-up (create_all) left behind, no
+  #              alembic_version table; also given an extra column, which must be
+  #              tolerated
+  #   stamped    a database that Alembic built, stopped at revision 0001
+  # Each is filled with 1.0.0-style data, upgraded with the same command the app
+  # and the desktop launcher use, and checked: data kept, one version row at
+  # head, a SQLite backup written, a second run that does nothing, and
+  # `alembic check` clean. On PostgreSQL two processes then race to upgrade the
+  # same database, and tests/test_migrations.py runs against it too.
+  migrations:
+    name: Migrations (${{ matrix.db }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [sqlite, postgres]
+    # A job's services cannot be switched on per matrix leg, so the SQLite leg
+    # starts this container too and never uses it.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aura
+          POSTGRES_PASSWORD: aura
+          POSTGRES_DB: aura
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aura -d aura"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DB: ${{ matrix.db }}
+      PG_URL: postgresql+psycopg://aura:aura@localhost:5432/aura
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check out AURA 1.0.0
+        uses: actions/checkout@v6
+        with:
+          ref: v1.0.0
+          path: legacy
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install
+        # 1.0.0 pins the same packages, so one environment serves both trees.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Upgrade a 1.0.0 database, both ways
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sql() {  # sql <url> <statement>
+            python -c 'import sys, sqlalchemy as sa
+          with sa.create_engine(sys.argv[1]).begin() as c:
+              c.execute(sa.text(sys.argv[2]))' "$1" "$2"
+          }
+
+          fresh() {  # fresh <name>: an empty database; sets URL
+            if [ "$DB" = sqlite ]; then
+              rm -rf "$RUNNER_TEMP/$1" && mkdir -p "$RUNNER_TEMP/$1"
+              URL="sqlite:///$RUNNER_TEMP/$1/m.db"
+            else
+              URL="$PG_URL"
+              sql "$URL" "DROP SCHEMA public CASCADE"
+              sql "$URL" "CREATE SCHEMA public"
+            fi
+          }
+
+          build_unstamped() {  # exactly 1.0.0's own start-up
+            (cd legacy/backend && DATABASE_URL="$URL" python -c "from app.db import init_db; init_db()")
+            sql "$URL" "ALTER TABLE users ADD COLUMN legacy_extra VARCHAR(10)"
+          }
+
+          build_stamped() {
+            (cd backend && DATABASE_URL="$URL" python -m alembic upgrade 0001_initial)
+          }
+
+          for way in unstamped stamped; do
+            echo "::group::$DB, $way"
+            fresh "m-$way"
+            "build_$way"
+            python backend/tests/migrations/seed_v1.py "$URL"
+
+            out="$RUNNER_TEMP/out-$way" && mkdir -p "$out"
+            (cd backend && DATABASE_URL="$URL" python -m app.migrate upgrade > "$out/first.json")
+            cat "$out/first.json"
+            (cd backend && DATABASE_URL="$URL" python -m app.migrate upgrade > "$out/second.json")
+            cat "$out/second.json"
+
+            (cd backend && DATABASE_URL="$URL" python tests/migrations/verify_v1.py "$URL" \
+              --way "$way" --report "$out/first.json" --again "$out/second.json")
+
+            # `alembic check` compares the database with the models, so the
+            # column that only the tolerance test wanted has to go first.
+            if [ "$way" = unstamped ]; then sql "$URL" "ALTER TABLE users DROP COLUMN legacy_extra"; fi
+            (cd backend && DATABASE_URL="$URL" python -m alembic check)
+            echo "::endgroup::"
+          done
+
+      - name: Two processes upgrade one PostgreSQL database at once
+        if: matrix.db == 'postgres'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sql() {
+            python -c 'import sys, sqlalchemy as sa
+          with sa.create_engine(sys.argv[1]).begin() as c:
+              c.execute(sa.text(sys.argv[2]))' "$1" "$2"
+          }
+          sql "$PG_URL" "DROP SCHEMA public CASCADE"
+          sql "$PG_URL" "CREATE SCHEMA public"
+          (cd legacy/backend && DATABASE_URL="$PG_URL" python -c "from app.db import init_db; init_db()")
+
+          out="$RUNNER_TEMP/race" && mkdir -p "$out"
+          (cd backend && DATABASE_URL="$PG_URL" python -m app.migrate upgrade > "$out/a.json") &
+          first=$!
+          (cd backend && DATABASE_URL="$PG_URL" python -m app.migrate upgrade > "$out/b.json") &
+          second=$!
+          wait "$first"
+          wait "$second"
+
+          cd backend
+          python - "$out/a.json" "$out/b.json" <<'PY'
+          import json, sys
+          from app.migrate import EXPECTED_HEAD
+          reports = [json.loads(open(p, encoding="utf-8").read().strip().splitlines()[-1]) for p in sys.argv[1:]]
+          print(reports)
+          assert all(r["ok"] for r in reports), "a runner failed"
+          assert all(r["revision_after"] == EXPECTED_HEAD for r in reports), "not at head"
+          busy = [r for r in reports if r["actions"]]
+          assert len(busy) == 1, f"expected exactly one runner to migrate, got {len(busy)}"
+          PY
+
+      - name: Migration tests on PostgreSQL
+        # Their own database: these tests wipe the schema before each test.
+        if: matrix.db == 'postgres'
+        shell: bash
+        working-directory: backend
+        env:
+          AURA_TEST_POSTGRES_URL: postgresql+psycopg://aura:aura@localhost:5432/aura_pytest
+        run: |
+          python -c "import psycopg; c = psycopg.connect('postgresql://aura:aura@localhost:5432/aura', autocommit=True); c.execute('CREATE DATABASE aura_pytest')"
+          python -m pytest -q -p no:cacheprovider tests/test_migrations.py
 
   frontend:
     name: Frontend typecheck and builds
