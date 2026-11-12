@@ -95,7 +95,7 @@ def test_models_insert_without_new_columns_set(engine):
     """The ORM defaults and the server defaults agree: a new user lands in 'ask'."""
     from sqlalchemy.orm import Session
 
-    _run(engine, command.upgrade, PM01)
+    _run(engine, command.upgrade, "head")  # the models carry every later revision's columns
     with Session(engine) as db:
         user = models.User(email="b@example.com", name="B")
         db.add(user)

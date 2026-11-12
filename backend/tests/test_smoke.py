@@ -458,7 +458,7 @@ def test_memory_compaction_merges_duplicates():
             "Always books flights with an aisle seat please",
         ):
             db.add(
-                Memory(user_id=user.id, content=text, kind="preference", source="test")
+                Memory(user_id=user.id, content=text, kind="fact", source="test")
             )
         db.commit()
 

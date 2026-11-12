@@ -4,6 +4,11 @@ Retrieval strategy, in order of what's available:
   1. Cosine similarity over stored embeddings (needs an embedding-capable provider)
   2. Lexical overlap fallback (works offline, no keys, no extra infra)
 
+Kinds: Memory holds facts about the world the user works in: fact, contact, project,
+decision. How the user wants work done lives in the preference store (services/preferences.py)
+and the record of each assignment in task memory (services/workmemory.py); `compact` never
+reads either of them.
+
 Storage note: embeddings live in a JSON column so the identical schema runs on
 SQLite and Postgres. That means similarity is computed in Python - fine to the
 low tens of thousands of memories per user. Past that, migrate the column to
@@ -31,6 +36,14 @@ _STOPWORDS = {
     "it", "as", "i", "my", "me", "you", "your", "we", "our", "do", "does", "did",
     "have", "has", "had", "will", "would", "can", "could", "should", "about",
 }
+
+
+# The kinds a Memory row may have (spec 20 section 10.6). Rows written by 1.0 with the kinds
+# preference / style / habit are copied to the preference store by revision tl02 and are no
+# longer read, searched or compacted.
+KINDS: tuple[str, ...] = ("fact", "contact", "project", "decision")
+LEGACY_KINDS: tuple[str, ...] = ("preference", "style", "habit")
+MAX_CONTENT = 2000
 
 
 @dataclass
@@ -61,6 +74,12 @@ def _lexical(query: str, content: str) -> float:
     return len(q & c) / len(q | c)  # Jaccard
 
 
+# Public names for the stores that score text the same way (work memory, preferences).
+tokens = _tokens
+cosine = _cosine
+lexical = _lexical
+
+
 def embed_text(text: str) -> list[float]:
     """Best-effort embedding. Returns [] when the provider can't embed."""
     try:
@@ -82,6 +101,10 @@ def remember(
 ) -> Memory:
     """Store a memory, de-duplicating against near-identical existing entries."""
     content = content.strip()
+    if kind in LEGACY_KINDS:
+        # Until the loop's own preference capture replaces the callers that still pass these
+        # kinds, keep what they save findable instead of filing it where nothing reads it.
+        kind = "fact"
     existing = db.scalars(
         select(Memory).where(Memory.user_id == user_id, Memory.kind == kind)
     ).all()
@@ -110,7 +133,9 @@ def remember(
 def search(
     db: Session, user_id: str, query: str, limit: int = 6, min_score: float = 0.05
 ) -> list[ScoredMemory]:
-    rows = db.scalars(select(Memory).where(Memory.user_id == user_id)).all()
+    rows = db.scalars(
+        select(Memory).where(Memory.user_id == user_id, Memory.kind.in_(KINDS))
+    ).all()
     if not rows:
         return []
 
@@ -147,7 +172,13 @@ def compact(db: Session, user_id: str, dry_run: bool = False) -> dict:
     Without this, memory only grows, retrieval quality drops as near-duplicates
     crowd each other out, and every prompt gets more expensive for less signal.
     """
-    rows = db.scalars(select(Memory).where(Memory.user_id == user_id)).all()
+    # Only facts, contacts, projects and decisions, and never a row the user wrote or edited
+    # by hand. Work items and preferences are not in this table and are never touched.
+    rows = db.scalars(
+        select(Memory).where(
+            Memory.user_id == user_id, Memory.kind.in_(KINDS), Memory.source != "manual"
+        )
+    ).all()
     merged, promoted, dropped = 0, 0, 0
 
     # 1. Merge near-duplicates.
@@ -174,7 +205,7 @@ def compact(db: Session, user_id: str, dry_run: bool = False) -> dict:
         if not m.pinned and m.use_count >= 5 and m.confidence >= 0.8:
             m.pinned = True
             promoted += 1
-        elif m.use_count == 0 and not m.pinned and m.source != "manual":
+        elif m.use_count == 0 and not m.pinned:
             m.confidence = round(m.confidence * 0.9, 3)
             if m.confidence < 0.25:
                 dropped += 1
@@ -207,3 +238,36 @@ def build_context_block(db: Session, user_id: str, query: str, limit: int = 6) -
     lines = [f"- [{h.memory.kind}] {h.memory.content}" for h in hits]
     block = "What you know about this user (retrieved for this request):\n" + "\n".join(lines)
     return block, [h.memory.id for h in hits]
+
+
+def edit(
+    db: Session,
+    memory: Memory,
+    *,
+    content: str | None = None,
+    kind: str | None = None,
+    pinned: bool | None = None,
+) -> Memory:
+    """The owner's edit of a memory: re-embeds changed content and marks the row `manual`,
+    so compaction never merges, promotes or decays it afterwards.
+
+    Raises ValueError for an empty or over-long content or a kind outside KINDS.
+    """
+    if content is not None:
+        content = content.strip()
+        if not content or len(content) > MAX_CONTENT:
+            raise ValueError(f"Content must be 1 to {MAX_CONTENT} characters")
+    if kind is not None and kind not in KINDS:
+        raise ValueError(f"Kind must be one of: {', '.join(KINDS)}")
+    if content is not None and content != memory.content:
+        memory.content = content
+        memory.embedding = embed_text(content)
+    if kind is not None:
+        memory.kind = kind
+    if pinned is not None:
+        memory.pinned = pinned
+    memory.source = "manual"
+    memory.updated_at = utcnow()
+    db.commit()
+    db.refresh(memory)
+    return memory

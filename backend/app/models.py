@@ -21,6 +21,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     false,
+    true as sa_true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -120,6 +121,8 @@ class UserSettings(Base, TimestampMixin):
     permission_mode: Mapped[str] = mapped_column(String(8), default="ask", server_default="ask")
     # The user's own limits for the auto reviewer, at most 2000 characters.
     reviewer_boundaries: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # No new preferences or Memory rows from chat, and new work items are not recallable.
+    memory_paused: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     user: Mapped[User] = relationship(back_populates="settings")
 
@@ -137,6 +140,8 @@ class Conversation(Base, TimestampMixin):
     title: Mapped[str] = mapped_column(String(300), default="New conversation")
     pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Memory off for this chat: no recall, no capture, items are not recallable.
+    memory_off: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     messages: Mapped[list[Message]] = relationship(
         back_populates="conversation",
@@ -294,6 +299,136 @@ class Memory(Base, TimestampMixin):
 
 
 # ---------------------------------------------------------------------------
+# Task memory and preference memory (spec 20-taskloop-memory.md section 2)
+# ---------------------------------------------------------------------------
+
+
+def _verification_default() -> dict:
+    return {"status": "none", "checks": []}
+
+
+class WorkItem(Base, TimestampMixin):
+    """The record of one assignment: instruction, type, plan, systems, how it went, outcome.
+
+    Never compacted or decayed. (Named WorkItem: `Task` is the user's to-do list.)
+    status: running | waiting | ready | done | partly_done | failed | stopped
+    """
+
+    __tablename__ = "work_items"
+    __table_args__ = (
+        Index("ix_work_items_user_status", "user_id", "status"),
+        Index("ix_work_items_user_type", "user_id", "task_type"),
+        Index("ix_work_items_status_ready", "status", "ready_at"),
+        Index("ix_work_items_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    conversation_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), index=True
+    )
+    # chat | schedule | inbound | automation: the origin trigger, never changes.
+    trigger: Mapped[str] = mapped_column(String(20), default="chat")
+    origin_ref: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    instruction: Mapped[str] = mapped_column(Text, default="")
+    title: Mapped[str] = mapped_column(String(200), default="")
+    task_type: Mapped[str] = mapped_column(String(40), default="other", index=True)
+    status: Mapped[str] = mapped_column(String(20), default="running", index=True)
+    # approval | segment_budget | segment_time | interrupted
+    wait_reason: Mapped[str] = mapped_column(String(20), default="", server_default="")
+    plan: Mapped[list] = mapped_column(JSON, default=list)
+    systems_used: Mapped[list] = mapped_column(JSON, default=list)
+    tools_used: Mapped[list] = mapped_column(JSON, default=list)
+    summary: Mapped[str] = mapped_column(Text, default="", server_default="")
+    outcome: Mapped[str] = mapped_column(String(300), default="", server_default="")
+    report: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # {"status": passed|failed|partial|none, "checks": [{method, passed, evidence}]}
+    verification: Mapped[dict] = mapped_column(JSON, default=_verification_default)
+    # {"rating": up|down, "note": "", "at": iso}
+    user_feedback: Mapped[dict] = mapped_column(JSON, default=dict)
+    recallable: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa_true())
+    steps_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    segments: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stop_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_owner: Mapped[str] = mapped_column(String(36), default="", server_default="")
+    # The resumable loop state (spec section 6.1); {} at a terminal status.
+    loop_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    # {"work_item_ids": [], "preference_ids": [], "memory_ids": []}
+    recall_used: Mapped[dict] = mapped_column(JSON, default=dict)
+    embedding: Mapped[list] = mapped_column(JSON, default=list)
+    error: Mapped[str] = mapped_column(Text, default="", server_default="")
+
+    steps: Mapped[list[WorkStep]] = relationship(
+        back_populates="work_item", cascade="all, delete-orphan", order_by="WorkStep.seq",
+        passive_deletes=True,
+    )
+
+
+class WorkStep(Base, TimestampMixin):
+    """One thing that happened inside a work item, in order."""
+
+    __tablename__ = "work_steps"
+    __table_args__ = (UniqueConstraint("work_item_id", "seq", name="uq_work_steps_item_seq"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    work_item_id: Mapped[str] = mapped_column(
+        ForeignKey("work_items.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    seq: Mapped[int] = mapped_column(Integer)
+    # The model step (1-based) that produced it; 0 for resume notes.
+    step_no: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # plan | tool | approval | reviewer_block | verification | note
+    kind: Mapped[str] = mapped_column(String(20))
+    tool_name: Mapped[str] = mapped_column(String(120), default="", server_default="")
+    tool_call_id: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    system: Mapped[str] = mapped_column(String(60), default="", server_default="")
+    arguments: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="ok")
+    summary: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # pending_action_id, decision_source, reason, duration_ms
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    work_item: Mapped[WorkItem] = relationship(back_populates="steps")
+
+
+class Preference(Base, TimestampMixin):
+    """How the owner wants a kind of work done, keyed by task type (or `general`)."""
+
+    __tablename__ = "preferences"
+    __table_args__ = (Index("ix_preferences_lookup", "user_id", "active", "task_type"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    task_type: Mapped[str] = mapped_column(String(40), default="general")
+    # A plugin id; "" means any system.
+    system_scope: Mapped[str] = mapped_column(String(60), default="", server_default="")
+    text: Mapped[str] = mapped_column(Text)
+    # stated | correction
+    source: Mapped[str] = mapped_column(String(20), default="stated")
+    # chat | feedback | settings | skill_teach | migrated
+    origin: Mapped[str] = mapped_column(String(20), default="chat")
+    origin_message_id: Mapped[str | None] = mapped_column(String(36))
+    origin_excerpt: Mapped[str] = mapped_column(String(300), default="", server_default="")
+    origin_work_item_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("work_items.id", ondelete="SET NULL")
+    )
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa_true())
+    superseded_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("preferences.id", ondelete="SET NULL")
+    )
+    use_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# ---------------------------------------------------------------------------
 # Automation / ops
 # ---------------------------------------------------------------------------
 
@@ -342,6 +477,10 @@ class ActivityLog(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(30), default="success")
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
 
+    work_item_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("work_items.id", ondelete="SET NULL"), index=True
+    )
+
 
 class PendingAction(Base, TimestampMixin):
     """A tool call parked awaiting the user's answer (spec 10-permissions 2.3).
@@ -361,9 +500,10 @@ class PendingAction(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(20), default="pending")
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     skill_code: Mapped[str] = mapped_column(String(12), default="")
-    # The task-loop run this belongs to. No foreign key yet: the work_items table
-    # arrives with the task-loop revision (tl01), which may add the constraint.
-    work_item_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    # The task-loop run this belongs to (tl01 added the foreign key).
+    work_item_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("work_items.id", ondelete="SET NULL"), index=True
+    )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     # chat | schedule | automation | inbound
     origin: Mapped[str] = mapped_column(String(20), default="chat", server_default="chat")
@@ -383,6 +523,10 @@ class PendingAction(Base, TimestampMixin):
     # session | remote:<device id> | local-open | system
     resolved_by: Mapped[str] = mapped_column(String(40), default="", server_default="")
     rule_id: Mapped[str | None] = mapped_column(String(36))
+    # The model's tool call this card answers, so a resumed run can pair the result with it.
+    tool_call_id: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    # What the approved tool returned (redacted by the loop's hook); None until resolved.
+    result: Mapped[dict | None] = mapped_column(JSON)
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +593,10 @@ class SkillRun(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(20), default="success")
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+
+    work_item_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("work_items.id", ondelete="SET NULL"), index=True
+    )
 
 
 class ApprovalGrant(Base, TimestampMixin):
@@ -612,6 +760,10 @@ class UsageRecord(Base, TimestampMixin):
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+
+    work_item_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("work_items.id", ondelete="SET NULL"), index=True
+    )
 
 
 class Delegation(Base, TimestampMixin):

@@ -78,3 +78,37 @@ test_perm_inbound, test_perm_unattended. coordinator.resolve_pending is a thin w
   info notification.
 - agent/autonomy.py is still imported by coordinator (normalise_tier), interim.py and api/intelligence.py
   (grants endpoints, manual heartbeat call). iter_agent still passes autonomy_level / legacy_tier until WP11.
+
+## After WP8-WP9 (committed). Suite: 798 passed, 35 skipped.
+New: app/permissions/access.py, app/permissions/changes.py, app/device/windows.py; tests test_perm_screen,
+test_perm_presence, test_perm_access, test_perm_devapi.
+- Folders are read fresh from the database on every decide and tool run; env roots are only a ceiling. Until pm02
+  runs, a user's folders are DERIVED at read time from the env roots (source=legacy, can_delete=true, ids
+  `legacy:<key>`), like interim.py; the first PATCH/DELETE on one turns it into a real row. WP11 must write the
+  same rows with the same access.path_key and set permissions_migrated.
+- deps.require_presence / PresentUser / PresentOwner guard: the console, device folder/app/blocklist/screen
+  routes, plugin install/uninstall, PATCH /skills, schedule and automation POST/PATCH, channel owner, local
+  provider and remote PUT, pairing. Approval answers get the spawned-process and cool-down guard only.
+- changes.record(...) writes the event and notifies the user (urgent when a change widens access). WP11: put
+  PresentUser on the mode, rules and boundaries routes (they do not exist yet) and call changes.record; repeat
+  the remote_cannot_change_mode / local_open_cannot_change_mode tests on the new routes.
+- Local sign-in issues amr local-key or local-open; a token without the claim counts as local-open on a local
+  install. The generated sign-in key is in <aura_home>/local-login.key (0600), never logged.
+- A path outside the env ceiling is denied (FLOOR_OUTSIDE_FOLDERS), not offered as a card. Delete in an
+  unconnected folder raises one delete_permission card with connect: true.
+- Local-mode tests that change permissions need a keyed sign-in (see the test_device `auth` fixture).
+- DEVICE.md still describes DEVICE_ALLOWED_ROOTS (docs package).
+
+## After WP10-WP11 (committed). Suite: 928 passed, 37 skipped. EXPECTED_HEAD = "pm02_permissions_data".
+New: alembic/versions/pm02_permissions_data.py (exposes map_legacy), app/permissions/legacy.py
+(emit_pending_events), app/api/permissions.py, tests legacy_oracle, test_perm_reviewer, test_perm_legacy,
+test_perm_api. Deleted: app/permissions/interim.py. Nothing derives folders or modes at read time any more.
+- The gate reads user_settings.permission_mode and stored rules only. The loop no longer passes a 1.0 level.
+  Tests that need a 1.0 level use apply_legacy(db, user, tier) from tests/perm_helpers.py.
+- Reviewer: permissions/reviewer.py; `auto` behaves as `ask` when unavailable (mock provider). The fall-back
+  counters (3 consecutive / 20 per run) are kept by the LOOP per work item and passed in the gate context:
+  see spec 10 section 7 and spec 20 section 1.
+- Rule PATCH adds a new row and revokes the old one.
+- pm02 cannot sign events; it leaves extra["legacy_events_pending"] and the app emits legacy_mapped lazily.
+- app/agent/autonomy.py is still on disk but nothing imports it; config.default_autonomy_level and comments
+  mentioning autonomy remain for the cleanup package. The 1.0 columns remain for the contract revision.

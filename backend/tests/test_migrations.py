@@ -928,6 +928,182 @@ def test_pm02_cannot_be_downgraded(engine):
             command.downgrade(migrate.alembic_config(conn), "pm01_permissions")
 
 
+# ---------------------------------------------------------------------------
+# Revision tl01 (task loop, expand): work items, work steps, the links to them
+# ---------------------------------------------------------------------------
+
+
+def _upgrade(engine, revision: str) -> None:
+    with engine.connect() as conn:
+        command.upgrade(migrate.alembic_config(conn), revision)
+        conn.commit()
+
+
+def _table(conn, name):
+    return sa.Table(name, sa.MetaData(), autoload_with=conn)
+
+
+def _user(conn, uid: str, now) -> None:
+    conn.execute(_table(conn, "users").insert().values(
+        id=uid, email=f"{uid}@x.test", name=uid, avatar_url="", timezone="UTC", password_hash="",
+        is_active=True, is_demo=False, created_at=now, updated_at=now))
+
+
+def test_tl01_work_items_data(engine):
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    _upgrade(engine, "pm02_permissions_data")
+    with engine.begin() as conn:
+        _user(conn, "u1", now)
+        conn.execute(_table(conn, "conversations").insert().values(
+            id="c1", user_id="u1", title="t", pinned=False, archived=False, created_at=now, updated_at=now))
+        conn.execute(_table(conn, "pending_actions").insert().values(
+            id="p-ghost", user_id="u1", conversation_id="c1", tool_name="send_email", arguments={}, preview="",
+            status="pending", skill_code="", work_item_id="no-such-item", created_at=now, updated_at=now))
+        conn.execute(_table(conn, "pending_actions").insert().values(
+            id="p-none", user_id="u1", conversation_id="c1", tool_name="send_email", arguments={}, preview="",
+            status="pending", skill_code="", created_at=now, updated_at=now))
+    migrate._CACHE.clear()
+    report = migrate.upgrade_to_head(engine)
+    assert report.ok and version_rows(engine) == [migrate.EXPECTED_HEAD]
+
+    insp = sa.inspect(engine)
+    assert {"work_items", "work_steps", "preferences"} <= set(insp.get_table_names())
+    for table in ("skill_runs", "activity_logs", "usage_records", "pending_actions"):
+        cols = {c["name"]: c for c in insp.get_columns(table)}
+        assert cols["work_item_id"]["nullable"]
+        fks = [fk for fk in insp.get_foreign_keys(table) if fk["referred_table"] == "work_items"]
+        assert len(fks) == 1 and fks[0]["constrained_columns"] == ["work_item_id"], table
+        assert (fks[0].get("options") or {}).get("ondelete", "").upper() == "SET NULL", table
+        assert any(i["column_names"] == ["work_item_id"] for i in insp.get_indexes(table)), table
+    pa = {c["name"] for c in insp.get_columns("pending_actions")}
+    assert {"tool_call_id", "result"} <= pa
+
+    with engine.begin() as conn:
+        pend = dict(conn.execute(text("SELECT id, work_item_id FROM pending_actions")).all())
+        assert pend == {"p-ghost": None, "p-none": None}, "a value pointing at no item is cleared"
+        item = _table(conn, "work_items")
+        conn.execute(item.insert().values(
+            id="w1", user_id="u1", conversation_id="c1", trigger="chat", instruction="i", title="t",
+            task_type="email", status="running", created_at=now, updated_at=now))
+        conn.execute(_table(conn, "work_steps").insert().values(
+            id="s1", work_item_id="w1", user_id="u1", seq=0, kind="tool", status="ok", created_at=now, updated_at=now))
+        conn.execute(text("UPDATE pending_actions SET work_item_id = 'w1' WHERE id = 'p-none'"))
+        row = conn.execute(text("SELECT recallable, steps_total, cost_usd, wait_reason, verification FROM work_items")).one()
+        assert bool(row[0]) is True and row[1] == 0 and row[2] == 0 and row[3] == ""
+    with pytest.raises(IntegrityError), engine.begin() as conn:  # (work_item_id, seq) is unique
+        conn.execute(_table(conn, "work_steps").insert().values(
+            id="s2", work_item_id="w1", user_id="u1", seq=0, kind="note", status="ok", created_at=now, updated_at=now))
+    with pytest.raises(IntegrityError), engine.begin() as conn:  # and the link is a real foreign key
+        conn.execute(text("UPDATE pending_actions SET work_item_id = 'nope' WHERE id = 'p-none'"))
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM work_items WHERE id = 'w1'"))
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT work_item_id FROM pending_actions WHERE id = 'p-none'")).scalar() is None
+        assert conn.execute(text("SELECT COUNT(*) FROM work_steps")).scalar() == 0, "steps go with their item"
+        assert conn.execute(text("SELECT COUNT(*) FROM pending_actions")).scalar() == 2, "cards stay"
+
+
+def test_tl01_tl02_roundtrip(engine):
+    """Down to pm02 removes exactly what tl01 and tl02 added, and pm01's own column stays."""
+    migrate.upgrade_to_head(engine)
+    with engine.connect() as conn:
+        command.downgrade(migrate.alembic_config(conn), "pm02_permissions_data")
+        conn.commit()
+    insp = sa.inspect(engine)
+    assert not {"work_items", "work_steps", "preferences"} & set(insp.get_table_names())
+    for table in ("skill_runs", "activity_logs", "usage_records"):
+        assert "work_item_id" not in {c["name"] for c in insp.get_columns(table)}
+    pa = {c["name"] for c in insp.get_columns("pending_actions")}
+    assert "work_item_id" in pa and not {"tool_call_id", "result"} & pa
+    assert not [fk for fk in insp.get_foreign_keys("pending_actions") if fk["referred_table"] == "work_items"]
+    assert any(i["column_names"] == ["work_item_id"] for i in insp.get_indexes("pending_actions"))
+    assert "memory_paused" not in {c["name"] for c in insp.get_columns("user_settings")}
+    assert "memory_off" not in {c["name"] for c in insp.get_columns("conversations")}
+    assert version_rows(engine) == ["pm02_permissions_data"]
+    migrate._CACHE.clear()
+    assert migrate.upgrade_to_head(engine).ok
+    assert {"work_items", "work_steps", "preferences"} <= set(sa.inspect(engine).get_table_names())
+
+
+# ---------------------------------------------------------------------------
+# Revision tl02 (preference memory, expand + data copy)
+# ---------------------------------------------------------------------------
+
+
+def test_tl02_preferences_data(engine):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(days=3)
+    _upgrade(engine, "tl01_work_items")
+    with engine.begin() as conn:
+        for uid in ("u1", "u2", "u3"):
+            _user(conn, uid, now)
+        settings_t = _table(conn, "user_settings")
+        for uid, tone in (("u1", "warm-casual"), ("u2", "concise-professional"), ("u3", "")):
+            conn.execute(settings_t.insert().values(
+                id=f"s-{uid}", user_id=uid, briefing_time="08:00", briefing_enabled=True, autonomy_level="conservative",
+                tone=tone, theme="warm", heartbeat_enabled=True, heartbeat_interval_minutes=30,
+                quiet_hours="22:00-07:00", extra={}, created_at=now, updated_at=now))
+        mem = _table(conn, "memories")
+        for mid, uid, kind, content, source, created in (
+            ("m1", "u1", "preference", "Keep replies short", "chat", old),
+            ("m2", "u1", "style", "x" * 400, "correction", old + timedelta(hours=1)),
+            ("m3", "u1", "habit", "Reads email at 9", "chat", old + timedelta(hours=2)),
+            ("m4", "u1", "fact", "Priya leads the Series A", "chat", old),
+            ("m5", "u2", "preference", "Use British spelling", "chat", old),
+        ):
+            conn.execute(mem.insert().values(
+                id=mid, user_id=uid, kind=kind, content=content, source=source, confidence=0.7, embedding=[],
+                use_count=0, pinned=False, created_at=created, updated_at=created))
+        skills = _table(conn, "user_skills")
+        for sid, uid, code, notes in (
+            ("k1", "u1", "EM02", ["Keep replies short", "  never   CC the manager "]),  # first is also memory m1
+            ("k2", "u1", "DV02", ["Ask before overwriting"]),
+            ("k3", "u1", "MM01", ["Spell out acronyms"]),
+            ("k4", "u2", "CA01", ["Prefer mornings"]),
+            ("k5", "u3", "EM01", []),
+        ):
+            conn.execute(skills.insert().values(
+                id=sid, user_id=uid, code=code, enabled=True, run_count=0, success_count=0, learned_notes=notes,
+                created_at=now, updated_at=now))
+
+    migrate._CACHE.clear()
+    assert migrate.upgrade_to_head(engine).ok
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT user_id, task_type, text, source, origin, active, system_scope FROM preferences")).all()
+    got = {(r[0], r[2]): (r[1], r[3]) for r in rows}
+    assert {r[4] for r in rows} == {"migrated"} and all(bool(r[5]) for r in rows) and {r[6] for r in rows} == {""}
+    assert got == {
+        ("u1", "Keep replies short"): ("general", "stated"),  # from memories; the same learned note is not added again
+        ("u1", "x" * 300): ("general", "correction"),  # cut to 300, source kept
+        ("u1", "Reads email at 9"): ("general", "stated"),
+        ("u1", "never   CC the manager"): ("email", "correction"),  # EM02; stored as written, trimmed
+        ("u1", "Ask before overwriting"): ("files", "correction"),  # DV02
+        ("u1", "Spell out acronyms"): ("general", "correction"),  # MM01 has no type
+        ("u1", "Tone: warm-casual"): ("general", "stated"),
+        ("u2", "Use British spelling"): ("general", "stated"),
+        ("u2", "Prefer mornings"): ("scheduling", "correction"),  # CA01
+    }, sorted(got)
+    assert "u3" not in {r[0] for r in rows}, "default or empty tone and no notes: nothing copied"
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM memories")).scalar() == 5, "old rows stay for a rollback"
+        assert conn.execute(text("SELECT COUNT(*) FROM preferences WHERE text = 'Keep replies short'")).scalar() == 1
+
+    # running the copy again adds nothing
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("tl02_again", BACKEND / "alembic" / "versions" / "tl02_preferences.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    with engine.begin() as conn:
+        assert mod.copy_old_stores(conn) == {"memories": 0, "learned_notes": 0, "tone": 0}
+        assert conn.execute(text("SELECT COUNT(*) FROM preferences")).scalar() == 9
+
+
 def test_unmapped_columns_are_safe(engine):
     """Every database column the models no longer map must be harmless to a new
     INSERT (nullable or defaulted) and be on the pending-drop list."""

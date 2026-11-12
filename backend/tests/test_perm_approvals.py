@@ -64,6 +64,10 @@ def mk(db, mode="ask"):
 
 def park(db, user, tool, args, trigger="chat", **ctxkw):
     """Decide a call the way the loop does and park it; returns (action, decision)."""
+    wid = ctxkw.get("work_item_id")
+    if wid and db.get(models.WorkItem, wid) is None:  # pending_actions.work_item_id is a real foreign key now
+        db.add(models.WorkItem(id=wid, user_id=user.id, instruction="x", title="x", task_type="other"))
+        db.commit()
     c = make_ctx(db, user, trigger, **ctxkw)
     d = gate.decide(db, user, tool, args, c)
     assert d.kind == "ask", (d.kind, d.reason_code)

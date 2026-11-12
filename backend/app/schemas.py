@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 
 class ORMModel(BaseModel):
@@ -138,6 +138,7 @@ class ConversationOut(ORMModel):
     id: str
     title: str
     pinned: bool
+    memory_off: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -315,6 +316,138 @@ class MemoryIn(BaseModel):
         "preference", "contact", "project", "decision", "style", "habit", "fact"
     ] = "fact"
     pinned: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Task memory and preference memory (spec 20-taskloop-memory.md sections 11, 13;
+# shapes follow the web client's types in frontend/lib/api.ts)
+# ---------------------------------------------------------------------------
+
+
+class WorkStepOut(ORMModel):
+    """A work_steps row. `result_summary`, `started_at`, `finished_at` and `pending_action_id`
+    are derived, for the contract note that lists them; `summary` and `detail` are what the
+    client's WorkStepOut type reads."""
+
+    id: str
+    seq: int
+    step_no: int = 0
+    kind: str
+    tool_name: str = ""
+    tool_call_id: str = ""
+    system: str = ""
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    status: str
+    summary: str = ""
+    detail: dict[str, Any] = Field(default_factory=dict)
+    result_summary: str = ""
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    pending_action_id: str | None = None
+    created_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _derive(self) -> "WorkStepOut":
+        self.result_summary = self.result_summary or self.summary
+        self.started_at = self.started_at or self.created_at
+        if self.pending_action_id is None:
+            value = (self.detail or {}).get("pending_action_id")
+            self.pending_action_id = str(value) if value else None
+        return self
+
+
+class VerificationOut(BaseModel):
+    status: Literal["passed", "failed", "partial", "none"] = "none"
+    checks: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WorkItemOut(ORMModel):
+    id: str
+    title: str
+    task_type: str
+    status: str
+    trigger: str
+    conversation_id: str | None = None
+    outcome: str = ""
+    # Always an object {status, note?, checks}, never a bare string (contract note 3).
+    verification: dict[str, Any] = Field(default_factory=lambda: {"status": "none", "checks": []})
+    steps_total: int = 0
+    cost_usd: float = 0.0
+    recallable: bool = True
+    created_at: datetime
+    finished_at: datetime | None = None
+
+    @field_validator("verification", mode="before")
+    @classmethod
+    def _verification_object(cls, raw: Any) -> dict[str, Any]:
+        if isinstance(raw, dict) and raw.get("status") in ("passed", "failed", "partial", "none"):
+            return {"checks": [], **raw}
+        return {"status": "none", "checks": []}
+
+
+class RecallPastWorkOut(BaseModel):
+    id: str
+    title: str
+    outcome: str = ""
+    finished_at: datetime | None = None
+
+
+class RecallPreferenceOut(BaseModel):
+    id: str
+    task_type: str
+    text: str
+
+
+class RecallUsedOut(BaseModel):
+    """What the run recalled, kept so the panel can show it after a conversation is reopened."""
+
+    past_work: list[RecallPastWorkOut] = Field(default_factory=list)
+    preferences: list[RecallPreferenceOut] = Field(default_factory=list)
+
+
+class WorkItemDetail(WorkItemOut):
+    instruction: str = ""
+    plan: list[dict[str, Any]] = Field(default_factory=list)
+    systems_used: list[str] = Field(default_factory=list)
+    tools_used: list[str] = Field(default_factory=list)
+    summary: str = ""
+    report: str = ""
+    user_feedback: dict[str, Any] = Field(default_factory=dict)
+    pending_action_ids: list[str] = Field(default_factory=list)
+    steps: list[WorkStepOut] = Field(default_factory=list)
+    recall_used: RecallUsedOut = Field(default_factory=RecallUsedOut)
+
+    @field_validator("recall_used", mode="before")
+    @classmethod
+    def _plain_recall(cls, raw: Any) -> Any:
+        # The stored column holds ids ({"work_item_ids": ...}); the detail view carries the
+        # resolved lists. A caller that has not resolved them yet gets empty lists, never ids.
+        if isinstance(raw, dict) and ("past_work" in raw or "preferences" in raw):
+            return raw
+        return {}
+
+
+class TaskTypeOut(BaseModel):
+    value: str
+    label: str
+
+
+class PreferenceOut(ORMModel):
+    id: str
+    task_type: str
+    system_scope: str = ""
+    text: str
+    source: str
+    origin: str
+    active: bool
+    superseded_by: str | None = None
+    use_count: int = 0
+    last_used_at: datetime | None = None
+    created_at: datetime
+
+
+class MemorySettingsOut(BaseModel):
+    paused: bool = False
 
 
 # ---------------------------------------------------------------------------
