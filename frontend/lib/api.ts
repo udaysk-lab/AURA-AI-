@@ -656,6 +656,10 @@ export interface DeviceStatus {
   packages: Record<string, boolean>;
   policy: DevicePolicy | null;
   active_skills: string[];
+  presence_accepted?: boolean;
+  present?: boolean;
+  /** The user's own switch for mouse and keyboard use (the install setting is a ceiling above it). */
+  screen_control_user?: boolean;
 }
 
 export interface DeviceRunResult {
@@ -759,6 +763,10 @@ export interface ChannelItem {
   identifier: string;
   message_count: number;
   last_seen_at: string | null;
+  /** Who counts as the owner on this channel; empty until confirmed. */
+  owner_sender?: string;
+  /** The bridge forwards only the owner's own messages. */
+  bridge_owner_only?: boolean;
   token?: string | null;
 }
 
@@ -1207,6 +1215,11 @@ export const api = {
   connectChannel: (kind: string, identifier = "") =>
     post<ChannelItem>("/api/channels/connect", { kind, identifier }),
   rotateChannelToken: (kind: string) => post<ChannelItem>(`/api/channels/${kind}/rotate`),
+  setChannelOwner: (kind: string, owner_sender: string, bridge_owner_only: boolean) =>
+    put<ChannelItem>(`/api/channels/${encodeURIComponent(kind)}/owner`, {
+      owner_sender,
+      bridge_owner_only,
+    }),
   disconnectChannel: (kind: string) =>
     post<{ message: string }>(`/api/channels/${kind}/disconnect`),
 
@@ -1330,6 +1343,8 @@ export const api = {
   removeDeviceBlock: (id: string) =>
     del<unknown>(`/api/device/blocklist/${encodeURIComponent(id)}`),
   /** Tells a local install the person is at the screen. 204 and nothing else. */
+  setDeviceScreenControl: (enabled: boolean) =>
+    put<{ enabled: boolean; available: boolean }>("/api/device/screen-control", { enabled }),
   devicePresence: () => post<void>("/api/device/presence", {}),
 
   // --- Diagnostics (unauthenticated) --------------------------------------

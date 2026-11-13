@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import {
   Check,
   Copy,
@@ -15,7 +15,7 @@ import {
   Terminal,
   Unlink,
 } from "lucide-react";
-import { ChannelItem, api } from "@/lib/api";
+import { ApiError, ChannelItem, api } from "@/lib/api";
 import { useAction, useToast } from "@/components/Toast";
 import {
   Badge,
@@ -36,6 +36,89 @@ const ICONS: Record<string, LucideIcon> = {
   sms: MessageCircle,
   voice: Phone,
 };
+
+function OwnerControl({
+  channel,
+  draft,
+  onDraft,
+  busy,
+  error,
+  onSave,
+}: {
+  channel: ChannelItem;
+  draft: string;
+  onDraft: (v: string) => void;
+  busy: boolean;
+  error?: string;
+  onSave: (c: ChannelItem, sender: string, bridgeOnly: boolean) => void;
+}) {
+  const id = useId();
+  const confirmed = Boolean(channel.owner_sender) || Boolean(channel.bridge_owner_only);
+  return (
+    <div className="mt-3 rounded-xl border border-line bg-raised/50 p-3">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <span className="label">Who is you on {channel.name}</span>
+        {confirmed ? (
+          <Badge tone="success">
+            <Check size={9} />{" "}
+            {channel.bridge_owner_only ? "bridge forwards only you" : `owner: ${channel.owner_sender}`}
+          </Badge>
+        ) : (
+          <Badge tone="warning">not confirmed</Badge>
+        )}
+      </div>
+      <p className="text-[12.5px] leading-relaxed text-muted">
+        AURA starts a task from a message only when it comes from you. Anyone else&apos;s
+        message is kept as a notification.
+        {confirmed
+          ? ""
+          : " Until you confirm this, every message on this channel only creates a notification."}
+      </p>
+      <form
+        className="mt-2 flex flex-wrap items-end gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (draft.trim()) onSave(channel, draft, false);
+        }}
+      >
+        <div className="min-w-[14rem] flex-1">
+          <label htmlFor={id} className="mb-1 block text-[12.5px] text-muted">
+            Your address, handle or number on this channel
+          </label>
+          <input
+            id={id}
+            className="input min-h-[44px] w-full"
+            value={draft}
+            maxLength={320}
+            onChange={(e) => onDraft(e.target.value)}
+            autoComplete="off"
+          />
+        </div>
+        <button
+          type="submit"
+          className="btn-primary min-h-[44px]"
+          disabled={busy || !draft.trim()}
+        >
+          {busy ? <Spinner /> : <Check size={13} />} Confirm me as owner
+        </button>
+      </form>
+      <button
+        type="button"
+        className="btn-ghost mt-2 min-h-[44px]"
+        disabled={busy}
+        aria-pressed={Boolean(channel.bridge_owner_only)}
+        onClick={() => onSave(channel, "", true)}
+      >
+        This bridge forwards only my messages
+      </button>
+      {error && (
+        <p role="alert" className="mt-2 text-[12.5px] leading-relaxed text-rose">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
 
 export default function ChannelsPage() {
   const run = useAction();
@@ -101,6 +184,29 @@ export default function ChannelsPage() {
       await load();
     }, `${channel.name} disconnected`);
     setBusy(null);
+  };
+
+  const [ownerDraft, setOwnerDraft] = useState<Record<string, string>>({});
+  const [ownerError, setOwnerError] = useState<Record<string, string>>({});
+
+  const saveOwner = async (channel: ChannelItem, sender: string, bridgeOnly: boolean) => {
+    setBusy(channel.kind);
+    setOwnerError((m) => ({ ...m, [channel.kind]: "" }));
+    try {
+      await api.setChannelOwner(channel.kind, sender.trim(), bridgeOnly);
+      toast.success(`Owner confirmed on ${channel.name}`);
+      await load();
+    } catch (e) {
+      const msg =
+        e instanceof ApiError && e.status === 403
+          ? `${e.message} Open AURA on the computer it runs on, from its app window, to change this.`
+          : e instanceof Error
+            ? e.message
+            : "Couldn't save";
+      setOwnerError((m) => ({ ...m, [channel.kind]: msg }));
+    } finally {
+      setBusy(null);
+    }
   };
 
   const copy = async (text: string) => {
@@ -235,6 +341,17 @@ export default function ChannelsPage() {
                       — rotate to get a new one.
                     </p>
                   </div>
+                )}
+
+                {c.connected && c.inbound && c.kind !== "web" && (
+                  <OwnerControl
+                    channel={c}
+                    draft={ownerDraft[c.kind] ?? c.owner_sender ?? ""}
+                    onDraft={(v) => setOwnerDraft((m) => ({ ...m, [c.kind]: v }))}
+                    busy={busy === c.kind}
+                    error={ownerError[c.kind]}
+                    onSave={saveOwner}
+                  />
                 )}
 
                 {c.connected && c.setup && (

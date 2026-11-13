@@ -9,6 +9,7 @@ import {
   DeviceApps,
   DeviceFolder,
   DeviceStatus,
+  ApiError,
   api,
 } from "@/lib/api";
 import { APP_LEVELS, isTerminalOrIde } from "@/lib/permissions";
@@ -225,6 +226,71 @@ function isBlocked(appId: string, blocks: DeviceAppBlock[]) {
   );
 }
 
+/** The user's own switch for mouse and keyboard control, under the install's ceiling. */
+function ScreenControlSwitch({ status }: { status: DeviceStatus }) {
+  const [on, setOn] = useState(status.screen_control_user ?? true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const noteId = useId();
+
+  useEffect(() => {
+    setOn(status.screen_control_user ?? true);
+  }, [status.screen_control_user]);
+
+  // The backend reports only whether screen control is usable at all, not which part of the
+  // install blocks it, so the reason is worded from what the status does tell us.
+  const blocked = !status.enabled || !status.screen_control;
+  const reason = !status.enabled
+    ? "Device control is off on this install."
+    : !status.has_display
+      ? "This install has no display to control."
+      : status.packages?.pyautogui === false
+        ? "The optional screen-control package is not installed."
+        : "This install does not allow screen control. It is set by whoever runs AURA, not here.";
+
+  const change = async (next: boolean) => {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await api.setDeviceScreenControl(next);
+      setOn(res.enabled);
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.status === 403
+          ? `${e.message} Open AURA on the computer it runs on, from its app window, to change this.`
+          : e instanceof Error
+            ? e.message
+            : "Couldn't change screen control"
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mb-4 rounded-xl border border-line bg-raised/40 p-3.5">
+      <SwitchRow
+        checked={on && !blocked}
+        onChange={change}
+        disabled={blocked || busy}
+        label="Let AURA use my mouse and keyboard"
+      />
+      <p id={noteId} className="mt-1 text-[12.5px] leading-relaxed text-muted">
+        {blocked
+          ? reason
+          : on
+            ? "On. AURA can use the mouse and keyboard in apps you allow, while you are here."
+            : "Off. AURA will not use the mouse or keyboard, even in allowed apps."}
+      </p>
+      {error && (
+        <p role="alert" className="mt-2 text-[12.5px] leading-relaxed text-rose">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function AppAccess({ status }: { status: DeviceStatus }) {
   const run = useAction();
   const uid = useId();
@@ -330,6 +396,8 @@ export function AppAccess({ status }: { status: DeviceStatus }) {
           </div>
         </div>
       </div>
+
+      <ScreenControlSwitch status={status} />
 
       <p className="mb-4 text-[13px] leading-relaxed text-muted">
         AURA asks before it uses any app on screen. Terminals and code editors are click and
