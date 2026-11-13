@@ -204,17 +204,54 @@ def create_rule(db: Session, user: User, natural_language: str, enabled: bool = 
 # ---------------------------------------------------------------------------
 
 
+# F15: the trigger's own text (an email's subject, sender, body) goes only into these fields of
+# these tools, which hold prose. Never into a path, a link, a recipient, a command or an id.
+TEXT_FIELDS: dict[str, frozenset[str]] = {
+    "send_email": frozenset({"subject", "body"}),
+    "create_event": frozenset({"title", "description"}),
+    "create_task": frozenset({"title", "notes"}),
+    "delegate_task": frozenset({"title", "context"}),
+    "notify": frozenset({"title", "body"}),
+    "desktop_notify": frozenset({"title", "message"}),
+    "draft_reply": frozenset({"instruction"}),
+    "save_memory": frozenset({"content"}),
+    "write_file": frozenset({"content"}),
+}
+_TRUSTED_KEYS = ("email_id",)  # AURA's own ids; safe in an id field
+_PLACEHOLDER = re.compile(r"\{(\w+)\}")
+
+
+def _fill(text: str, context: dict) -> str:
+    """One pass: a value that itself holds `{something}` is never expanded again."""
+    return _PLACEHOLDER.sub(lambda m: str(context[m.group(1)]) if m.group(1) in context else m.group(0), text)
+
+
 def _interpolate(value: Any, context: dict) -> Any:
     if isinstance(value, str):
-        out = value
-        for key, val in context.items():
-            out = out.replace("{" + key + "}", str(val))
-        return out
+        return _fill(value, context)
     if isinstance(value, dict):
         return {k: _interpolate(v, context) for k, v in value.items()}
     if isinstance(value, list):
         return [_interpolate(v, context) for v in value]
     return value
+
+
+def interpolate_args(tool: str, args: dict, context: dict) -> tuple[dict, list[str]]:
+    """Fill the trigger's values into the prose fields only. Returns the arguments and the names
+    of any other field that asked for one (a templated target): those are left as written."""
+    allowed = TEXT_FIELDS.get(tool, frozenset())
+    out: dict = {}
+    templated: list[str] = []
+    for key, val in (args or {}).items():
+        if key in allowed:
+            out[key] = _interpolate(val, context)
+            continue
+        val = _interpolate(val, {k: context[k] for k in _TRUSTED_KEYS if k in context})
+        out[key] = val
+        text = json.dumps(val, default=str)
+        if any("{" + c + "}" in text for c in context):
+            templated.append(key)
+    return out, templated
 
 
 def matches_email(rule: AutomationRule, email: EmailMessage) -> bool:
@@ -252,7 +289,13 @@ def run_rule(db: Session, user: User, rule: AutomationRule, context: dict | None
 
     for action in rule.actions or []:
         tool_name = action.get("tool", "")
-        args = _interpolate(action.get("arguments") or {}, context)
+        args, templated = interpolate_args(tool_name, action.get("arguments") or {}, context)
+        if templated:
+            # A target taken from a message could point anywhere; no allow rule may cover it.
+            blocked.append({"tool": tool_name, "reason_code": "TEMPLATED_TARGET",
+                            "reason": "A rule cannot fill in " + ", ".join(templated)
+                                      + " from a message; only text fields take values from a trigger."})
+            continue
 
         # Fill implicit references from the trigger context.
         if tool_name in ("draft_reply", "get_email", "archive_email") and context.get("email_id"):
@@ -312,7 +355,7 @@ def on_email_received(db: Session, user: User, email: EmailMessage) -> list[dict
                     db, user, rule,
                     {
                         "subject": email.subject,
-                        "sender": email.sender_name or email.sender,
+                        "sender": email.sender,  # F15: the address, never a display name someone chose
                         "body": (email.body or email.snippet)[:2000],
                         "email_id": email.id,
                     },
@@ -347,18 +390,22 @@ def on_task_due(db: Session, user: User) -> list[dict]:
     return results
 
 
-def run_due_schedules(db: Session, now: datetime | None = None, should_stop=None) -> list[dict]:
+def run_due_schedules(db: Session, now: datetime | None = None, should_stop=None,
+                      user_id: str | None = None) -> list[dict]:
     """Call once a minute from a worker/cron to fire scheduled rules.
 
-    `should_stop` is checked before each rule; the rest stay due for next time.
+    `should_stop` is checked before each rule; the rest stay due for next time. With `user_id`
+    only that user's rules are looked at (F21: a signed-in user's request never runs anyone
+    else's); the worker and the cron route leave it out and run everyone's.
     """
     now = now or datetime.now(timezone.utc)
-    rules = db.scalars(
-        select(AutomationRule).where(
-            AutomationRule.enabled == True,  # noqa: E712
-            AutomationRule.trigger_type == "schedule",
-        )
-    ).all()
+    query = select(AutomationRule).where(
+        AutomationRule.enabled == True,  # noqa: E712
+        AutomationRule.trigger_type == "schedule",
+    )
+    if user_id is not None:
+        query = query.where(AutomationRule.user_id == user_id)
+    rules = db.scalars(query).all()
 
     from app.services.schedules import due_since
 

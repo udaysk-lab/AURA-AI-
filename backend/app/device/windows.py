@@ -47,10 +47,15 @@ def _process_name(pid: int) -> str:
 
 def _windows() -> Frontmost | None:
     import ctypes
-    from ctypes import wintypes
 
     user32 = ctypes.windll.user32  # type: ignore[attr-defined]
-    hwnd = user32.GetForegroundWindow()
+    return _describe_hwnd(user32, user32.GetForegroundWindow())
+
+
+def _describe_hwnd(user32, hwnd) -> Frontmost | None:
+    import ctypes
+    from ctypes import wintypes
+
     if not hwnd:
         return None
     length = user32.GetWindowTextLengthW(hwnd)
@@ -104,6 +109,126 @@ def _linux() -> Frontmost | None:
         except OSError:
             return None
     return Frontmost(appnames.canonical(name), title, int(pid_text), name)
+
+
+def _windows_at(x: int, y: int) -> Frontmost | None:
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    user32.WindowFromPoint.argtypes = [wintypes.POINT]
+    user32.WindowFromPoint.restype = wintypes.HWND
+    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetAncestor.restype = wintypes.HWND
+    hwnd = user32.WindowFromPoint(wintypes.POINT(int(x), int(y)))
+    if not hwnd:
+        return None
+    return _describe_hwnd(user32, user32.GetAncestor(hwnd, 2) or hwnd)  # 2 = GA_ROOT: the top-level window
+
+
+_JXA_AT = """
+ObjC.import('CoreGraphics');
+function run(argv) {
+  var x = parseFloat(argv[0]), y = parseFloat(argv[1]);
+  var list = ObjC.deepUnwrap(ObjC.castRefToObject(
+    $.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, 0)));
+  for (var i = 0; i < list.length; i++) {
+    var w = list[i], b = w.kCGWindowBounds;
+    if (w.kCGWindowLayer !== 0 || !b) continue;
+    if (x >= b.X && x < b.X + b.Width && y >= b.Y && y < b.Y + b.Height) {
+      return w.kCGWindowOwnerPID + "\\n" + (w.kCGWindowOwnerName || "") + "\\n" + (w.kCGWindowName || "");
+    }
+  }
+  return "";
+}
+"""
+
+
+def _mac_at(x: int, y: int) -> Frontmost | None:
+    out = _run(["osascript", "-l", "JavaScript", "-e", _JXA_AT, str(int(x)), str(int(y))], timeout=5.0)
+    lines = (out or "").rstrip("\n").split("\n")
+    if len(lines) < 2 or not lines[0].strip().isdigit():
+        return None
+    pid = int(lines[0])
+    bundle = (_run(["osascript", "-e",
+                    'tell application "System Events" to get bundle identifier of first process whose unix id is '
+                    + str(pid)]) or "").strip()
+    name = lines[1].strip()
+    app_id = appnames.canonical(bundle if bundle and bundle != "missing value" else name)
+    if not app_id:
+        return None
+    return Frontmost(app_id, lines[2] if len(lines) > 2 else "", pid, name)
+
+
+def _linux_at(x: int, y: int) -> Frontmost | None:
+    """The top-most window on screen that covers the point, from the window manager's stacking list
+    (nothing is moved or touched to find it)."""
+    if not os.environ.get("DISPLAY") or not shutil.which("xdotool") or not shutil.which("xprop"):
+        return None
+    listing = _run(["xprop", "-root", "_NET_CLIENT_LIST_STACKING"]) or ""
+    ids = [int(t, 16) for t in listing.replace(",", " ").split() if t.lower().startswith("0x")]
+    for wid in reversed(ids):  # the list runs bottom to top
+        geo = _run(["xdotool", "getwindowgeometry", "--shell", str(wid)]) or ""
+        vals = dict(line.split("=", 1) for line in geo.splitlines() if "=" in line)
+        try:
+            left, top = int(vals["X"]), int(vals["Y"])
+            right, bottom = left + int(vals["WIDTH"]), top + int(vals["HEIGHT"])
+        except (KeyError, ValueError):
+            continue
+        if left <= x < right and top <= y < bottom:
+            pid_text = (_run(["xdotool", "getwindowpid", str(wid)]) or "").strip()
+            if not pid_text.isdigit():
+                return None
+            name = _process_name(int(pid_text))
+            if not name:
+                try:
+                    with open(f"/proc/{pid_text}/comm", encoding="utf-8") as fh:
+                        name = fh.read().strip()
+                except OSError:
+                    return None
+            title = (_run(["xdotool", "getwindowname", str(wid)]) or "").strip()
+            return Frontmost(appnames.canonical(name), title, int(pid_text), name)
+    return None
+
+
+def window_at(x: int, y: int) -> Frontmost | None:
+    """The top-level window a click at screen point (x, y) would land on, or None when that cannot
+    be told (the gate then refuses, F22). Nothing here raises."""
+    try:
+        if os.name == "nt":
+            return _windows_at(x, y)
+        if sys.platform == "darwin":
+            return _mac_at(x, y)
+        return _linux_at(x, y)
+    except Exception:
+        return None
+
+
+def pointer_position() -> tuple[int, int] | None:
+    """Where the mouse pointer is now, or None."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+
+            pt = wintypes.POINT()
+            if ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):  # type: ignore[attr-defined]
+                return int(pt.x), int(pt.y)
+            return None
+        try:
+            import pyautogui  # type: ignore
+
+            pos = pyautogui.position()
+            return int(pos[0]), int(pos[1])
+        except Exception:
+            pass
+        if shutil.which("xdotool") and os.environ.get("DISPLAY"):
+            out = _run(["xdotool", "getmouselocation", "--shell"]) or ""
+            vals = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+            return int(vals["X"]), int(vals["Y"])
+    except Exception:
+        return None
+    return None
 
 
 def frontmost() -> Frontmost | None:

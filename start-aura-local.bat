@@ -122,7 +122,7 @@ echo.
 echo   Worth knowing:
 echo     * Commands and screen control ask for approval every time. Choose
 echo       "Always" on a card to stop being asked for that one action, or raise
-echo       your trust tier in Settings.
+echo       your permission mode in Settings.
 echo     * By default AURA may read and write anything under your user folder.
 echo       Narrow that with DEVICE_ALLOWED_ROOTS in .env — see .env.example.
 echo     * It will not touch ~\.ssh, ~\.aws and the other credential folders.

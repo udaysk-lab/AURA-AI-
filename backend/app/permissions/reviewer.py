@@ -48,9 +48,13 @@ PRE_SHELL = "PREBLOCK_SHELL"
 PRE_RECIPIENT = "PREBLOCK_RECIPIENT"
 PRE_EXFIL_URL = "PREBLOCK_EXFIL_URL"
 PRE_SCRIPT = "PREBLOCK_SCRIPT"
+PRE_LONG_ARGS = "PREBLOCK_LONG_ARGS"
 
 _RUN64 = re.compile(r"[A-Za-z0-9+/_=-]{64,}")  # base64, base64url or hex run
 _MAX_QUERY = 512
+_MAX_PATH = 512
+_HOST_RUN = re.compile(r"[A-Za-z0-9_=-]{32,}")  # F11: one host label that long is a payload, not a name
+_ADDRESS = re.compile(r"(?<![\w.+%-])[\w.+%-]+@[\w-]+(?:\.[\w-]+)+(?![\w-])")
 
 
 @dataclass(frozen=True)
@@ -106,8 +110,14 @@ def _contacts(db, user) -> set[str]:
         return set()
 
 
-def _recipient_known(address: str, instruction: str, contacts: set[str]) -> bool:
-    return address in contacts or address in instruction.lower()
+def _instruction_addresses(instruction: str) -> set[str]:
+    """F16: whole addresses written in the request, never a piece of a longer one."""
+    return {m.group(0).lower() for m in _ADDRESS.finditer(instruction or "")}
+
+
+def _recipient_known(address: str, named: set[str], contacts: set[str]) -> bool:
+    address = (address or "").lower().strip()
+    return address in contacts or address in named
 
 
 def _long_run(text: str) -> bool:
@@ -115,14 +125,28 @@ def _long_run(text: str) -> bool:
 
 
 def _url_exfil(raw: Any) -> bool:
-    from urllib.parse import urlsplit
+    """F11: the query and fragment, every path segment (decoded too) and every host label are checked."""
+    from urllib.parse import unquote, urlsplit
 
     try:
         parts = urlsplit(str(raw or ""))
+        host = parts.hostname or ""
+        userinfo = parts.netloc.rpartition("@")[0] if "@" in parts.netloc else ""
     except ValueError:
         return True  # a URL that cannot be read is not one to fetch on the user's behalf
     tail = (parts.query or "") + (parts.fragment or "")
-    return len(tail) > _MAX_QUERY or _long_run(tail)
+    if len(tail) > _MAX_QUERY or _long_run(tail) or _long_run(unquote(tail)):
+        return True
+    path = parts.path or ""
+    if len(path) > _MAX_PATH:
+        return True
+    for seg in re.split(r"[/;]", path + "/" + unquote(path)):
+        if _long_run(seg):
+            return True
+    if userinfo and (len(userinfo) > 64 or _long_run(userinfo)):
+        return True
+    labels = [x for x in host.split(".") if x]
+    return len(host) > 100 or any(_HOST_RUN.search(x) for x in labels)
 
 
 def _writes_script(policy, args: dict, targets) -> bool:
@@ -152,11 +176,20 @@ def pre_block(db, user, policy, args, targets, ctx) -> tuple[str, str] | None:
         recipients = [t.value for t in targets if t.kind == "recipient"]
         if recipients:
             contacts = _contacts(db, user)
-            instruction = ctx.instruction or ""
-            unknown = [r for r in recipients if not _recipient_known(r, instruction, contacts)]
+            named = _instruction_addresses(ctx.instruction or "")
+            unknown = [r for r in recipients if not _recipient_known(r, named, contacts)]
             if unknown:
                 return PRE_RECIPIENT, f"{unknown[0]} was not named in the request and is not one of the user's contacts."
-    if policy.name == "fetch_url" and _url_exfil(args.get("url")):
+    try:
+        arg_len = len(json.dumps(args, ensure_ascii=False, default=str, sort_keys=True))
+    except (TypeError, ValueError):
+        arg_len = MAX_ARGS_CHARS + 1
+    if arg_len > MAX_ARGS_CHARS:
+        # F11: the reviewer must see all of it; text it cannot see could be anything.
+        return PRE_LONG_ARGS, "The request is too long for the safety reviewer to read in full, so it needs the user."
+    url_arg = args.get("url") if policy.name == "fetch_url" else (
+        args.get("name") if policy.name == "open_app" and any(t.kind == "url" for t in targets) else None)
+    if url_arg is not None and _url_exfil(url_arg):
         return PRE_EXFIL_URL, "The address carries a long or encoded payload, which could be data being sent out."
     if _writes_script(policy, args, targets):
         return PRE_SCRIPT, "Writing a script is running code by another route, so it needs the user."

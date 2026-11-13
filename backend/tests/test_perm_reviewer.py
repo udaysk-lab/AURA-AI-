@@ -174,10 +174,11 @@ def test_quoted_text_cannot_close_the_prompt_blocks(env):
     assert text.count(">>>") == 2 and text.count("<<<") == 2, "only the template's own fences remain"
 
 
-def test_arguments_are_cut_at_4000_characters(env):
+def test_arguments_are_never_cut_they_block_when_too_long(env):
     db, user, model = env
-    go(db, user, args={**SEND, "body": "y" * 9000})
-    assert "y" * 4001 not in model.calls[0]["messages"][0]["content"]
+    d = go(db, user, args={**SEND, "body": "y" * 9000})  # F11: was cut at 4000; now a block
+    assert d.reviewer.code == reviewer.PRE_LONG_ARGS and codes(d) == ("deny", "REVIEWER_BLOCK")
+    assert model.calls == []
 
 
 def test_never_sees_tool_results(env, monkeypatch):

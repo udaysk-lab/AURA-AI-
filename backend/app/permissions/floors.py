@@ -594,6 +594,15 @@ def _is_fs_root(path: str) -> bool:
     return os.path.dirname(path) == path
 
 
+def too_broad_for_a_card(folder: str) -> bool:
+    """F18: a drive root or the home folder is never offered (or accepted) in one click; the user
+    connects such a folder deliberately, in Settings."""
+    if not folder or _is_fs_root(folder):
+        return True
+    home = os.path.realpath(os.path.expanduser("~"))
+    return os.path.normcase(os.path.realpath(folder)) == os.path.normcase(home)
+
+
 def _cards_allowed(ctx) -> bool:
     return ctx is not None and ctx.trigger == "chat"
 
@@ -605,7 +614,7 @@ def _outside(acc, ctx, real: str, role: str) -> FloorResult:
         return _deny("FLOOR_OUTSIDE_FOLDERS",
                      "That is outside the limit this install sets for the folders AURA may use "
                      "(DEVICE_ALLOWED_ROOTS in its settings file).")
-    if not _cards_allowed(ctx) or not folder or _is_fs_root(folder):
+    if not _cards_allowed(ctx) or too_broad_for_a_card(folder):
         return _deny("FLOOR_OUTSIDE_FOLDERS",
                      "That is outside the folders connected to AURA. Connect the folder in Settings, This computer.")
     if role == "delete":
@@ -669,7 +678,37 @@ def _app_floor(acc, policy: ToolPolicy, targets) -> FloorResult:
     return OK
 
 
-def _screen_floor(db, user, acc, policy: ToolPolicy, targets, ctx, front) -> FloorResult:
+POINT_TOOLS = ("mouse_click", "scroll_screen")  # act where the pointer is (F22)
+
+
+def _window_floor(acc, policy: ToolPolicy, win, *, strict_tier: bool = True) -> FloorResult:
+    """The checks for one window an input or a look would land on."""
+    title = (win.title or "").casefold()
+    if (win.pid and (win.pid == os.getpid() or _is_descendant(win.pid))) or "· aura" in title \
+            or access_mod.is_aura_app(win.app_id):
+        return _deny("FLOOR_AURA_WINDOW", "AURA's own window is in front. AURA never uses the screen on itself.")
+    if acc.blocked(win.app_id):
+        return _deny("FLOOR_BLOCKED_APP", "The app in front is on your blocked list. AURA never uses it.")
+    if not strict_tier:
+        return OK
+    need = access_mod.need_tier(policy.name)
+    if need == "full" and (appnames.is_terminal(win.app_id) or appnames.is_ide(win.app_id)):
+        return _deny("FLOOR_APP_TIER",
+                     "Terminals and code editors are click and scroll only. Commands go through the shell, where your rules apply.")
+    grant = acc.grant(win.app_id)
+    if grant is None:
+        name = win.name or win.app_id
+        return FloorResult(
+            card="app_grant", refuse_code="FLOOR_NO_APP_GRANT",
+            card_payload={"app_id": win.app_id, "display_name": name, "tier": need},
+            reason=f"AURA wants to use {name} on screen ({_TIER_WORDS[need]}).",
+        )
+    if access_mod.TIER_RANK.get(grant.tier, -1) < access_mod.TIER_RANK[need]:
+        return _deny("FLOOR_APP_TIER", f"You allowed {grant.display_name} for {_TIER_WORDS[grant.tier]} only.")
+    return OK
+
+
+def _screen_floor(db, user, acc, policy: ToolPolicy, targets, ctx, front, under=None) -> FloorResult:
     if policy.kind not in ("screen_read", "screen_input"):
         return OK
     if not access_mod.screen_control_user(db, user):
@@ -686,27 +725,16 @@ def _screen_floor(db, user, acc, policy: ToolPolicy, targets, ctx, front) -> Flo
     if front is None:
         return _deny("FLOOR_FRONTMOST_UNKNOWN",
                      "AURA cannot tell which window is in front on this computer, so it will not use the screen.")
-    title = (front.title or "").casefold()
-    if (front.pid and (front.pid == os.getpid() or _is_descendant(front.pid))) or "· aura" in title \
-            or access_mod.is_aura_app(front.app_id):
-        return _deny("FLOOR_AURA_WINDOW", "AURA's own window is in front. AURA never uses the screen on itself.")
-    if acc.blocked(front.app_id):
-        return _deny("FLOOR_BLOCKED_APP", "The app in front is on your blocked list. AURA never uses it.")
-    need = access_mod.need_tier(policy.name)
-    if need == "full" and (appnames.is_terminal(front.app_id) or appnames.is_ide(front.app_id)):
-        return _deny("FLOOR_APP_TIER",
-                     "Terminals and code editors are click and scroll only. Commands go through the shell, where your rules apply.")
-    grant = acc.grant(front.app_id)
-    if grant is None:
-        name = front.name or front.app_id
-        return FloorResult(
-            card="app_grant", refuse_code="FLOOR_NO_APP_GRANT",
-            card_payload={"app_id": front.app_id, "display_name": name, "tier": need},
-            reason=f"AURA wants to use {name} on screen ({_TIER_WORDS[need]}).",
-        )
-    if access_mod.TIER_RANK.get(grant.tier, -1) < access_mod.TIER_RANK[need]:
-        return _deny("FLOOR_APP_TIER", f"You allowed {grant.display_name} for {_TIER_WORDS[grant.tier]} only.")
-    return OK
+    if policy.name in POINT_TOOLS:
+        # F22: the click lands on the window under the pointer, which need not be the one in front.
+        r = _window_floor(acc, policy, front, strict_tier=False)
+        if r.deny:
+            return r
+        if under is None:
+            return _deny("FLOOR_POINT_UNKNOWN",
+                         "AURA cannot tell which window is under the pointer there, so it will not click or scroll.")
+        return _window_floor(acc, policy, under)
+    return _window_floor(acc, policy, front)
 
 
 _TIER_WORDS = {"view": "look only", "click": "click and scroll", "full": "click, scroll and type"}
@@ -723,7 +751,7 @@ def _is_descendant(pid: int) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def check(db, user, policy: ToolPolicy, targets, ctx=None, *, front=None, access=None) -> FloorResult:
+def check(db, user, policy: ToolPolicy, targets, ctx=None, *, front=None, access=None, under=None) -> FloorResult:
     """Step 3 of decide(). `targets` are the call's extracted targets.
 
     With a database and a user the folder, app and screen floors apply as well; `front` is the
@@ -752,7 +780,7 @@ def check(db, user, policy: ToolPolicy, targets, ctx=None, *, front=None, access
         r = _app_floor(acc, policy, targets)
         if r.deny:
             return r
-        r = _screen_floor(db, user, acc, policy, targets, ctx, front)
+        r = _screen_floor(db, user, acc, policy, targets, ctx, front, under)
         if r.deny or r.card:
             return r
         r = _fence_floor(acc, policy, targets, ctx)

@@ -121,11 +121,9 @@ ANTHROPIC_MODEL=claude-sonnet-5-5
 # DAILY_SPEND_CAP_USD=5
 
 # ---- What AURA may do on this computer -------------------------------------
-# Folders the file tools may use (comma-separated). Blank = your user folder.
+# Install-level ceiling (comma-separated): AURA can never use a folder outside these, whatever you
+# connect in Settings, This computer. Blank = no ceiling.
 # DEVICE_ALLOWED_ROOTS=
-# ask = every command waits for your approval (default) | allowlist | full
-# DEVICE_EXEC_MODE=ask
-# DEVICE_EXEC_ALLOWLIST=git status,git log,dir,ls
 # Commands refused outright, even after approval:
 # DEVICE_COMMAND_DENYLIST=shutdown,format,diskpart
 # Set to false to stop AURA seeing the screen and using the mouse/keyboard:

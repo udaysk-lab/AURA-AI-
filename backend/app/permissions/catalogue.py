@@ -82,6 +82,9 @@ class ToolPolicy:
     # run_command / run_in_background: always-user for a call that deletes files or
     # touches a protected location (decided per call from the parsed command).
     dyn_always_user: bool = False
+    # Rule kinds a call can also be limited to, when an argument may hold either of two things
+    # (open_app takes an app name or a URL, F14).
+    extra_rule_kinds: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -99,6 +102,7 @@ class ToolPolicy:
             k = RULE_KIND_FOR_TARGET[t.kind]
             if k not in out:
                 out.append(k)
+        out.extend(k for k in self.extra_rule_kinds if k not in out)
         return tuple(out)
 
 
@@ -161,7 +165,7 @@ _ENTRIES: list[ToolPolicy] = [
     _p("move_file", "device-control", "file_write", TargetSpec("path", "source", "delete"),
        TargetSpec("path", "destination", "write")),
     _p("delete_file", "device-control", "file_delete", TargetSpec("path", "path", "delete"), always_user=True),
-    _p("open_app", "device-control", "app", TargetSpec("app", "name")),
+    _p("open_app", "device-control", "app", TargetSpec("app", "name"), extra_rule_kinds=("domain",)),
     _p("close_app", "device-control", "app", TargetSpec("app", "name")),
     _p("list_applications", "device-control", "read"),
     _p("system_info", "device-control", "read"),

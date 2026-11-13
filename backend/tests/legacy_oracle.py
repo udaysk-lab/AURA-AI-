@@ -3,8 +3,9 @@
 This is a frozen copy of what `permissions/interim.py` computed (mode and rules from the 1.0 trust
 level, approval grants, DEVICE_EXEC settings and automation actions; connected folders from
 DEVICE_ALLOWED_ROOTS), kept ONLY so test_perm_legacy.py can prove that decisions after the mapping
-equal decisions before it. Nothing in app/ uses it. Its tables are literals (they used to come from
-agent/autonomy.py, which a later package deletes).
+equal decisions before it. Nothing in app/ uses it, and it uses nothing from the retired 1.0 modules:
+every table and rule of the 1.0 decision logic it needs is written out below as literals. (It drives
+the 2.0 gate on purpose: that is the thing whose before-and-after decisions are compared.)
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ RELAXED_ALLOW = (
 )
 SHELL_TOOLS = ("run_command", "run_in_background")
 
-# agent/autonomy.py, 1.0.0: everything not read-only and not irreversible was "safe" or "external".
+# 1.0.0's risk classes: everything not read-only and not irreversible was "safe" or "external".
 READ_ONLY = {
     "summarize_inbox", "search_emails", "get_email", "list_events", "find_free_time", "detect_conflicts",
     "prepare_meeting", "list_tasks", "search_memory", "list_contacts", "get_daily_briefing", "sync_google",

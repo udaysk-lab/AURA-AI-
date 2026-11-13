@@ -31,10 +31,8 @@ class Skill:
     category: str
     description: str
     tools: tuple[str, ...]
-    # Skills the heartbeat may run unattended, and the lowest permission floor at
-    # which it will do so.
+    # Skills the heartbeat may run unattended.
     proactive: bool = False
-    autonomy_floor: str = "conservative"
     default_enabled: bool = True
     summarize: Callable[[Any], str] | None = field(default=None, compare=False)
 
@@ -287,7 +285,6 @@ CATALOG: dict[str, Skill] = {
             description="Reads new mail, scores urgency, extracts action items and tells you what actually matters.",
             tools=("summarize_inbox", "search_emails", "get_email"),
             proactive=True,
-            autonomy_floor="strict",
             summarize=_sum_inbox,
         ),
         Skill(
@@ -297,7 +294,6 @@ CATALOG: dict[str, Skill] = {
             description="Writes replies in your voice, using what it knows about your tone and relationships.",
             tools=("draft_reply",),
             proactive=True,
-            autonomy_floor="conservative",
             summarize=_sum_draft,
         ),
         Skill(
@@ -306,7 +302,6 @@ CATALOG: dict[str, Skill] = {
             category="Email",
             description="Sends and archives. Always confirms first unless you grant standing permission.",
             tools=("send_email", "archive_email"),
-            autonomy_floor="full",
             summarize=_sum_cleanup,
         ),
         Skill(
@@ -316,7 +311,6 @@ CATALOG: dict[str, Skill] = {
             description="Reads your calendar and books time, keeping your working hours intact.",
             tools=("list_events", "create_event", "delete_event"),
             proactive=True,
-            autonomy_floor="relaxed",
             summarize=_sum_create_event,
         ),
         Skill(
@@ -326,7 +320,6 @@ CATALOG: dict[str, Skill] = {
             description="Finds genuinely free slots, not just gaps between blocks.",
             tools=("find_free_time",),
             proactive=True,
-            autonomy_floor="strict",
             summarize=_sum_slots,
         ),
         Skill(
@@ -336,7 +329,6 @@ CATALOG: dict[str, Skill] = {
             description="Notices double-bookings before you walk into them.",
             tools=("detect_conflicts",),
             proactive=True,
-            autonomy_floor="strict",
             summarize=_sum_conflicts,
         ),
         Skill(
@@ -346,7 +338,6 @@ CATALOG: dict[str, Skill] = {
             description="Builds a brief before every meeting: who's coming, recent history, an agenda.",
             tools=("prepare_meeting",),
             proactive=True,
-            autonomy_floor="conservative",
             summarize=_sum_prep,
         ),
         Skill(
@@ -356,7 +347,6 @@ CATALOG: dict[str, Skill] = {
             description="Turns commitments buried in email and conversation into tracked tasks.",
             tools=("create_task", "complete_task", "delete_task"),
             proactive=True,
-            autonomy_floor="conservative",
             summarize=_sum_task_write,
         ),
         Skill(
@@ -366,7 +356,6 @@ CATALOG: dict[str, Skill] = {
             description="Reorders your list by what's actually urgent, not what you typed first.",
             tools=("list_tasks",),
             proactive=True,
-            autonomy_floor="strict",
             summarize=_sum_task_list,
         ),
         Skill(
@@ -376,7 +365,6 @@ CATALOG: dict[str, Skill] = {
             description="Notices durable preferences and decisions, and recalls them when they're relevant.",
             tools=("save_memory", "search_memory"),
             proactive=True,
-            autonomy_floor="strict",
             summarize=_sum_memory_save,
         ),
         Skill(
@@ -394,7 +382,6 @@ CATALOG: dict[str, Skill] = {
             description="One compiled view of your day: meetings, deadlines, urgent mail, suggested focus.",
             tools=("get_daily_briefing",),
             proactive=True,
-            autonomy_floor="strict",
             summarize=_sum_briefing,
         ),
         Skill(
@@ -404,7 +391,6 @@ CATALOG: dict[str, Skill] = {
             description="Interrupts you only when something genuinely warrants it.",
             tools=("notify",),
             proactive=True,
-            autonomy_floor="strict",
             summarize=_sum_notify,
         ),
         Skill(
@@ -414,7 +400,6 @@ CATALOG: dict[str, Skill] = {
             description="Keeps the local mirror of Gmail and Calendar current.",
             tools=("sync_google",),
             proactive=True,
-            autonomy_floor="strict",
             summarize=_sum_sync,
         ),
         # --- Unlocked by the Research plugin ------------------------------
@@ -433,7 +418,6 @@ CATALOG: dict[str, Skill] = {
             description="Builds a dossier on a person or company from the web plus your own inbox and contacts.",
             tools=("brief_subject",),
             proactive=True,
-            autonomy_floor="relaxed",
             summarize=_sum_person_brief,
         ),
         # --- Unlocked by the Documents plugin -----------------------------
@@ -469,7 +453,6 @@ CATALOG: dict[str, Skill] = {
             description="Notices when something you delegated has gone quiet and drafts the nudge.",
             tools=("chase_delegation",),
             proactive=True,
-            autonomy_floor="conservative",
             summarize=_sum_delegations,
         ),
         # --- Unlocked by the Focus Guard plugin ---------------------------
@@ -480,7 +463,6 @@ CATALOG: dict[str, Skill] = {
             description="Watches the hours you protect and flags anything that lands in them, with alternatives.",
             tools=("check_focus_blocks",),
             proactive=True,
-            autonomy_floor="strict",
             summarize=_sum_focus,
         ),
         # --- Unlocked by the Device Control plugin (local installs only) ---
@@ -507,7 +489,6 @@ CATALOG: dict[str, Skill] = {
                 "stop_process",
                 "list_background_commands",
             ),
-            autonomy_floor="full",
             summarize=_sum_command,
         ),
         Skill(
@@ -528,7 +509,6 @@ CATALOG: dict[str, Skill] = {
                 "delete_file",
                 "make_directory",
             ),
-            autonomy_floor="relaxed",
             summarize=_sum_file_write,
         ),
         Skill(
@@ -537,7 +517,6 @@ CATALOG: dict[str, Skill] = {
             category="Device",
             description="Opens, closes and lists the applications on this computer.",
             tools=("open_app", "close_app", "list_applications"),
-            autonomy_floor="relaxed",
             summarize=_sum_apps,
         ),
         Skill(
@@ -549,7 +528,6 @@ CATALOG: dict[str, Skill] = {
                 "and can stop one that's misbehaving."
             ),
             tools=("system_info", "list_processes", "kill_process"),
-            autonomy_floor="relaxed",
             summarize=_sum_system,
         ),
         Skill(
@@ -561,7 +539,6 @@ CATALOG: dict[str, Skill] = {
                 "apps that have no command line."
             ),
             tools=("take_screenshot", "mouse_click", "type_text", "press_keys", "scroll_screen"),
-            autonomy_floor="full",
             summarize=_sum_screen,
         ),
         Skill(
@@ -570,7 +547,6 @@ CATALOG: dict[str, Skill] = {
             category="Device",
             description="Reads and sets this computer's clipboard, and raises native desktop notifications.",
             tools=("read_clipboard", "set_clipboard", "desktop_notify"),
-            autonomy_floor="conservative",
             summarize=_sum_apps,
         ),
         Skill(
@@ -581,7 +557,6 @@ CATALOG: dict[str, Skill] = {
             tools=("fetch_url",),
             # A request leaves the machine, so the permission floor makes it ask
             # (see app/permissions/floors.py).
-            autonomy_floor="relaxed",
             summarize=_sum_web,
         ),
     ]

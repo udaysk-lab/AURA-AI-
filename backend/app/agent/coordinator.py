@@ -41,6 +41,7 @@ from app.permissions import access, approvals
 from app.services import google as google_service
 from app.services import identity as identity_service
 from app.services import memory as memory_service
+from app.services import redaction
 from app.services import usage as usage_service
 from app.services import vault as vault_service
 
@@ -97,7 +98,9 @@ def execute_tool(
         db.add(
             ActivityLog(
                 user_id=user.id, actor="agent", action=name,
-                status="error", detail={"error": str(exc), "arguments": args},
+                status="error",
+                detail={"error": redaction.scrub(db, user.id, str(exc))[:500],
+                        "arguments": redaction.scrub_json(db, user.id, args or {}, max_str=500)},
                 work_item_id=work_item_id,
             )
         )
@@ -289,7 +292,7 @@ def persist_exchange(
         meta={
             "tool_calls": [
                 {"name": c["name"], "skill_code": c.get("skill_code", ""),
-                 "arguments": c["arguments"]}
+                 "arguments": redaction.scrub_json(db, conversation.user_id, c["arguments"], max_str=500)}
                 for c in result.tool_calls
             ],
             "skill_runs": result.skill_runs,

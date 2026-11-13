@@ -327,7 +327,7 @@ def test_proposed_rules_and_option_sets(device):
         assert d.proposed_rule.items == (("path", os.path.join(os.path.realpath(str(tmp / "work")), "**")),)
         d = decide(db, user, "run_command", {"command": "git status && npm test"})
         assert d.options == ("once", "window", "always", "reject")
-        assert d.proposed_rule.items == (("command", "git status"), ("command", "npm test"))
+        assert d.proposed_rule.items == (("command", "git status"), ("command", "=npm test"))  # F8: only read-only commands get a prefix
         d = decide(db, user, "run_command", {"command": "echo $(whoami)"})
         assert d.kind == "ask" and d.options == ("once", "reject") and d.proposed_rule is None
         d = decide(db, user, "send_process_input", {"session_id": "x", "text": "y"})

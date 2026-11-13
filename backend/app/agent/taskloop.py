@@ -235,15 +235,14 @@ def bookkeeping_specs(*, preferences: bool) -> list[ToolSpec]:
             ToolSpec(
                 "aura_note_preference",
                 "Keep a lasting preference the user just stated in their own message. "
-                "`quote` must be their exact words.",
+                "`text` must be one sentence of their message, copied word for word.",
                 {
                     "type": "object",
                     "properties": {
                         "text": {"type": "string", "maxLength": 300},
                         "task_type": {"type": "string", "enum": [*types, "general"]},
-                        "quote": {"type": "string", "maxLength": 300},
                     },
-                    "required": ["text", "task_type", "quote"],
+                    "required": ["text", "task_type"],
                 },
             )
         )
@@ -930,7 +929,7 @@ class TaskRun:
             out = preference_service.note_from_tool(
                 db, self.user, self.conversation, st.owner_message,
                 text=str(args.get("text") or ""), task_type=str(args.get("task_type") or "general"),
-                quote=str(args.get("quote") or ""), trigger=st.trigger,
+                trigger=st.trigger,
             )
             if out.get("saved"):
                 pref = db.get(Preference, out["id"])
@@ -1215,7 +1214,7 @@ def _reject_pending(db: Session, item: WorkItem, actor_note: str = "stop") -> in
         if won:
             n += 1
             db.add(ActivityLog(user_id=item.user_id, actor="user", action=f"{actor_note}:{pa.tool_name}",
-                               target=(pa.preview or "")[:300], status="rejected", work_item_id=item.id))
+                               target=redaction.scrub(db, item.user_id, pa.preview or "")[:300], status="rejected", work_item_id=item.id))
     for s in workmemory.steps_of(db, item.id):
         if s.kind == "approval" and s.status == "waiting":
             s.status = "rejected"

@@ -43,7 +43,11 @@ def env(tmp_path, monkeypatch):
 
 
 def front(monkeypatch, app="notes", title="A note", pid=999_999, name=None):
-    monkeypatch.setattr(windows, "frontmost", lambda: Front(app, title, pid, name or app))
+    win = Front(app, title, pid, name or app)
+    monkeypatch.setattr(windows, "frontmost", lambda: win)
+    # F22: a click lands on the window under the pointer; here that is the front one unless a test says otherwise.
+    monkeypatch.setattr(windows, "window_at", lambda x, y: win)
+    monkeypatch.setattr(windows, "pointer_position", lambda: (10, 10))
 
 
 def here(user):
@@ -193,6 +197,8 @@ def test_post_click_suspend(env, monkeypatch):
     db, user = env
     state = {"app": "notes", "title": "A note"}
     monkeypatch.setattr(windows, "frontmost", lambda: Front(state["app"], state["title"], 999_999, state["app"]))
+    monkeypatch.setattr(windows, "window_at",
+                        lambda x, y: Front(state["app"], state["title"], 999_999, state["app"]))
     here(user)
     grant(db, user, "notes", "full")
 

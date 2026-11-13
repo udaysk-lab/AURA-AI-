@@ -30,6 +30,7 @@ from app.device import policy as device_policy
 from app.device import shell as device_shell
 from app.device import system as device_system
 from app.device.runtime import DeviceUnavailable, capabilities
+from app.services import redaction
 from app.deps import CurrentUser, DbSession, GuardedUser, PresentUser, is_remote_session
 from app.device import appnames, windows
 from app.middleware import is_loopback
@@ -140,7 +141,7 @@ def run_command(
             user_id=user.id,
             actor="user",
             action="device_console",
-            target=payload.command[:300],
+            target=redaction.scrub(db, user.id, payload.command)[:300],
             status="error" if result.get("error") or not result.get("ok") else "success",
             detail={"exit_code": result.get("exit_code")},
         )

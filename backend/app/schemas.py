@@ -645,7 +645,6 @@ class SkillOut(BaseModel):
     description: str
     tools: list[str]
     proactive: bool
-    autonomy_floor: str
     enabled: bool
     run_count: int
     success_count: int
@@ -957,20 +956,6 @@ class UsageOut(BaseModel):
     today: SpendOut
     daily: list[UsageDayOut] = Field(default_factory=list)
     by_trigger: list[UsageTriggerOut] = Field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Preflight (mirrors app/preflight.py for the Setup screen)
-# ---------------------------------------------------------------------------
-
-
-class PreflightCheckOut(BaseModel):
-    key: str
-    label: str
-    level: Literal["ok", "warn", "fail"]
-    detail: str
-    fix: str = ""
-    docs: str = ""
 
 
 # ---------------------------------------------------------------------------

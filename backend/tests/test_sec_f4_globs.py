@@ -115,6 +115,11 @@ def test_searching_through_home_for_env_files_needs_the_user_each_time(w, monkey
                     "grep -R SECRET_KEY ~", "rg SECRET_KEY ~", "ls -R ~", "find ~ -name '*.db'"):
         d = gate.decide(w.db, w.user, "run_command", {"command": command, "workdir": w.work},
                         gate.build_context(w.db, w.user, "chat"))
+        if d.kind == "deny":
+            # Where file names ignore case, a pattern such as '*ura*' can match AURA's own
+            # folder, and then refusing outright is the right, stricter answer.
+            assert d.reason_code == "FLOOR_SELF_PATH", (command, d.reason_code)
+            continue
         assert d.kind == "ask" and d.always_user, (command, d.kind, d.reason_code)
         assert d.options == ("once", "reject")
     # naming one of AURA's files outright is still refused, not merely asked about

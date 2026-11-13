@@ -411,6 +411,12 @@ def extract(
                 continue
             if not isinstance(value, str) or not value.strip():
                 raise BadArgs(f"{spec.arg} is required")
+            if policy.name == "open_app" and value.strip().lower().startswith(("http://", "https://")):
+                # F14: a URL given to open_app is a URL target: the fetch floors, domain rules and
+                # the reviewer's URL pre-blocks all see it, exactly as for fetch_url.
+                scheme, host = parse_url(value.strip())
+                out.append(Target("url", host, "", value.strip(), scheme=scheme))
+                continue
             app_id = appnames.canonical(value)
             if not app_id:
                 raise BadArgs("not an application name")

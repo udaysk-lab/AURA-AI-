@@ -181,44 +181,8 @@ def test_agent_records_skill_runs(client, auth):
 
 
 # ---------------------------------------------------------------------------
-# Autonomy
+# Standing permission (the 1.0 trust tiers and grants are covered by test_perm_legacy.py)
 # ---------------------------------------------------------------------------
-
-
-def test_tiers_gate_the_right_risk_classes(client, auth):
-    from app.agent import autonomy
-    from app.models import User
-
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.email == "test@aura.ai").one()
-        needs = lambda tool, tier: autonomy.requires_approval(db, user.id, tool, tier)  # noqa: E731
-
-        # Reading is always free.
-        assert needs("summarize_inbox", "strict") is False
-
-        # Internal writes: strict asks, conservative doesn't.
-        assert needs("create_task", "strict") is True
-        assert needs("create_task", "conservative") is False
-
-        # Externally visible: conservative asks, relaxed doesn't.
-        assert needs("create_event", "conservative") is True
-        assert needs("create_event", "relaxed") is False
-
-        # Irreversible: held everywhere except full autonomy.
-        for tier in ("strict", "conservative", "relaxed"):
-            assert needs("send_email", tier) is True
-        assert needs("send_email", "full") is False
-    finally:
-        db.close()
-
-
-def test_legacy_tier_values_still_resolve():
-    from app.agent.autonomy import normalise_tier
-
-    assert normalise_tier("ask") == "strict"
-    assert normalise_tier("trusted") == "relaxed"
-    assert normalise_tier(None) == "conservative"
 
 
 def test_always_allow_creates_a_standing_rule(client, auth):
@@ -276,23 +240,6 @@ def test_always_allow_creates_a_standing_rule(client, auth):
 
         assert rule_store.revoke(db, user, rule["id"])
         assert decide({"to": "A <A@B.com>", "subject": "Again", "body": "Hello"}).kind == "ask"
-    finally:
-        db.close()
-
-
-def test_an_old_any_recipient_grant_no_longer_covers_send_email(client, auth):
-    """Grants from before recipients were recorded said "anyone"; they're ignored."""
-    from app.agent import autonomy
-    from app.models import ApprovalGrant, User
-
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.email == "test@aura.ai").one()
-        db.add(ApprovalGrant(user_id=user.id, tool_name="send_email", scope="always"))
-        db.commit()
-        args = {"to": "x@y.com", "subject": "s", "body": "b"}
-        assert autonomy.requires_approval(db, user.id, "send_email", "conservative", args) is True
-        autonomy.revoke(db, user.id, "send_email")
     finally:
         db.close()
 
@@ -432,15 +379,6 @@ def test_heartbeat_respects_quiet_hours():
     assert in_quiet_hours("22:00-07:00", night) is True
     assert in_quiet_hours("22:00-07:00", early) is True
     assert in_quiet_hours("22:00-07:00", midday) is False
-
-
-def test_heartbeat_never_runs_skills_above_the_tier():
-    from app.agent.autonomy import heartbeat_allows
-
-    # Inbox Cleanup floors at "full" — nothing below it may fire unattended.
-    assert heartbeat_allows("relaxed", "full") is False
-    assert heartbeat_allows("full", "full") is True
-    assert heartbeat_allows("strict", "strict") is True
 
 
 def test_memory_compaction_merges_duplicates():

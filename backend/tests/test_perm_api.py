@@ -42,12 +42,19 @@ def client(as_peer):
     drop_test_schema(engine)
 
 
+@pytest.fixture(scope="module")
+def module_home(tmp_path_factory):
+    """AURA's home for the whole module: the permission log is signed with a key kept there (F19), and
+    this module's database outlives a single test, so the home must as well."""
+    return tmp_path_factory.mktemp("aura-home")
+
+
 @pytest.fixture(autouse=True)
-def local(monkeypatch, tmp_path):
+def local(monkeypatch, module_home):
     monkeypatch.setattr(settings, "local_mode", True, raising=False)
     monkeypatch.setattr(settings, "device_control", "on", raising=False)
     monkeypatch.setattr(settings, "remote_access", True, raising=False)
-    monkeypatch.setattr(settings, "aura_home", str(tmp_path / "aura-home"), raising=False)
+    monkeypatch.setattr(settings, "aura_home", str(module_home), raising=False)
     monkeypatch.setattr(settings, "device_allowed_roots", "", raising=False)
     monkeypatch.setattr(settings, "device_command_denylist", "", raising=False)
     monkeypatch.setattr(settings, "llm_provider", "mock", raising=False)
@@ -628,4 +635,4 @@ def test_onboarding_and_the_loop_no_longer_read_the_old_level():
         if re.search(r"autonomy_level|legacy_tier|permissions import.*interim|from app\.agent(\.| import )autonomy|agent\.autonomy", text):
             offenders.append(str(path.relative_to(root)))
     allowed = {"models.py", "migrate_legacy.py", "migration_ops.py", "config.py", "schemas.py"}  # the column, the 1.0 snapshot, a setting, the 422 message
-    assert [o for o in offenders if o not in allowed and not o.startswith("agent/autonomy.py")] == []
+    assert [o for o in offenders if o not in allowed] == []

@@ -68,7 +68,6 @@ def _skill_views(db, user, category: str = "") -> list[SkillOut]:
                 description=skill.description,
                 tools=list(skill.tools),
                 proactive=skill.proactive,
-                autonomy_floor=skill.autonomy_floor,
                 enabled=row.enabled if row else skill.default_enabled,
                 run_count=row.run_count if row else 0,
                 success_count=row.success_count if row else 0,

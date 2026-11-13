@@ -1108,12 +1108,22 @@ def normalise_pattern(text: str, dialect: str = POSIX) -> str:
     return " ".join(tokens)
 
 
-_SECOND_TOKEN = re.compile(r"^[A-Za-z][\w:.-]*$")
+# F8: "always" proposes the exact command. A prefix is offered only for these read-only commands.
+_READ_ONLY_PREFIXES: tuple[tuple[str, ...], ...] = (
+    ("git", "status"), ("git", "log"), ("git", "diff"), ("ls",), ("dir",), ("pwd",), ("whoami",),
+)
+_READ_ONLY_EXACT: tuple[tuple[str, ...], ...] = (("python", "--version"), ("python3", "--version"))
+_WRITING_FLAGS = ("--output", "--ext-diff", "--textconv", "-o")
 
 
 def card_pattern(segment: Segment) -> str:
-    """The pattern an approval card proposes for one segment (spec 5.2, last rule)."""
-    toks = segment.tokens
-    if len(toks) >= 2 and _SECOND_TOKEN.match(toks[1]):
-        return f"{toks[0]} {toks[1]}"
+    """The pattern an approval card proposes for one segment (F8: exact command unless read-only)."""
+    toks = tuple(segment.tokens)
+    low = tuple(t.lower() for t in toks)
+    if low in _READ_ONLY_EXACT:
+        return segment.text
+    for prefix in _READ_ONLY_PREFIXES:
+        n = len(prefix)
+        if low[:n] == prefix and not any(t.startswith(_WRITING_FLAGS) for t in low[n:]):
+            return " ".join(toks[:n])
     return "=" + segment.text

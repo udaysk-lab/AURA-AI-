@@ -30,6 +30,16 @@ def _fresh_rate_limits():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _private_aura_home(tmp_path_factory, monkeypatch):
+    """Keep AURA's home out of the real one: the permission log's signing key, its head file and
+    the generated secrets are written there, and a test run must not leave any in ~/.aura."""
+    config = sys.modules.get("app.config")
+    if config is not None:
+        monkeypatch.setattr(config.settings, "aura_home", str(tmp_path_factory.mktemp("aura-home")), raising=False)
+    yield
+
+
 class AsPeer:
     """Make every request arrive from `host`, as a real server would report it.
 
@@ -114,3 +124,27 @@ def _test_peers_are_ordinary_programs(request, monkeypatch):
 
     monkeypatch.setattr(deps, "classify_peer", classify)
     yield
+
+
+def pytest_collection_modifyitems(config, items):
+    """Run one slice of the suite when AURA_TEST_SHARD is "i/n" (CI on slow runners).
+
+    Whole test modules stay together, so module-scoped fixtures behave as usual.
+    """
+    import os
+    import zlib
+
+    spec = os.environ.get("AURA_TEST_SHARD", "").strip()
+    if not spec or spec == "1/1":
+        return
+    index, _, total = spec.partition("/")
+    index, total = int(index), int(total)
+    if not 1 <= index <= total:
+        raise pytest.UsageError(f"AURA_TEST_SHARD={spec!r} is not i/n with 1 <= i <= n")
+    keep, drop = [], []
+    for item in items:
+        module = item.nodeid.split("::", 1)[0].replace("\\", "/")
+        (keep if zlib.crc32(module.encode()) % total == index - 1 else drop).append(item)
+    if drop:
+        config.hook.pytest_deselected(items=drop)
+        items[:] = keep

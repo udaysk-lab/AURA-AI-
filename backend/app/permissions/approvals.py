@@ -44,7 +44,7 @@ from app.models import (
     User,
     utcnow,
 )
-from app.permissions import access, catalogue, events, gate, match
+from app.permissions import access, catalogue, events, floors, gate, match
 from app.permissions import rules as rules_store
 
 log = logging.getLogger("aura.approvals")
@@ -362,8 +362,38 @@ def queue_action(
 # ---------------------------------------------------------------------------
 
 
+def _clean(db: Session, user_id: str, text: str) -> str:
+    from app.services import redaction
+
+    return redaction.scrub(db, user_id, text or "")
+
+
+def _scrub_resolved(db: Session, action: PendingAction) -> None:
+    """F20: once a card has its final answer nothing runs from it again, so the raw arguments (they may
+    hold a password or a key) and the preview text built from them are replaced by scrubbed copies."""
+    if action.status in ("pending", "resolving"):
+        return
+    try:
+        from app.services import redaction
+
+        action.arguments = redaction.scrub_json(db, action.user_id, action.arguments or {}, max_str=500)
+        action.preview = redaction.scrub(db, action.user_id, action.preview or "")
+        db.commit()
+    except Exception:
+        log.exception("could not scrub the arguments of %s", action.id)
+        db.rollback()
+
+
 def _hook(db: Session, action: PendingAction, result: Any) -> dict | None:
-    """Tell the task loop an approval reached a final status. Returns `{"id","status"}` or None.
+    """Tell the task loop an approval reached a final status, then scrub the card (F20)."""
+    try:
+        return _hook_inner(db, action, result)
+    finally:
+        _scrub_resolved(db, action)
+
+
+def _hook_inner(db: Session, action: PendingAction, result: Any) -> dict | None:
+    """Returns `{"id","status"}` or None.
 
     The loop module may not exist yet; a failure inside it never undoes the user's answer."""
     if not action.work_item_id:
@@ -541,6 +571,8 @@ def _apply_special_card(db: Session, user: User, action: PendingAction) -> list:
                 raise _Refused("That folder is outside the limit this install sets.")
             if os.path.dirname(real) == real:
                 raise _Refused("A whole drive cannot be connected.")
+            if floors.too_broad_for_a_card(real):
+                raise _Refused("That folder is too broad to connect from a card. Connect it in Settings, This computer.")
             if row is None:
                 row = DeviceFolder(user_id=user.id, path=real, path_key=key, can_delete=connect_delete, source="request")
                 db.add(row)
@@ -696,7 +728,7 @@ def resolve(db: Session, user: User, action_id: str, answer: str, caller: Caller
     if stored == "reject":
         _settle(db, user, action, "rejected", "reject", caller)
         db.add(ActivityLog(user_id=user.id, actor="user", action=f"reject:{action.tool_name}",
-                           target=action.preview[:300], status="rejected"))
+                           target=_clean(db, user.id, action.preview)[:300], status="rejected"))
         db.commit()
         _log_resolved(db, action, "rejected", actor="user")
         return _payload_for(db, action, {"status": "rejected",
@@ -771,8 +803,8 @@ def _approve(db: Session, user: User, action: PendingAction, answer: str, caller
         return _refused(db, user, action, answer, caller, str(exc))
 
     db.add(ActivityLog(
-        user_id=user.id, actor="user", action=f"approve:{action.tool_name}", target=action.preview[:300],
-        detail={"decision": answer, "result": str(outcome)[:500]},
+        user_id=user.id, actor="user", action=f"approve:{action.tool_name}", target=_clean(db, user.id, action.preview)[:300],
+        detail={"decision": answer, "result": _clean(db, user.id, str(outcome))[:500]},
     ))
     db.commit()
     _log_resolved(db, action, "approved", actor="user",

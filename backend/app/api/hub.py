@@ -180,7 +180,10 @@ def set_channel_owner(
     row = channel_service.get(db, user.id, kind)
     if not spec or not spec.inbound or row is None:
         raise HTTPException(status_code=404, detail="Channel not connected")
-    row = channel_service.set_owner(db, row, payload.owner_sender, payload.bridge_owner_only)
+    try:
+        row = channel_service.set_owner(db, row, payload.owner_sender, payload.bridge_owner_only)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     perm_changes.record(
         db, user, "system_changed", f"who counts as you on {kind} was changed", widens=True, target=f"channel:{kind}",
         detail={"channel": kind, "owner_sender_set": bool(channel_service.owner_sender_of(row)),

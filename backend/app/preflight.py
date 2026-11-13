@@ -397,7 +397,7 @@ def _check_device_control() -> Check:
     from app.device.runtime import capabilities
 
     caps = capabilities()
-    roots = ", ".join(settings.device_allowed_root_list)
+    roots = ", ".join(settings.device_allowed_root_list) or "none set"
     missing = [name for name, present in caps["packages"].items() if not present]
 
     if settings.environment != "local":
@@ -407,7 +407,7 @@ def _check_device_control() -> Check:
             fix="Only leave this on if this really is the user's own machine.",
         )
 
-    detail = f"On. {caps['os']} {caps['arch']}, shell {caps['shell']['kind']}, folders: {roots}."
+    detail = f"On. {caps['os']} {caps['arch']}, shell {caps['shell']['kind']}, install ceiling: {roots} (folders are connected in the app)."
     if missing:
         return Check(
             "device", "Device control", "warn",

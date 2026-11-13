@@ -181,7 +181,7 @@ CATALOG: dict[str, Plugin] = {
                 "does it on the machine it's installed on: runs commands, reads and "
                 "writes your files, opens apps, watches the system, and — where a "
                 "program has no command line — sees the screen and drives the mouse "
-                "and keyboard. Every action still goes through your trust tier and the "
+                "and keyboard. Every action still goes through your permission settings and the "
                 "same approval card as everything else, and file access is fenced to "
                 "the folders you allow."
             ),

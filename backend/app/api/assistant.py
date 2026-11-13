@@ -304,8 +304,8 @@ def run_automation(rule_id: str, user: GuardedUser, db: DbSession) -> dict:
 
 @router.post("/automations/tick")
 def tick(user: GuardedUser, db: DbSession) -> dict:
-    """Fire any scheduled rules that are due. Call from a cron/worker each minute."""
-    results = automation_engine.run_due_schedules(db)
+    """Fire this user's scheduled rules that are due (the worker and the cron route run everyone's)."""
+    results = automation_engine.run_due_schedules(db, user_id=user.id)
     results += automation_engine.on_task_due(db, user)
     return {"fired": len(results), "results": results}
 

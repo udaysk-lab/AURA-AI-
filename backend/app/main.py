@@ -56,6 +56,10 @@ async def lifespan(_: FastAPI):
 
     _catalogue.log_missing(_tools.REGISTRY)
 
+    if settings.local_mode:
+        from app import deps as _deps
+
+        _deps.ensure_local_secret()  # before anything signs with it (F19)
     report = preflight.log_report(log)
     # In production a blocking failure means an insecure or non-functional
     # deployment. Refusing to start is kinder than serving it.
@@ -89,10 +93,10 @@ async def lifespan(_: FastAPI):
 
         caps = capabilities()
         log.info(
-            "Device control ON | %s %s | shell=%s | screen=%s | roots=%s",
+            "Device control ON | %s %s | shell=%s | screen=%s | ceiling=%s",
             caps["os"], caps["arch"], caps["shell"]["kind"],
             "yes" if caps["screen_control"] else "no",
-            ", ".join(settings.device_allowed_roots.split(",")) if settings.device_allowed_roots.strip() else "set in the app",
+            ", ".join(settings.device_allowed_roots.split(",")) if settings.device_allowed_roots.strip() else "none (folders are connected in the app)",
         )
 
     # On a local install one launch should do everything, so the background

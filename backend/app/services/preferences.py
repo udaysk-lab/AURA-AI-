@@ -153,8 +153,12 @@ def add(
     origin_message_id: str | None = None,
     origin_excerpt: str = "",
     origin_work_item_id: str | None = None,
+    allow_supersede: bool = True,
 ) -> Captured:
     """Store one line, applying the conflict rules of section 10.3.
+
+    `allow_supersede=False` (the model's tool, F9) never retires an existing line: a similar
+    line is simply stored beside it, for the owner to sort out in Settings.
 
     Does not check the pause / memory-off switches: those guard capture from chat
     (`capture`, `note_from_tool`), not the owner editing the list in Settings.
@@ -187,7 +191,7 @@ def add(
             old.updated_at = utcnow()  # said before: keep the old line, note it was repeated
             db.commit()
             return Captured(preference=old, created=False)
-        if score >= 0.5:
+        if score >= 0.5 and allow_supersede:
             to_supersede.append(old)
 
     pref = Preference(
@@ -364,6 +368,17 @@ def _refine(db: Session, user: User, c: dict, systems: set[str] | None) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _owner_sentences(owner_message: str) -> set[str]:
+    """Every sentence of the owner's message, and the whole message, trimmed, verbatim."""
+    msg = (owner_message or "").replace("\r", "").strip()
+    found = {msg} if msg else set()
+    found.update(_sentences(msg))
+    for line in msg.split("\n"):
+        if line.strip():
+            found.add(line.strip())
+    return found
+
+
 def note_from_tool(
     db: Session,
     user: User,
@@ -372,25 +387,25 @@ def note_from_tool(
     *,
     text: str,
     task_type: str,
-    quote: str,
     trigger: str = "chat",
     origin_message_id: str | None = None,
+    quote: str = "",
 ) -> dict:
-    """The model asks to keep a preference. Accepted only for a chat turn with learning allowed,
-    and only when `quote` is a substring of the owner's own message of this turn."""
+    """The model asks to keep a preference (F9). Accepted only for a chat turn with learning
+    allowed, and only when `text` is a sentence the owner wrote, verbatim (trimmed), in this
+    turn's message. The model chooses the sentence and the task type; it cannot reword it,
+    and it cannot retire an existing line. `quote` is ignored (old callers)."""
     if trigger != "chat":
         return {"saved": False, "reason": "Preferences are only learned from the owner's own chat messages"}
     if not _enabled(db, user, conversation):
         return {"saved": False, "reason": "Memory is paused or off for this chat"}
-    needle = _squash(quote)
-    if len(needle) < 4 or needle not in _squash(owner_message):
-        return {"saved": False, "reason": "The quote is not from the owner's message"}
-    if not (text or "").strip():
-        return {"saved": False, "reason": "No text"}
-    result = add(db, user, text, task_type, "stated", "chat", origin_message_id=origin_message_id,
-                 origin_excerpt=quote)
+    sentence = (text or "").strip()
+    if len(sentence) < 4 or len(sentence) > TEXT_MAX or sentence not in _owner_sentences(owner_message):
+        return {"saved": False, "reason": "Only a sentence the owner wrote, word for word, can be kept"}
+    result = add(db, user, sentence, task_type, "stated", "chat", origin_message_id=origin_message_id,
+                 origin_excerpt=sentence, allow_supersede=False)
     return {"saved": True, "id": result.preference.id, "duplicate": not result.created,
-            "superseded_id": result.superseded_id}
+            "superseded_id": None}
 
 
 # ---------------------------------------------------------------------------

@@ -530,12 +530,12 @@ def _cleanup():
         db.close()
 
 
-def test_sending_a_request_anywhere_asks_below_relaxed_trust():
+def test_sending_a_request_anywhere_asks_unless_approvals_are_skipped():
     """Reading a file needs no approval; carrying it to a URL must."""
-    from app.agent import autonomy
+    from app.permissions import catalogue
 
-    assert autonomy.risk_class("read_file") == "read"
-    assert autonomy.risk_class("fetch_url") == "external"
+    assert catalogue.default_disposition(catalogue.CATALOGUE["read_file"].kind, "ask") == "allow"
+    assert catalogue.default_disposition(catalogue.CATALOGUE["fetch_url"].kind, "ask") == "ask"
 
 
 # ---------------------------------------------------------------------------

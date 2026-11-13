@@ -102,15 +102,22 @@ function OwnerControl({
           {busy ? <Spinner /> : <Check size={13} />} Confirm me as owner
         </button>
       </form>
-      <button
-        type="button"
-        className="btn-ghost mt-2 min-h-[44px]"
-        disabled={busy}
-        aria-pressed={Boolean(channel.bridge_owner_only)}
-        onClick={() => onSave(channel, "", true)}
-      >
-        This bridge forwards only my messages
-      </button>
+      {channel.kind === "email" ? (
+        <p className="mt-2 text-[12.5px] leading-relaxed text-muted">
+          A sender address on email can be faked, so a request that arrives by email always asks
+          you first, whatever mode you use.
+        </p>
+      ) : (
+        <button
+          type="button"
+          className="btn-ghost mt-2 min-h-[44px]"
+          disabled={busy}
+          aria-pressed={Boolean(channel.bridge_owner_only)}
+          onClick={() => onSave(channel, "", true)}
+        >
+          This bridge forwards only my messages
+        </button>
+      )}
       {error && (
         <p role="alert" className="mt-2 text-[12.5px] leading-relaxed text-rose">
           {error}

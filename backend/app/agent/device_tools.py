@@ -65,7 +65,7 @@ def _canon(ctx: ToolContext, raw: str, *roles: str) -> str:
     return raw
 
 
-def _screen_call(ctx: ToolContext, fn):
+def _screen_call(ctx: ToolContext, fn, point_args: dict | None = None):
     """Run one screen tool: check the same window is still in front, then (for input) watch the aftermath.
 
     The gate decided against the window in front a moment ago. If another one is in front now the
@@ -77,7 +77,14 @@ def _screen_call(ctx: ToolContext, fn):
 
     require_enabled()
     expected = _front_app(ctx)
-    now = windows.frontmost()
+    if point_args is not None:
+        # F22: for a click or scroll the window that counts is the one under the pointer, checked now.
+        x, y = point_args.get("x"), point_args.get("y")
+        point = (int(x), int(y)) if isinstance(x, (int, float)) and isinstance(y, (int, float)) \
+            and not isinstance(x, bool) and not isinstance(y, bool) else windows.pointer_position()
+        now = windows.window_at(*point) if point else None
+    else:
+        now = windows.frontmost()
     if expected is None or now is None or now.app_id != expected:
         raise DeviceUnavailable("The window in front changed since this was approved, so nothing was done.")
     is_input = getattr(ctx.decision, "tool_kind", "") == "screen_input"
@@ -515,7 +522,8 @@ def _take_screenshot(ctx: ToolContext, args: dict) -> dict:
 @_safe
 def _mouse_click(ctx: ToolContext, args: dict) -> dict:
     return _screen_call(
-        ctx, lambda: screen.click(args.get("x"), args.get("y"), args.get("button") or "left", int(args.get("clicks") or 1))
+        ctx, lambda: screen.click(args.get("x"), args.get("y"), args.get("button") or "left", int(args.get("clicks") or 1)),
+        point_args=args,
     )
 
 
@@ -556,7 +564,7 @@ def _press_keys(ctx: ToolContext, args: dict) -> dict:
 )
 @_safe
 def _scroll_screen(ctx: ToolContext, args: dict) -> dict:
-    return _screen_call(ctx, lambda: screen.scroll(int(args["amount"]), args.get("x"), args.get("y")))
+    return _screen_call(ctx, lambda: screen.scroll(int(args["amount"]), args.get("x"), args.get("y")), point_args=args)
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +596,12 @@ def _fetch_url(ctx: ToolContext, args: dict) -> dict:
     if (args.get("method") or "GET").upper() != "GET":
         return {"error": "fetch_url only reads pages (GET)."}
     try:
-        return net.safe_get(url)
+        from app.permissions import gate
+
+        def redirect_host(target: str, host: str) -> str | None:
+            return gate.redirect_refusal(ctx.db, ctx.user, target, host)
+
+        return net.safe_get(url, on_redirect_host=redirect_host)
     except net.FetchDenied as exc:
         return {"error": f"Refused: {exc.reason}"}
     except httpx.HTTPError as exc:

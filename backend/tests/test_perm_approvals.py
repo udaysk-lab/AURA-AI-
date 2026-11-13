@@ -275,7 +275,7 @@ def test_an_older_card_without_a_recorded_draft_is_worked_out_again(device):
     db.commit()
     out = answer(db, user, a, "always")
     row = db.scalars(select(PermissionRule).where(PermissionRule.user_id == user.id)).one()
-    assert (row.tool, row.target_kind, row.pattern) == ("run_command", "command", "echo hi")
+    assert (row.tool, row.target_kind, row.pattern) == ("run_command", "command", "=echo hi")  # F8: exact
     assert out["rule"]["id"] == row.id
 
 

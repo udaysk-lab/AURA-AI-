@@ -245,10 +245,13 @@ def _aware(dt: datetime | None) -> datetime | None:
 
 def _log(ctx: ToolContext, action: str, target: str = "", detail: dict | None = None,
          status: str = "success") -> None:
+    from app.services import redaction  # F20: nothing a person typed is kept as typed
+
     ctx.db.add(
         ActivityLog(
             user_id=ctx.user.id, actor="agent", action=action,
-            target=target[:300], status=status, detail=detail or {},
+            target=redaction.scrub(ctx.db, ctx.user.id, target)[:300], status=status,
+            detail=redaction.scrub_json(ctx.db, ctx.user.id, detail or {}, max_str=500),
             work_item_id=ctx.work_item_id,
         )
     )

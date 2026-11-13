@@ -264,10 +264,10 @@ def test_card_pattern_two_tokens():
 
     assert pats("git status") == ["git status"]
     assert pats("git status -s") == ["git status"]
-    assert pats("npm run build") == ["npm run"]
-    assert pats("git status && npm test") == ["git status", "npm test"]
-    assert pats("ls -la") == ["=ls -la"]
-    assert pats("ls") == ["=ls"]
+    assert pats("npm run build") == ["=npm run build"]  # F8: exact command unless read-only
+    assert pats("git status && npm test") == ["git status", "=npm test"]
+    assert pats("ls -la") == ["ls"]
+    assert pats("ls") == ["ls"]
     assert pats("cat /etc/hosts") == ["=cat /etc/hosts"]
     assert pats("python -m pytest") == ["=python -m pytest"]
     assert pats("env LANG=C git status") == ["git status"]

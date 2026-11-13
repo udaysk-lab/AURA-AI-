@@ -267,6 +267,13 @@ def check_url(url: str) -> Checked:
     )
 
 
+def _host_key(url: str) -> str:
+    try:
+        return (urlsplit(url).hostname or "").rstrip(".").lower()
+    except ValueError:
+        return ""
+
+
 def _pinned_url(checked: Checked, original: str) -> str:
     parts = urlsplit(original)
     ip = f"[{checked.ip}]" if ":" in checked.ip else checked.ip
@@ -275,10 +282,11 @@ def _pinned_url(checked: Checked, original: str) -> str:
     return urlunsplit((checked.scheme, netloc, parts.path or "/", parts.query, ""))
 
 
-def safe_get(url: str, *, transport=None) -> dict:
+def safe_get(url: str, *, transport=None, on_redirect_host=None) -> dict:
     """GET one URL under the fetch floors. Raises FetchDenied; other errors are httpx's.
 
-    Returns {"url", "status", "content"} like the old tool did.
+    `on_redirect_host(url, host)` is asked before following a redirect to a different host (F13);
+    it returns None to go on or a sentence to refuse with. Returns {"url", "status", "content"}.
     """
     import httpx
 
@@ -295,7 +303,14 @@ def safe_get(url: str, *, transport=None) -> dict:
             response = client.send(request, stream=True)
             try:
                 if response.is_redirect and response.headers.get("location"):
-                    current = urljoin(current, response.headers["location"])
+                    target = urljoin(current, response.headers["location"])
+                    if on_redirect_host is not None:
+                        old_host, new_host = _host_key(current), _host_key(target)
+                        if new_host != old_host:
+                            refusal = on_redirect_host(target, new_host)
+                            if refusal:
+                                raise FetchDenied(refusal, "FLOOR_REDIRECT_HOST")
+                    current = target
                     continue
                 chunks: list[bytes] = []
                 size = 0

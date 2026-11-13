@@ -2,7 +2,7 @@
 
 The behaviour that matters here is mostly refusal. A capability this broad is
 only safe if it is off where it should be off, cannot be talked out of its
-folder fence, and cannot run without the approval the trust tier demands. So
+folder fence, and cannot run without the approval the permission mode demands. So
 most of these tests assert that something *didn't* happen.
 
 Run from backend/:  pytest -q tests/test_device.py
@@ -21,7 +21,7 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import plugins as plugin_registry  # noqa: E402
-from app.agent import autonomy, skills as skill_registry  # noqa: E402
+from app.agent import skills as skill_registry  # noqa: E402
 from app.agent import tools as tool_registry  # noqa: E402
 from app.agent.prompts import build_system_prompt  # noqa: E402
 from app.config import settings  # noqa: E402
@@ -464,23 +464,37 @@ def test_full_mode_auto_runs_but_the_denylist_still_refuses(device_on, monkeypat
 # ---------------------------------------------------------------------------
 
 
-def test_running_a_command_is_classified_irreversible():
-    assert autonomy.risk_class("run_command") == "irreversible"
-    assert autonomy.risk_class("delete_file") == "irreversible"
-    assert autonomy.risk_class("kill_process") == "irreversible"
+def _kinds(*names):
+    from app.permissions import catalogue
+
+    return {n: catalogue.CATALOGUE[n].kind for n in names}
 
 
-def test_changing_the_machine_is_external_and_observing_it_is_read():
-    for name in ("write_file", "open_app", "scroll_screen"):
-        assert autonomy.risk_class(name) == "external", name
-    for name in ("read_file", "list_directory", "take_screenshot", "system_info"):
-        assert autonomy.risk_class(name) == "read", name
+def test_running_a_command_never_runs_alone_in_ask_mode():
+    from app.permissions import catalogue
+
+    assert catalogue.CATALOGUE["delete_file"].always_user
+    for name, kind in _kinds("run_command", "run_in_background", "kill_process", "stop_process").items():
+        assert catalogue.default_disposition(kind, "ask") == "ask", name
+        assert catalogue.default_disposition(kind, "auto") == "reviewer", name
+
+
+def test_changing_the_machine_asks_and_observing_it_is_read():
+    from app.permissions import catalogue
+
+    for name, kind in _kinds("write_file", "open_app", "scroll_screen").items():
+        assert catalogue.default_disposition(kind, "ask") == "ask", name
+    for name, kind in _kinds("read_file", "list_directory", "take_screenshot", "system_info").items():
+        assert catalogue.default_disposition(kind, "ask") == "allow", name
 
 
 def test_driving_the_keyboard_and_mouse_asks_like_the_shell_does():
     """Typing into a terminal window is running a command; it can't be cheaper."""
-    for name in ("mouse_click", "type_text", "press_keys", "send_process_input"):
-        assert autonomy.risk_class(name) == "irreversible", name
+    from app.permissions import catalogue
+
+    for name, kind in _kinds("mouse_click", "type_text", "press_keys").items():
+        assert catalogue.default_disposition(kind, "ask") == "ask", name
+        assert kind in catalogue.REVIEWED_KINDS, name
 
 
 def test_allowlist_mode_lets_listed_commands_skip_the_card(sandbox, monkeypatch):
@@ -570,28 +584,46 @@ def test_opening_a_script_or_a_program_file_is_refused(sandbox):
         assert "error" in apps.open_app(target), target
 
 
-def test_shell_needs_approval_below_full_trust(client, auth):
+def _shell_decision(db, user, command="echo hi"):
+    from app.permissions import gate
+
+    return gate.decide(db, user, "run_command", {"command": command}, gate.build_context(db, user, "chat"))
+
+
+def test_shell_needs_approval_below_full_trust(sandbox, client, auth):
     db = SessionLocal()
     try:
         user = db.scalars(select(User).where(User.email == EMAIL)).first()
         for tier in ("strict", "conservative", "relaxed"):
-            assert autonomy.requires_approval(db, user.id, "run_command", tier) is True, tier
-        assert autonomy.requires_approval(db, user.id, "run_command", "full") is False
-        # Reading is fine at every tier.
-        assert autonomy.requires_approval(db, user.id, "read_file", "strict") is False
+            apply_legacy(db, user, tier)  # what the upgrade makes of a user at this 1.0 level
+            assert _shell_decision(db, user).kind == "ask", tier
+        apply_legacy(db, user, "full")
+        assert _shell_decision(db, user).kind == "allow"
+        # Reading is fine at every level.
+        apply_legacy(db, user, "strict")
+        from app.permissions import gate
+
+        read = gate.decide(db, user, "read_file", {"path": str(sandbox / "x.txt")}, gate.build_context(db, user, "chat"))
+        assert read.kind == "allow"
     finally:
         db.close()
 
 
-def test_a_standing_grant_lets_shell_through(client, auth):
+def test_a_standing_rule_lets_a_shell_command_through(sandbox, client, auth):
+    from app.permissions import rules as rules_store
+
     db = SessionLocal()
     try:
         user = db.scalars(select(User).where(User.email == EMAIL)).first()
-        assert autonomy.requires_approval(db, user.id, "run_command", "conservative") is True
-        autonomy.grant(db, user.id, "run_command", scope="always")
-        assert autonomy.requires_approval(db, user.id, "run_command", "conservative") is False
-        autonomy.revoke(db, user.id, "run_command")
-        assert autonomy.requires_approval(db, user.id, "run_command", "conservative") is True
+        apply_legacy(db, user, "conservative")
+        assert _shell_decision(db, user).kind == "ask"
+        row = rules_store.add(db, user, effect="allow", system="device-control", tool="run_command",
+                              target_kind="command", pattern="=echo hi")
+        db.commit()
+        assert _shell_decision(db, user).kind == "allow"
+        rules_store.revoke(db, user, row.id)
+        db.commit()
+        assert _shell_decision(db, user).kind == "ask"
     finally:
         db.close()
 
@@ -800,7 +832,10 @@ def _screen_ready(monkeypatch, app="notes", granted=True, tier="full"):
     from app.models import DeviceAppGrant
     from app.permissions import access
 
-    monkeypatch.setattr(windows, "frontmost", lambda: windows.Frontmost(app, "A note", 4242, app))
+    win = windows.Frontmost(app, "A note", 4242, app)
+    monkeypatch.setattr(windows, "frontmost", lambda: win)
+    monkeypatch.setattr(windows, "window_at", lambda x, y: win)  # a click lands on the window in front (F22)
+    monkeypatch.setattr(windows, "pointer_position", lambda: (10, 10))
     monkeypatch.setattr(access, "is_present", lambda user_id: True)
     db = SessionLocal()
     try:
@@ -816,7 +851,7 @@ def _screen_ready(monkeypatch, app="notes", granted=True, tier="full"):
 
 
 def _run_turn(monkeypatch, tool, arguments, tier, message="do the thing"):
-    """One agent turn with a scripted provider, at a given trust tier."""
+    """One agent turn with a scripted provider, at a given (1.0) trust level, mapped as the upgrade maps it."""
     from app.agent import coordinator
 
     provider = _ScriptedProvider(tool, arguments)

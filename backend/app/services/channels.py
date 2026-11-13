@@ -22,7 +22,7 @@ import logging
 import re
 import secrets
 from dataclasses import dataclass
-from email.utils import parseaddr
+from email.utils import getaddresses, parseaddr
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -221,10 +221,15 @@ def owner_sender_of(channel: Channel | None) -> str:
 
 
 def bridge_owner_only_of(channel: Channel | None) -> bool:
+    """F10: never true for email, whatever the stored config says (a mail server forwards anyone)."""
+    if channel is not None and channel.kind == "email":
+        return False
     return bool(((channel.config if channel else None) or {}).get("bridge_owner_only"))
 
 
 def set_owner(db: Session, channel: Channel, owner_sender: str, bridge_owner_only: bool) -> Channel:
+    if channel.kind == "email" and bridge_owner_only:
+        raise ValueError("Email cannot be trusted to forward only your messages; confirm your address instead")
     config = dict(channel.config or {})
     config["owner_sender"] = (owner_sender or "").strip()[:320]
     config["bridge_owner_only"] = bool(bridge_owner_only)
@@ -234,9 +239,23 @@ def set_owner(db: Session, channel: Channel, owner_sender: str, bridge_owner_onl
     return channel
 
 
-def normalise_sender(raw: str) -> str:
+_EMAIL_ADDRESS = re.compile(r"[^@\s<>,;\"'()\[\]\\:]+@[^@\s<>,;\"'()\[\]\\:]+")
+
+
+def normalise_email_sender(raw: str) -> str:
+    """F10: the address alone. A display name is never read, and a value holding anything other
+    than exactly one address matches nobody."""
+    found = [a for _, a in getaddresses([raw or ""]) if a]
+    if len(found) != 1 or not _EMAIL_ADDRESS.fullmatch(found[0].strip()):
+        return ""
+    return found[0].strip().casefold()
+
+
+def normalise_sender(raw: str, kind: str = "") -> str:
     """Compare senders as people write them: "Ana <Ana@Example.com>" is "ana@example.com",
     "@Ana" is "ana", "+1 (555) 010-2000" is "+15550102000". An empty result matches nothing."""
+    if kind == "email":
+        return normalise_email_sender(raw)
     text = (raw or "").strip()
     if not text:
         return ""
@@ -253,8 +272,8 @@ def is_owner_message(channel: Channel | None, sender: str) -> bool:
         return False
     if bridge_owner_only_of(channel):
         return True
-    configured = normalise_sender(owner_sender_of(channel))
-    return bool(configured) and normalise_sender(sender) == configured
+    configured = normalise_sender(owner_sender_of(channel), channel.kind)
+    return bool(configured) and normalise_sender(sender, channel.kind) == configured
 
 
 def conversation_for(db: Session, user: User, kind: str, thread_key: str = "") -> Conversation:

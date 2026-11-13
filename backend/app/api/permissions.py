@@ -375,4 +375,5 @@ def list_events(
 @router.get("/events/verify", response_model=VerifyOut)
 def verify_events(user: CurrentUser, db: DbSession) -> VerifyOut:
     _settle_legacy(db, user)
-    return VerifyOut(**events.verify(db, user.id))
+    result = events.verify(db, user.id)
+    return VerifyOut(ok=result["ok"], checked=result["checked"], first_bad_seq=result["first_bad_seq"])  # the shape the client has

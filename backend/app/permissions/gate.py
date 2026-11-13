@@ -179,6 +179,8 @@ def effective_mode(db: Session, user: User, ctx: GateContext) -> str:
     """The mode used at step 10 (section 4.4)."""
     if ctx.trigger == "heartbeat":
         return "ask"
+    if ctx.trigger == "inbound" and ctx.origin_id == "email":
+        return "ask"  # F10: a mail's sender cannot be proved, so email is capped at Ask first in every mode
     if ctx.trigger in ("schedule", "automation"):
         mode = ctx.approval_mode if ctx.approval_mode in ("ask", "auto") else "ask"
     else:
@@ -240,6 +242,7 @@ def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> De
 
     dialect = _dialect(policy)
     front = None
+    under = None
     extra: dict[str, Any] = {}
     if policy.system == "device-control" and settings.device_control_enabled:
         from app.device import windows
@@ -247,6 +250,10 @@ def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> De
         if policy.kind in ("screen_read", "screen_input"):
             front = windows.frontmost()
             extra["frontmost"] = front.app_id if front else None
+            if policy.name in floors.POINT_TOOLS:
+                # F22: a click or scroll lands where the pointer is, not necessarily on the front window.
+                under = _window_under(windows, args)
+                extra["frontmost"] = under.app_id if under else None
         if any(t.kind == "pid" for t in policy.targets):
             extra["pid_app"] = windows.app_for_pid
     try:
@@ -274,7 +281,7 @@ def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> De
         return deny("floor", "INSTALL_OFF", "Screen control is turned off on this install.")
 
     # 3. floors
-    fl = floors.check(db, user, policy, targets, ctx, front=front)
+    fl = floors.check(db, user, policy, targets, ctx, front=front, under=under)
     if fl.deny:
         return deny("floor", fl.code, fl.reason)
 
@@ -295,6 +302,19 @@ def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> De
 # ---------------------------------------------------------------------------
 # Proposed rules (what "for 10 minutes" / "always" would store)
 # ---------------------------------------------------------------------------
+
+
+def _window_under(windows, args: Any):
+    """The top-level window at the point a click or scroll names (the pointer's place when it names none)."""
+    a = args if isinstance(args, dict) else {}
+    x, y = a.get("x"), a.get("y")
+    if isinstance(x, bool) or isinstance(y, bool) or not (
+        isinstance(x, (int, float)) and isinstance(y, (int, float))
+    ):
+        point = windows.pointer_position()
+    else:
+        point = (int(x), int(y))
+    return windows.window_at(*point) if point else None
 
 
 def _propose(policy: ToolPolicy, targets: tuple[Target, ...], ctx: GateContext) -> RuleDraft | None:
@@ -463,6 +483,26 @@ def _log_review(db: Session, user: User, tool: str, pre: _Pre, v: reviewer.Revie
         )
     except Exception:
         log.exception("could not write the review event")
+
+
+def redirect_refusal(db: Session, user: User, url: str, host: str) -> str | None:
+    """F13: a fetch that is sent to another host is judged again against the user's URL rules.
+    None means go on (an allow rule covers it and no block rule stops it); else the sentence to refuse with."""
+    policy = catalogue.CATALOGUE["fetch_url"]
+    shown = host or "another site"
+    try:
+        scheme, hostname = match.parse_url(url)
+        targets = (match.Target("url", hostname, "", url, scheme=scheme),)
+        rules = rules_store.stored(db, user.id, policy, GateContext(trigger="chat"))
+        applicable = [r for r in rules if match.rule_applies_to(r, targets)]
+        if match.first_match("block", applicable, targets):
+            return f"The page redirects to {shown}, which a rule you set blocks."
+        if match.allow_cover(applicable, targets):
+            return None
+    except Exception:  # anything unreadable is refused
+        log.exception("redirect check failed")
+    return (f"The page redirects to {shown}, and no rule of yours allows that site. "
+            f"Add a rule for {shown} to follow it.")
 
 
 # ---------------------------------------------------------------------------

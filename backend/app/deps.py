@@ -134,6 +134,18 @@ def get_current_user(
         raise _unauthorized(
             "This is AURA on someone's own computer: sign in with “Open AURA on this computer”."
         )
+    if (
+        settings.local_mode
+        and request.method not in ("GET", "HEAD", "OPTIONS")
+        and not request.url.path.endswith("/stop")  # stopping AURA is never held back
+        and not is_remote_session(request)
+    ):
+        from app.permissions import access
+
+        if access.recent_synthetic_input(user.id):
+            # F22: within seconds of AURA clicking or typing, a change that arrives from this computer
+            # may be that click, so it waits for the person's own hand.
+            raise HTTPException(status_code=409, detail="Use your own mouse or keyboard to do this.")
     return user
 
 
@@ -231,6 +243,29 @@ def _write_key_file(path: str, key: str) -> bool:
         except OSError:
             pass
         return False
+
+
+SECRET_KEY_FILE = "secret.key"
+DEV_SECRET = "dev-only-insecure-secret-change-me"
+
+
+def ensure_local_secret() -> bool:
+    """F19: a local install never runs on the built-in development secret (anyone who has read the
+    source could forge a login token with it, and sign the permission log). When SECRET_KEY is
+    unset or still that default, a random one is kept owner-only in AURA's home and used instead.
+    Returns True when it replaced the default."""
+    if not settings.local_mode or settings.secret_key != DEV_SECRET:
+        return False
+    path = os.path.join(settings.aura_home_path, SECRET_KEY_FILE)
+    key = _read_key_file(path)
+    if key:
+        _tighten(path)
+    else:
+        key = secrets.token_urlsafe(48)
+        if not _write_key_file(path, key):
+            log.warning("Could not keep a generated session secret; using one for this run only.")
+    settings.secret_key = key
+    return True
 
 
 def ensure_local_key() -> str:

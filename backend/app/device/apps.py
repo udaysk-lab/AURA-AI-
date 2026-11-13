@@ -9,6 +9,7 @@ document or URL goes through the same per-platform opener (`open`, `start`,
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -87,11 +88,13 @@ def open_app(name: str) -> dict:
         except DeviceUnavailable:
             pass  # fall through to treat it as an app name
 
-    if target.startswith(("http://", "https://")):
+    if target.lower().startswith(("http://", "https://")):
         if any(ch in target for ch in '"\n\r\x00') or " " in target:
             return {"error": "That isn't a URL I can open."}
         return _open_target(target, label=f"Opened {target}")
 
+    if re.match(r"[A-Za-z][A-Za-z0-9+.\-]+:", target):
+        return {"error": f"{target!r} doesn't look like an app name. Only http and https links can be opened."}
     problem = _check_name(target)
     if problem:
         return {"error": problem}
