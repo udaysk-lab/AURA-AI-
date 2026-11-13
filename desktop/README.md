@@ -2,8 +2,10 @@
 
 The desktop app is AURA in one download: the API, the background worker and the
 web app run as a single program on your machine, and it opens in your browser
-already signed in. Below the trust level you choose, everything it wants to do
-on the computer waits for your approval.
+already signed in. You choose how much it may do on its own with the permission
+mode (Ask first, Auto or Skip approvals). In the default, Ask first, anything it
+wants to change on the computer waits for your approval. See
+[docs/PERMISSIONS.md](../docs/PERMISSIONS.md).
 
 ## Get it
 
@@ -38,9 +40,41 @@ The builds aren't code-signed yet, so the first launch needs one extra click:
 
 Opening it a second time just opens the browser on the copy already running.
 
-Without a model key AURA runs a limited offline demo. Add one in **Settings →
-AI model**: a Claude key from console.anthropic.com, an OpenAI key, or a free
-local model through Ollama or LM Studio. It is saved on your computer only.
+Without a model key AURA runs a limited offline demo, and the Auto permission
+mode is unavailable. Add a key in **Settings → AI model**: a Claude key from
+console.anthropic.com, an OpenAI key, or a free local model through Ollama or
+LM Studio. It is saved on your computer only.
+
+## Folders, apps and what AURA may do
+
+You manage these in the app, under **This computer** and **Settings →
+Permissions**, and they apply at once:
+
+- **Folders.** AURA's file tools and commands work only in folders you connect.
+  AURA can ask for one with a card that only you can answer.
+- **Delete permission** is set per folder. Deleting a file always asks.
+- **Apps and the screen.** Each app AURA may see or use on screen is allowed
+  separately, at one of three levels. Banking, trading, crypto and password
+  manager apps are blocked by default.
+- **Rules and the permission mode.**
+
+[DEVICE.md](../DEVICE.md) has the details.
+
+## Upgrading from 1.x
+
+The first time 2.0 starts on an existing `~/.aura`:
+
+1. The database is upgraded after a backup copy. The copy is in
+   `~/.aura/backups/`; the newest three are kept. If the upgrade fails, AURA
+   says why, changes nothing and exits.
+2. Your 1.x settings become a permission mode and rules, so AURA keeps behaving
+   the way you chose. Nobody is put on Auto.
+3. The folders you had allowed become connected folders.
+4. Channels need their owner confirmed (in Channels) before messages on them
+   start tasks. Until then they are kept as notifications.
+
+Commands that delete files always ask. See
+[RELEASE_NOTES.md](./RELEASE_NOTES.md).
 
 ## Where your data lives
 
@@ -48,27 +82,35 @@ Everything is in one folder, `~/.aura` (`C:\Users\<you>\.aura` on Windows):
 
 | | |
 | --- | --- |
-| `aura.env` | settings: model key, device limits, remote access, generated secrets |
-| `aura.db` | chats, memory, tasks, approvals — everything AURA knows |
+| `aura.env` | settings: model key, install limits, remote access, the generated secrets and sign-in key |
+| `aura.db` | chats, memory, tasks, approvals, permissions: everything AURA knows |
+| `backups/` | copies of `aura.db` made before a database upgrade (the newest three) |
 | `logs/aura.log` | what happened, when something didn't work |
 | `commands/` | output of commands AURA ran in the background |
 
 AURA's file tools can never touch this folder or the folder the app is
-installed in, so the assistant can't rewrite its own settings or code.
+installed in, and commands that name them are refused. Protection of these files
+on a computer where AURA runs commands as you is by blocks, review and an audit
+trail, not by an operating-system wall (see [DEVICE.md](../DEVICE.md)).
 Uninstalling keeps the folder; delete it yourself to remove everything.
 
-`aura.env` takes the same settings as the `.env.example` at the repo root (the
-device section is the interesting part: allowed folders, exec mode, denylist).
-Restart AURA after editing it.
+`aura.env` takes the same settings as the `.env.example` at the repo root. The
+computer settings in it (`DEVICE_ALLOWED_ROOTS`, `DEVICE_COMMAND_DENYLIST`,
+`DEVICE_SCREEN_CONTROL`) are ceilings the app cannot go above; folders, apps and
+rules are set in the app. Restart AURA after editing the file.
+
+The sign-in key (`AURA_LOCAL_LOGIN_KEY`) in `aura.env` is what lets a sign-in
+link open AURA. Keep the file private. Changing the key signs you out.
 
 ## Use it from your phone
 
 **Settings → Use AURA from your phone** turns on remote access; restart AURA
 once (Stop AURA, then open it again) and it listens on your network. **Pair a
 device** then shows this computer's addresses and a one-time 8-character code
-to type on the phone. A paired phone gets the same chat, screens and approval cards, but can't
-change the model or remote settings, run console commands or pair more
-devices; unpairing signs it out at once. Traffic on your network isn't
+to type on the phone. A paired phone gets the same chat and screens and can answer an approval card
+"once" or "No", but can't give longer allowances, answer folder, app or
+delete-permission cards, change permissions, the model or remote settings, run
+console commands or pair more devices; unpairing signs it out at once. Traffic on your network isn't
 encrypted, so use it on a network you trust or over Tailscale.
 
 ## Build it yourself

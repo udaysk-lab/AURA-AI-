@@ -5,7 +5,7 @@ AURA ships two ways:
 | | Where it runs | How it's built |
 | --- | --- | --- |
 | **AURA in the browser** | One Vercel project: the Next.js frontend and the FastAPI backend as two services, Postgres on Supabase | Every push to `main` |
-| **AURA for your computer** | The desktop app, downloaded from the home page | A version tag (`v1.0.0`) runs `.github/workflows/desktop-release.yml` |
+| **AURA for your computer** | The desktop app, downloaded from the home page | A version tag (for example `v2.0.1`) runs `.github/workflows/desktop-release.yml` |
 
 ---
 
@@ -37,8 +37,10 @@ Singapore `ap-southeast-1` → `sin1`, US East `us-east-1` → `iad1`).
 | `FRONTEND_URL`, `BACKEND_URL` | `https://aura-ai-psi-self.vercel.app` |
 | `CORS_ORIGINS` | the same origin |
 | `ALLOW_DEMO_LOGIN` | `false` |
-| `ANTHROPIC_API_KEY` | needed for the real assistant; without it AI replies are a keyword demo |
+| `ANTHROPIC_API_KEY` | needed for the real assistant; without it AI replies are a keyword demo, and the Auto permission mode is unavailable |
 | `OPENAI_API_KEY` | optional: semantic memory and document search |
+| `BACKGROUND_MODEL` | optional: a smaller model for tasks that start without a person in the chat (schedules, inbound messages). Blank = the main model |
+| `REVIEWER_MODEL` | optional: the model for Auto mode's safety reviewer. Blank = `BACKGROUND_MODEL`, then the main model |
 | `CRON_SECRET` | optional but recommended: turns on background work (below) |
 | `SMTP_HOST`, `SMTP_FROM`, `SMTP_USERNAME`, `SMTP_PASSWORD` | optional: "Forgot password?" and emailed schedules |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | optional: Gmail + Calendar, "Continue with Google" |
@@ -47,8 +49,15 @@ Singapore `ap-southeast-1` → `sin1`, US East `us-east-1` → `iad1`).
 injects a locked `DATABASE_URL`; the override wins over it without deleting
 anything.
 
-Never set `LOCAL_MODE`, `DEVICE_CONTROL` or `REMOTE_ACCESS` here. They're for
-someone's own computer; startup refuses device control in production.
+Never set `LOCAL_MODE`, `DEVICE_CONTROL`, `REMOTE_ACCESS` or any `DEVICE_*`
+setting here. They're for someone's own computer; startup refuses device control
+in production. The hosted site has no computer tools at all.
+
+The task loop has four limits with working defaults (`MAX_AGENT_STEPS` 8,
+`MAX_TASK_STEPS` 40, `SEGMENT_SECONDS` 200, `RESUME_GRACE_SECONDS` 60). On
+Vercel keep `SEGMENT_SECONDS` well under the function's 300-second limit: after
+that long in one request a task starts no new model call and carries on in the
+next one. See [docs/TASKS-AND-MEMORY.md](./docs/TASKS-AND-MEMORY.md).
 
 **`ENVIRONMENT` is `staging`, not `production`, on purpose.** In production
 `main.py` refuses to boot while any preflight check fails — no model key, say —
@@ -64,12 +73,16 @@ UTC — the Hobby plan allows daily schedules only) that call `/api/cron/tick`:
 - every call touches the database, so a Free Supabase project never idles into a
   pause;
 - once `CRON_SECRET` is set, Vercel sends it with each call and the tick also
-  runs the worker: automations, schedules, the heartbeat and memory compaction,
-  for accounts used in the last 30 days.
+  runs the worker: it first continues tasks that are ready (after an approval, a
+  step budget or an interruption) and expires approvals nobody answered, then
+  runs automations, schedules, the heartbeat and memory compaction, for
+  accounts used in the last 30 days.
 
 Without the secret nobody can make the site do work (and spend model tokens) by
 calling that URL; they only get the keep-alive. Schedules fire on the next tick
-after their time, so on Hobby a 7:30 schedule may run up to eight hours late.
+after their time, so on Hobby a 7:30 schedule may run up to eight hours late. A
+task that is waiting for an approval continues straight away if the page is open
+when it is answered; with the page closed it continues on the next tick.
 Vercel Pro allows a `*/30 * * * *` schedule instead.
 
 A tick stops starting new work after `CRON_BUDGET_SECONDS` (default 240), to
@@ -105,21 +118,28 @@ paused project can be restored for up to a year.
 
 ### Database migrations
 
-Alembic is the only thing that changes the schema, and the app runs it by
-itself at start-up: there is no setting to turn on and no command to run on the
-hosted site. The first cold start after a deploy takes a lock, upgrades the
-database in one transaction (a few seconds), and any other instance that starts
-at the same time waits for it. If the upgrade fails, nothing is half-applied:
-the database stays at the old revision.
+Alembic is the only thing that changes the schema, and the app runs it by itself
+at start-up: there is no setting to turn on and no command to run on the hosted
+site. The first cold start after a deploy takes a lock, upgrades the database in
+one transaction (a few seconds), and any other instance that starts at the same
+time waits for it. If the upgrade fails, nothing is half-applied: the database
+stays at the old revision.
+
+How the runner behaves for each state a database can be in, what the backups
+are, how to read a failure and how to write a revision is in
+**[docs/MIGRATIONS.md](./docs/MIGRATIONS.md)**. The points a deployer needs:
 
 - A new, empty database is built from the migrations.
-- A 1.0.0 database (made by the old start-up, with no `alembic_version` table,
-  or stamped at `0001_initial`) is recognised and brought up to date. You do not
-  run `alembic stamp`. On SQLite (the desktop app and local runs) a consistent
-  copy is saved first in `backups/` next to the database file, and the three
-  newest are kept.
+- A 1.0.0 database (no `alembic_version` table, or stamped `0001_initial`) is
+  recognised and brought up to date. You do not run `alembic stamp`.
+- On SQLite (the desktop app and local runs) a consistent copy is saved first in
+  `backups/` next to the database file, and the three newest are kept. **AURA does
+  not back up PostgreSQL.** Take a backup yourself (Supabase project backups or
+  `pg_dump`) before any release that adds a revision.
 - A database that is neither (columns missing from the 1.0.0 shape, or two
-  `alembic_version` rows) is left alone and reported; AURA does not guess.
+  `alembic_version` rows) is left alone and reported.
+- A database made by a newer AURA is not changed. The hosted site serves and
+  preflight warns; the desktop app refuses to start.
 - `AUTO_CREATE_SCHEMA` is gone. If it is still set it is ignored (one warning in
   the log); remove it from Vercel.
 - A Vercel **Preview** deployment never migrates, because Preview often shares
@@ -133,11 +153,12 @@ the database stays at the old revision.
 **Releasing a version that has migrations**
 
 1. Before merging, confirm Preview does not use the production database (above).
+   For PostgreSQL, take a backup.
 2. Deploy as usual. The first cold start migrates.
 3. Open `https://<your-site>/health`. `"schema"` must equal the release's
-   revision (desktop/RELEASE_NOTES.md lists it for each release). Then open
+   revision (`desktop/RELEASE_NOTES.md` lists it for each release). Then open
    `/api/health/preflight`: "Database schema: ok". Sign in, open the chat and
-   Settings.
+   Settings, Permissions.
 4. If `/api` answers 503 `schema_not_ready` for more than two minutes, read the
    preflight detail and the Vercel log line `aura.migrate ERROR`, then
    Vercel → Deployments → the previous deployment → **Instant Rollback**. The
@@ -152,6 +173,20 @@ the database stays at the old revision.
    3 has passed on the additive release and the site has run for 24 hours.
    After that release, rolling back to older code needs a database restore
    (Supabase backups, done by the owner), so do not roll back past it.
+
+**The 1.0 to 2.0 upgrade.** The first start after the upgrade also maps each
+account's 1.0 settings onto the 2.0 permission model, once: the trust level
+becomes a mode with rules that keep its behaviour, "always" approvals become
+allow rules, and waiting approvals get an expiry. Nobody is put on Auto. After
+it, check the following with a test account:
+
+- Settings, Permissions shows a mode and the rules the upgrade made, and the
+  change log has one "legacy mapped" entry.
+- Channels that were connected have no confirmed owner yet. Until the account
+  owner sets it in Channels, messages on that channel are kept as notifications
+  and start no task.
+- The old trust columns and tables are still in the database, unused, until the
+  separate release in step 6.
 
 **The desktop app** upgrades `aura.db` every time it starts, before anything
 else. If it cannot (for example the database came from a newer AURA), it opens a
@@ -168,9 +203,9 @@ where a database stands without changing it.
 
 **Writing a migration** (developers): after a model change,
 `alembic revision --autogenerate -m "what changed"` from `backend/`, then follow
-the conventions in `docs/design/2.0/30-migrations.md` (section 6). CI builds a
-1.0.0 database both ways on SQLite and PostgreSQL, upgrades it, and runs
-`alembic check` to confirm the migrations still match the models.
+the rules in [docs/MIGRATIONS.md](./docs/MIGRATIONS.md#writing-a-new-revision).
+CI builds a 1.0.0 database both ways on SQLite and PostgreSQL, upgrades it, and
+runs `alembic check` to confirm the migrations still match the models.
 
 ---
 
@@ -189,10 +224,11 @@ the conventions in `docs/design/2.0/30-migrations.md` (section 6). CI builds a
 
 `desktop/README.md` covers building it yourself. To publish a release:
 
-1. Set the version in `backend/app/version.py` (e.g. `1.0.1`) and update
-   `desktop/RELEASE_NOTES.md`.
-2. Push a matching tag: `git tag v1.0.1 && git push origin v1.0.1` — or, where
-   only branches can be pushed, a `release/v1.0.1` branch, and the workflow
+1. Set the version in `backend/app/version.py` (e.g. `2.0.1`) and update
+   `desktop/RELEASE_NOTES.md`, including the database revision the release ends
+   at (the head in `backend/app/migrate.py`, `EXPECTED_HEAD`).
+2. Push a matching tag: `git tag v2.0.1 && git push origin v2.0.1` — or, where
+   only branches can be pushed, a `release/v2.0.1` branch, and the workflow
    makes the tag on the commit it built.
 3. The **Desktop release** workflow builds Windows (installer and portable zip),
    macOS (Apple silicon and Intel) and Linux, starts every build and checks it

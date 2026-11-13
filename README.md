@@ -1,36 +1,81 @@
 # AURA AI
 
-A personal executive assistant with an identity, a memory, and a set of skills it
-gets better at. FastAPI backend, Next.js frontend, a tool-calling agent that plans
-before it acts, works in the background, reaches you wherever you are, and earns
-permission rather than assuming it.
+AURA is a personal employee. It starts work from your first message: you give it
+an assignment, it plans, does the work with the systems you have assigned to it,
+checks the result and reports back. You decide what it may do on its own and
+what needs your approval.
 
-Run it on your own computer and it operates that computer: runs commands, works
-with your files, opens apps, watches the system, and drives the screen when a
-program offers nothing better. See **[DEVICE.md](./DEVICE.md)**.
+FastAPI backend, Next.js frontend, a tool-calling agent, a background worker.
+
+Run it on your own computer and it can work on that computer too: run commands,
+work with files in folders you connect, open apps, check the system and, when a
+program offers nothing better, use the screen. See **[DEVICE.md](./DEVICE.md)**.
 
 **Use it:** in the browser at <https://aura-ai-psi-self.vercel.app>, or download
 the desktop app for Windows, macOS or Linux from the home page's **Download**
 button ([latest release](https://github.com/udaysk-lab/AURA-AI-/releases/latest),
 details in [desktop/README.md](./desktop/README.md)).
 
----
-
-> **Deploying for real people?** Read [DEPLOY.md](./DEPLOY.md). It covers getting a
-> Claude API key, the secrets you must generate, the spend cap, and a pre-launch
-> checklist. `ENVIRONMENT=production` makes the app refuse to start while anything
+> **Running it for other people?** Read [DEPLOY.md](./DEPLOY.md): the secrets to
+> generate, the spend cap, the database upgrade and a release checklist.
+> `ENVIRONMENT=production` makes the app refuse to start while anything
 > insecure is outstanding.
 
-## Run it
+---
 
-**Just want to use it?** Download the desktop app from the home page. It is
-everything below in one program: it keeps its data in `~/.aura`, opens in your
-browser already signed in, and asks for a model key in Settings. The rest of
-this section is for running AURA from source.
+## What it can do today
 
-The fastest path needs **no database, no API keys, no Google account**. AURA boots
-on SQLite with a seeded sample workspace and an offline agent, so every screen
-works immediately.
+- **Work through a task.** AURA recalls similar past work and your preferences,
+  writes a plan, acts, checks what it changed and reports. Approving an action
+  continues the same task. A Stop button ends it. See
+  [docs/TASKS-AND-MEMORY.md](./docs/TASKS-AND-MEMORY.md).
+- **Use the systems you assign.** Inbox, Calendar, Tasks, Memory and Planning are
+  always on. Research, Documents, Delegation and Focus Guard can be added, and on
+  a local install so can This computer. A tool runs only if its system is
+  assigned.
+- **Read and send mail, manage the calendar and to-dos,** brief you for meetings
+  and the day. With Google connected it uses Gmail and Calendar; without, it
+  works on a sample workspace.
+- **Research and documents.** Web research with a search key; upload, search,
+  summarise and compare documents.
+- **Work while you are away.** The heartbeat triages mail and prepares your day.
+  Schedules run a standing instruction on a cron. Automations fire a fixed list
+  of actions on an event or a time. Each schedule and automation has its own
+  approval setting.
+- **Be reached from other places.** Email, Telegram, Slack and a CLI webhook feed
+  the same agent, once you have confirmed which sender is you.
+- **Keep secrets it cannot read.** The vault stores credentials the model never
+  sees.
+- **Remember how you like things done** and what it has done before, with
+  controls to view, edit, pause and reset. See
+  [docs/TASKS-AND-MEMORY.md](./docs/TASKS-AND-MEMORY.md).
+- **Work on your computer** (desktop app and local installs only).
+
+Without a model key, AURA runs an offline keyword demo so every screen works.
+It is not an assistant; add a key to get one.
+
+---
+
+## Quick start
+
+### The hosted app
+
+Open <https://aura-ai-psi-self.vercel.app>, sign in and give AURA something to
+do in the chat. Choose how much it may do on its own with the mode selector next
+to the message box (see [Permissions](#permissions)).
+
+### The desktop app
+
+Download it from the home page. It is the API, the worker and the web app as one
+program. It keeps its data in `~/.aura`, opens in your browser already signed in
+and asks for a model key in **Settings, AI model**. It can work on your computer.
+Details, first-launch notes and building it yourself:
+[desktop/README.md](./desktop/README.md).
+
+### From source
+
+The fastest path needs no database, no API keys and no Google account. AURA
+boots on SQLite with a sample workspace and the offline demo.
 
 ```bash
 # Backend
@@ -40,19 +85,20 @@ python -m venv .venv
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 
-# Worker — this is what makes it act while you're away (second terminal)
+# Worker: makes it act while you are away (second terminal)
 cd backend && python worker.py
 
 # Frontend (third terminal)
 cd frontend && npm install && npm run dev
 ```
 
-→ App on <http://localhost:3000>, API on <http://localhost:8000> (`/docs`, `/health`).
+The app is on <http://localhost:3000>, the API on <http://localhost:8000>
+(`/docs`, `/health`). Sign in with any email. `⌘K` opens the command palette.
 
-Sign in with any email, name your assistant, and you land in a populated workspace.
-`⌘K` opens the command palette from anywhere.
+The database schema is created and upgraded by the app when it starts. There is
+nothing to run (see [docs/MIGRATIONS.md](./docs/MIGRATIONS.md)).
 
-### Or run it as *your computer's* assistant
+**As your computer's assistant:**
 
 ```bat
 start-aura-local.bat      REM Windows
@@ -61,200 +107,99 @@ start-aura-local.bat      REM Windows
 ./aura-local.sh           # macOS / Linux
 ```
 
-Same app, plus the ability to operate the machine it's running on. One launch
-does everything (the background worker runs in-process), it binds to
-`127.0.0.1`, and the sign-in screen offers a single **Open AURA on this
-computer** button because a local install has exactly one user. There's a
-terminal client too:
+Same app, plus access to the machine it runs on. One launch does everything (the
+worker runs in the same process), it binds to `127.0.0.1`, and the sign-in screen
+offers **Open AURA on this computer** because a local install has one user.
+There is a terminal client too:
 
 ```bash
 ./aura.sh "what's eating my disk in ~/projects"
 ./aura.sh --status
 ```
 
-Device control is **off** in every other configuration, including the hosted
-one — see [DEVICE.md](./DEVICE.md) for what it does and the five things that
-stop it. The desktop app is this same setup, packaged: `desktop/` builds it,
-and [desktop/README.md](./desktop/README.md) explains how.
+Computer access is off in every other configuration, including the hosted site.
 
-**Docker:** `cp .env.example .env && docker compose up --build` brings up Postgres
+**Docker:** `cp .env.example .env && docker compose up --build` starts Postgres
 (pgvector), Redis, the API, the worker and the frontend.
 
 ---
 
-## The seven ideas this is built on
+## Permissions
 
-### 1. Skills, not tools
+You choose a **permission mode**. AURA cannot change it.
 
-A *tool* is a function the model can call. A **skill** is the unit you think in: a
-named capability with a code, a track record, and notes it has learned about how
-*you* like it done.
-
-```
-[SKILL·EM01] Processed 7 unread · 3 flagged · 4 awaiting reply
-[SKILL·MP01] Briefed: Northwind partner call · agenda and context ready
-[SKILL·RS02] Briefed Northwind Ventures · 4 emails · 5 sources
-```
-
-Twenty-eight skills across Email, Calendar, Meetings, Tasks, Memory, People,
-Research, Documents, Planning, Device and System. Each can be switched off — and switching
-it off strips its tools from the model's toolset entirely. **It cannot call what it
-cannot see**, which is a real guarantee rather than a prompt instruction. A test
-asserts no tool exists outside a skill, because an orphan tool would be permanently
-un-disableable.
-
-Teaching a skill stores a correction against it, replayed into the prompt whenever
-that skill is in scope. That's the mechanism behind "learns how you like things
-done" — a specific string in a specific prompt, not vibes.
-
-### 2. Plugins bundle skills
-
-The **hub** is a catalogue of installable plugin packs. Five core plugins ship
-enabled and can't be removed; optional ones (Research, Documents, Delegation, Focus
-Guard) unlock additional skills. Uninstalling *disables* rather than deletes, so a
-skill's learned notes and run history survive and reinstalling picks up where you
-left off.
-
-Plugins needing a connector that doesn't exist yet — GitHub, Slack, travel,
-expenses — are listed greyed out with the reason. Showing them is more honest than
-hiding them, and far more honest than shipping a stub that pretends to work.
-
-### 3. It works while you don't
-
-The **heartbeat** runs on a timer: syncs, triages new mail, pulls commitments out
-of flagged email into tasks, preps your next meeting, flags what's slipping. It
-leaves a short report at the top of your dashboard.
-
-**Schedules** are the other half — standing instructions that run a *prompt*
-through the full agent on a cron ("every weekday at 7:30, give me my briefing").
-Deliberately separate from automations, which fire a fixed list of tool calls:
-you want a hundred cheap automations and three expensive schedules, not the
-reverse by accident.
-
-Two hard rules, enforced in code rather than prompt: background work only runs
-skills you've enabled whose autonomy floor your tier clears, and it never fires an
-irreversible action.
-
-Memory compaction runs daily — merge near-duplicates, promote what gets used, let
-the unused fade. Without it memory only grows, retrieval degrades as duplicates
-crowd each other out, and every prompt costs more for less signal.
-
-### 4. Trust is graduated, and it accrues
-
-| Tier | Runs without asking |
+| Mode | What happens to an action that changes something |
 |---|---|
-| **Strict** | Reads only |
-| **Conservative** | + its own data (tasks, memory, notifications) |
-| **Relaxed** | + externally visible but recoverable (booking a meeting) |
-| **Full** | Everything, including sending email |
+| **Ask first** (default) | A card shows exactly what it would do and waits. |
+| **Auto** | A separate safety reviewer decides. Needs a connected model. |
+| **Skip approvals** | It runs without a card. |
 
-Every confirmation offers **Allow once / Allow 10 minutes / Always allow / Don't**.
-"Always" writes a standing grant that overrides the tier for that one tool — which
-is what turns the confirmation dialog from a toll booth into the way trust builds.
-Grants are listed and revocable in Settings.
+Reads and AURA's own workspace notes run without asking in every mode. On top of
+the mode you can write **rules** that block, ask or allow a system, a tool, or a
+tool limited to a path, command, recipient, address or app. Block comes first,
+then ask, then allow. One gate decides every action, whether it came from chat,
+a schedule or a message, and a few things always need you: permanently deleting
+files, connecting a folder or app, and changing permissions or settings.
 
-### 5. Reach it anywhere
+Cards offer allow once, allow for 10 minutes, always allow, or don't. Every
+permission change is written to a tamper-evident log.
 
-**Channels** — web, email, Telegram, Slack, CLI — all funnel into the same agent
-with the same skills and the same permission gate. A message from Telegram is not
-more trusted than one typed into the app, and there is exactly one code path
-deciding what the assistant may do.
+The full reference is in **[docs/PERMISSIONS.md](./docs/PERMISSIONS.md)**.
 
-A webhook has no login session, so each channel gets its own token: generated
-server-side, shown to you exactly once, compared in constant time, scoped to one
-channel of one account, rotatable. If an inbound message asks the assistant to send
-an email, it still queues for your approval.
+## Systems, tasks and memory
 
-### 6. It uses secrets it cannot read
+A **system** is a group of tools AURA can use (Inbox, Calendar, Research and so
+on). You assign them in **Systems**. A **task** runs as a loop: recall, plan,
+act, verify, report. AURA keeps a record of each task and the preferences you
+state or correct, filed by task type. You can view, edit, pause, turn off and
+reset them, and secrets are removed before anything is stored.
 
-The **vault** stores credentials with one design constraint: *the model never sees
-a value.* Not in a prompt, not in a tool argument, not in a result, not in a log.
-
-- Values are Fernet-encrypted at rest and never returned by the API — only a key, a
-  label and a masked hint (`sk_…456`).
-- Tools reference a secret as `{{vault:stripe_key}}`. The model can write that
-  because it's just a name; it can't write the value because it was never given it.
-- `resolve()` runs deterministically in Python immediately before an outbound call,
-  and its output goes to the network — never back into the conversation.
-
-Substitution happens after the model has finished deciding and before the request
-leaves the process. That ordering is the whole trick.
-
-### 7. On your own machine, it has hands
-
-Everything above is an assistant that *talks about* your work. Installed on your
-own computer, AURA also does it: runs commands, reads and writes your files,
-opens apps, reports on the system, and — for programs with no command line —
-takes a screenshot and drives the mouse and keyboard.
-
-The interesting part isn't the capability, it's that it needed no new
-permission system. A shell command is a tool like `send_email`: it goes in the
-registry, belongs to a skill you can switch off, is classed by risk, and is
-gated by the same four tiers. `run_command` sits in the top class, so below
-full trust it is queued with the actual command on the card:
-
-```
-Run on this computer:
-
-    rm -rf ~/old-project
-```
-
-Allow once, ten minutes, always, or refuse — and "always" is a standing grant
-you can revoke. That reuse is deliberate: the gate deciding whether AURA may
-run a command is the one that has been deciding whether it may send an email
-since the beginning, rather than a second system to keep in step.
-
-Underneath it, two things don't negotiate. The file tools resolve every path and
-refuse anything outside the folders you allowed or inside a credential folder,
-so no spelling of a path reaches `~/.ssh`. And the whole subsystem is off unless
-`LOCAL_MODE` says otherwise, so the hosted deployment has no device surface at
-all — it refuses to even start with device control on in production.
-
-It is off by default. [DEVICE.md](./DEVICE.md) is the full account.
+The details are in **[docs/TASKS-AND-MEMORY.md](./docs/TASKS-AND-MEMORY.md)**.
 
 ---
 
-## Architecture
+## How it fits together
 
 ```
-Next.js (App Router)  ──►  FastAPI  ──►  Coordinator agent
-      │                                       │
-   ⌘K palette              ┌──────────────────┼──────────────────┐
-   toasts, mobile          ▼                  ▼                  ▼
-                    Plugin registry      Skill registry       Memory
-                    (14 plugins)         (28 skills /         (semantic,
-                          │               60 tools)            compacted)
-                          ▼                  │
-                    Autonomy gate ──► PendingAction / ApprovalGrant
-                          │
-              ┌───────────┼───────────┬──────────────┐
-              ▼           ▼           ▼              ▼
-          Channels    Documents     Vault      Integrations
-        (web · email  (chunked,   (encrypted,  (Gmail, Calendar,
-         telegram      embedded)   never read)  web search)
-         slack · cli)
-                          │
-                  PostgreSQL / SQLite
-                          ▲
-        Worker: automations · schedules · heartbeat · compaction
+Next.js (App Router)  ──►  FastAPI  ──►  Task loop (recall, plan, act, verify, report)
+      │                                        │
+   ⌘K palette                                  ▼
+   task panel                         ┌─ Permission gate ─┐  one decision for every tool call
+   mode selector                      │  mode · rules ·   │
+                                      │  hard limits      │
+                                      └─────────┬─────────┘
+                                                ▼
+        Systems (plugins) → skills → tools      Two memories: past work, preferences
+        Inbox · Calendar · Tasks · Memory ·     (plus facts)
+        Planning · Research · Documents ·
+        Delegation · Focus · This computer
+                                                ▼
+                 Channels · Documents · Vault · Google · Web search
+                                                ▼
+                                       PostgreSQL / SQLite
+                                                ▲
+              Worker: tasks that need a next step · automations ·
+                      schedules · heartbeat · memory compaction
 ```
 
-**The agent loop** (`agent/coordinator.py`): detect corrections → retrieve memory →
-build the prompt from persona + memory + learned notes + vault key names → call the
-model → gate each tool call through the autonomy tier → dispatch → log a skill run →
-feed results back → repeat until it answers or the step budget runs out. The
-coordinator knows nothing about any individual tool.
+**The task loop** (`agent/taskloop.py`) builds the prompt from the persona,
+recalled past work, preferences, facts and the names of your vault keys, calls
+the model, sends every tool call through the gate, runs the allowed ones, checks
+the result, and feeds it back until the task is done, needs you, hits a limit or
+is stopped. Its state is saved after every call so an approval, a restart or a
+crash resumes the same task. The coordinator knows nothing about any individual
+tool.
 
-**Provider adapters** (`llm.py`) normalise OpenAI, Anthropic and an offline mock
-behind one interface. The mock is a keyword router — not intelligence, but enough
-that every screen, tool path and confirmation flow works with no keys.
+**Provider adapters** (`llm.py`) put OpenAI, Anthropic and an offline mock behind
+one interface. The mock is a keyword router. It has no vision, cannot act as the
+Auto reviewer, and is only there so every screen works with no keys.
 
 ---
 
 ## Switching on the real agent
 
-AURA runs Claude by default. Get a key at **<https://console.anthropic.com>** →
-API Keys (billing must be enabled on the account), then:
+AURA runs Claude by default. Get a key at **<https://console.anthropic.com>**
+(API Keys; billing must be on), then:
 
 ```bash
 # .env in the project root
@@ -262,47 +207,58 @@ ANTHROPIC_API_KEY=sk-ant-...
 ANTHROPIC_MODEL=claude-sonnet-5-5
 ```
 
-Restart the backend and check `/setup` — it will tell you the provider is live.
-On the desktop app (or any local install) paste the key in **Settings → AI
-model** instead; it is written to the settings file on that computer and takes
-effect without a restart.
+Restart the backend and check `/setup`, which says whether the provider is live.
+On the desktop app or any local install, paste the key in **Settings, AI model**
+instead; it is written to the settings file on that computer and takes effect
+without a restart.
 
-**Why the env file and not the in-app vault?** The vault is for a *user's* third-party
-secrets: encrypted per row, decrypted on demand, never readable by the model. Your
-Claude key is *infrastructure* — needed before any user exists, on every request, at
-process start. In the database it would mean a database leak also leaks your billing
-credential, with a decrypt on every call for no security gain.
+The key belongs in the environment, not the in-app vault. The vault is for a
+user's own third-party secrets. A model key is infrastructure: needed before any
+user exists, on every request. In the database it would mean a database leak
+also leaks your billing credential.
 
 ### Everything else is optional
 
 | Want | Set |
 |---|---|
-| Better memory + document search | `OPENAI_API_KEY` — used **only** for embeddings; Claude still reasons |
-| Gmail + Calendar | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, redirect `http://localhost:8000/api/auth/google/callback` |
+| Better memory and document search | `OPENAI_API_KEY`, used **only** for embeddings |
+| A cheaper model for background work | `BACKGROUND_MODEL` |
+| A different model for the Auto reviewer | `REVIEWER_MODEL` (else `BACKGROUND_MODEL`, else the main model) |
+| Gmail and Calendar | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, redirect `http://localhost:8000/api/auth/google/callback` |
 | Sending email without Gmail | `SMTP_HOST` / `SMTP_FROM` / `SMTP_USERNAME` / `SMTP_PASSWORD` |
-| Web research | `SEARCH_PROVIDER=brave\|serper\|tavily` + `SEARCH_API_KEY` |
+| Web research | `SEARCH_PROVIDER=brave\|serper\|tavily` and `SEARCH_API_KEY` |
 | Shared rate limits across workers | `REDIS_URL` |
 | Postgres | `DATABASE_URL=postgresql+psycopg://aura:aura@localhost:5432/aura` |
 
-Each missing piece degrades honestly rather than breaking: no embeddings means
-lexical search, no search key means research uses your own data and says so, no send
-route means `send_email` reports that nothing was sent instead of pretending.
+Each missing piece degrades honestly: no embeddings means word-overlap search, no
+search key means research uses your own data and says so, no send route means
+`send_email` reports that nothing was sent.
 
-`/setup` lists exactly what's configured and the command to fix what isn't. It's
-reachable without signing in, because the most likely reason you *can't* sign in is
-that something in there is wrong. It names settings, never values.
+`/setup` lists what is configured and what to do about what is not. It is
+reachable without signing in, because the likeliest reason you cannot sign in is
+that something there is wrong. It names settings, never values.
+
+### Configuration files
+
+| File | For |
+|---|---|
+| [`.env.example`](./.env.example) | Every setting, with the defaults, for running from source or on a computer |
+| [`backend/.env.example`](./backend/.env.example) | The backend alone, for development |
+| [`.env.production.example`](./.env.production.example) | A server you run for other people |
+| [DEPLOY.md](./DEPLOY.md) | The hosted site, secrets, background work, releases |
+| [DEVICE.md](./DEVICE.md) | Settings for working on your computer |
 
 ### Spend guard
 
-An agent loop plus a heartbeat plus inbound webhooks is three ways to spend money
-unattended. `DAILY_SPEND_CAP_USD` (default $5) is the backstop: checked **before**
-each model call, not after, and background work is limited to 40% of it so
-unattended spending can never starve the interactive budget you'd actually notice.
-Settings shows today's spend broken down by source.
+An agent loop, a heartbeat and inbound messages are three ways to spend money
+unattended. `DAILY_SPEND_CAP_USD` (default 5) is the backstop. It is checked
+before each model call, and background work is limited to 40% of it so
+unattended spending cannot use up what you would notice. The Auto reviewer's
+calls count too. Settings shows today's spend by source.
 
-Costs come from a price table in `services/usage.py` used *only* for the cap — it's
-not billing. Verify it against current provider pricing; an unrecognised model is
-priced pessimistically on purpose. Set a billing alert in the Anthropic console too.
+The cost comes from a price table in `services/usage.py`, used only for the cap.
+It is not billing. Check it against current provider pricing; an unrecognised
+model is priced high on purpose. Set a billing alert with the provider as well.
 
 ---
 
@@ -310,56 +266,56 @@ priced pessimistically on purpose. Set a billing alert in the Anthropic console 
 
 ```
 backend/app/
-  main.py · config.py · db.py · models.py (30 tables) · schemas.py · security.py
+  main.py · config.py · db.py · models.py · schemas.py · security.py
+  migrate.py             The start-up schema runner (Alembic is the only schema path)
   middleware.py          Security headers, rate limits, the local-install Host guard
   web.py                 Serves the exported web app (desktop app only)
   llm.py                 OpenAI / Anthropic / Mock adapters
-  plugins.py             Plugin catalogue and install state
+  plugins.py             Systems: the catalogue and what is assigned
+  permissions/
+    gate.py              The one decision function
+    catalogue.py         Every tool: its system and its kind of action
+    rules.py · match.py · shellparse.py · pathglob.py   Rules and how they match
+    floors.py            The hard limits
+    access.py            Connected folders, app grants, the blocked list, presence
+    approvals.py         Approval cards: queueing, answering, expiry
+    reviewer.py          The Auto-mode safety reviewer
+    triggers.py          What schedules, automations and inbound messages may not do
+    events.py · changes.py · legacy.py   The change log and its notices
   agent/
-    coordinator.py       The loop, corrections, approvals, streaming
-    skills.py            28-skill catalogue and per-user state
-    autonomy.py          Risk classes, four tiers, standing grants
-    tools.py             31 assistant tools + registry
-    device_tools.py      29 device tools (local installs only)
-    prompts.py           System prompt, rule compiler, correction detector
+    coordinator.py       Entry points for a turn; streaming
+    taskloop.py          The task loop: plan, act, verify, report, resume, stop
+    verifiers.py         Read-back checks after changes
+    skills.py            The skill catalogue and per-user state
+    tools.py             The assistant tools and the registry
+    device_tools.py      The computer tools (local installs only)
+    prompts.py           System prompt and the reviewer and extractor prompts
   services/
-    identity.py          Assistant persona and the growth arc
-    heartbeat.py         Proactive background work
-    schedules.py         Cron-driven agent prompts
-    memory.py            Semantic store, retrieval, compaction
-    documents.py         Extract, chunk, embed, search, compare
-    research.py          Pluggable web search + sourced synthesis
-    vault.py             Encrypted secrets the model can't read
-    channels.py          Inbound routing for every surface
-    google.py            Gmail + Calendar sync
-    briefing.py · triage.py · demo.py
+    workmemory.py        Past work: recording and recall
+    preferences.py       Preferences: capture, conflicts, retrieval
+    tasktypes.py · redaction.py
+    identity.py          The assistant's name, voice and look
+    heartbeat.py · schedules.py · memory.py · documents.py · research.py
+    vault.py · channels.py · google.py · briefing.py · triage.py · usage.py · demo.py
   automation/engine.py   Rule compilation, matching, cron
-  device/                Local device control (off unless LOCAL_MODE)
-    runtime.py           The master switch, OS facts, capability probing
-    policy.py            Command classification, allowlist, denylist
-    shell.py             Foreground and background command execution
-    files.py             The folder fence, and file operations inside it
-    apps.py · screen.py · system.py
-  api/                   auth · chat · workspace · intelligence · hub · assistant · device
-                         local (model + remote settings) · remote (pairing) · cron (Vercel)
-worker.py                automations · schedules · heartbeat · compaction
-                         (runs in-process on a local install)
+  device/                Computer access (off unless LOCAL_MODE)
+  api/                   auth · chat · work · permissions · workspace · intelligence ·
+                         hub · assistant · device · local · remote · cron · account
+backend/alembic/         The schema migrations
+worker.py                Tasks that need a next step, automations, schedules,
+                         heartbeat, compaction (in-process on a local install)
 aura_cli.py              Terminal client
-aura_desktop.py          The desktop app's launcher: data folder, server, window, smoke test
+aura_desktop.py          The desktop app's launcher
 
 desktop/                 PyInstaller recipe, build script, Windows installer, icons
-.github/workflows/       ci.yml (tests on Linux/Windows/macOS) · desktop-release.yml
+docs/                    PERMISSIONS.md · TASKS-AND-MEMORY.md · MIGRATIONS.md
+.github/workflows/       ci.yml (tests on Linux, Windows, macOS) · desktop-release.yml
 
 frontend/
-  app/                   Landing, login, password reset, onboarding, 15 app pages
-  components/
-    Mascot.tsx           The assistant's face — shifts with its stage
-    CommandPalette.tsx   ⌘K navigation and actions
-    Toast.tsx            Toasts, useAction, useHotkey
-    Sidebar.tsx          Identity, growth, grouped nav, mobile drawer
-    ui.tsx               Primitives, skill-log lines, markdown renderer
-  components/landing/    The home page, including the Download section
-  lib/api.ts             Typed client — single source of the API contract
+  app/                   Landing, login, password reset, setup, the app pages
+  components/            Sidebar, task panel, mode picker, approval card,
+                         command palette, toasts, UI primitives
+  lib/api.ts             Typed client; the single source of the API contract
   lib/downloads.ts       Release file names the Download buttons point at
 ```
 
@@ -370,24 +326,27 @@ frontend/
 | Area | Endpoints |
 |---|---|
 | Auth | `POST /api/auth/register`, `/login`, `/demo`, `/local` (local installs), `/password/forgot`, `/password/reset`; `GET /api/auth/config`, `/google/start`, `/me`, `/integrations` |
-| Chat | `POST /api/chat`, `POST /api/chat/stream` (SSE), conversation CRUD |
+| Chat | `POST /api/chat`, `/api/chat/stream` (SSE), `/api/chat/continue`, `/api/chat/stop`; conversation CRUD; `PATCH /api/chat/conversations/{id}/memory` |
+| Tasks | `GET /api/work-items`, `/work-items/{id}`, `/task-types`; `PATCH`, `DELETE /api/work-items/{id}`; `POST /api/work-items/{id}/feedback` |
+| Preferences | `GET/POST /api/preferences`, `PATCH/DELETE /api/preferences/{id}` |
+| Memory | `GET/POST /api/memories`, `PATCH/DELETE /api/memories/{id}`, `GET/PATCH /api/memory/settings`, `POST /api/memory/reset` |
+| **Permissions** | `GET /api/permissions`, `PUT /api/permissions/mode`, `/boundaries`; `GET/POST /api/permissions/rules`, `PATCH/DELETE /api/permissions/rules/{id}`; `GET /api/permissions/events`, `/events/verify`, `/catalogue` |
+| Approvals | `GET /api/pending-actions`, `POST /api/pending-actions/{id}` |
+| **Systems** | `GET /api/plugins`, `/plugins/summary`, `POST /api/plugins/{id}/install`, `/uninstall` |
 | Skills | `GET /api/skills`, `/skills/stats`, `/skills/activity`, `PATCH /api/skills/{code}`, `POST /api/skills/{code}/teach` |
-| **Plugins** | `GET /api/plugins`, `/plugins/summary`, `POST /api/plugins/{id}/install`, `/uninstall` |
-| **Channels** | `GET /api/channels`, `POST /api/channels/connect`, `/{kind}/rotate`, `POST /api/channels/inbound/{kind}` |
+| **Channels** | `GET /api/channels`, `POST /api/channels/connect`, `/{kind}/rotate`, `/{kind}/disconnect`, `PUT /api/channels/{kind}/owner`, `POST /api/channels/inbound/{kind}` |
 | **Vault** | `GET /api/vault`, `PUT /api/vault`, `DELETE /api/vault/{key}` |
 | **Documents** | `GET /api/documents`, `/documents/search`, `POST /api/documents/upload`, `/documents/text`, `/{id}/summarize` |
 | **Schedules** | `GET/POST /api/schedules`, `PATCH /api/schedules/{id}`, `POST /api/schedules/{id}/run` |
-| Identity | `GET/PATCH /api/assistant`, `POST /api/assistant/hatch` |
+| Assistant | `GET/PATCH /api/assistant` |
 | Heartbeat | `GET /api/heartbeat`, `/heartbeat/latest`, `POST /api/heartbeat/run` |
-| Trust | `GET /api/pending-actions`, `POST /api/pending-actions/{id}` (`reject`\|`once`\|`always`\|`window`), `GET/DELETE /api/grants` |
-| **Device** (local only) | `GET /api/device`, `/device/system`, `/device/files`, `/device/processes`, `/device/background`, `POST /api/device/run` |
+| **This computer** (local only) | `GET /api/device`, `/device/system`, `/device/files`, `/device/processes`, `/device/background`, `/device/folders`, `/device/apps`; `POST /api/device/run`, `/device/blocklist`; `PUT /api/device/screen-control`, `/device/apps/{id}` |
 | **Local settings** (local only) | `GET/PUT /api/local/provider`, `POST /api/local/provider/test`, `GET/PUT /api/local/remote` |
 | **Remote access** (local only) | `GET /api/remote/status`, `POST /api/remote/pairing`, `POST /api/remote/pair`, `GET /api/remote/devices`, `DELETE /api/remote/devices/{id}` |
 | Platform cron | `GET /api/cron/tick` (Vercel crons; runs the worker when `CRON_SECRET` is set) |
-| Email · Calendar · Tasks · Memory · Automations · Delegations | see `/docs` |
+| Email · Calendar · To-dos · Automations · Delegations | see `/docs` |
 
 ---
-
 
 ## Tests
 
@@ -395,108 +354,84 @@ frontend/
 cd backend && pytest -q
 ```
 
-Everything runs on throwaway SQLite with the mock provider — no keys, no infra —
-and CI (`.github/workflows/ci.yml`) runs it on Linux, Windows and macOS, plus
-once without the optional device packages, then type-checks and builds both
-versions of the frontend.
+Everything runs on throwaway SQLite with the mock provider: no keys, no
+infrastructure. CI (`.github/workflows/ci.yml`) runs it on Linux, Windows and
+macOS, once more without the optional device packages, runs the migrations
+against SQLite and PostgreSQL, and type-checks and builds both versions of the
+frontend.
 
-`test_smoke.py` covers behaviour: skills, plugins, autonomy tiers, channels,
-documents, schedules, identity, memory. `test_device.py` covers device control,
-and is mostly about refusal — that it's off by default, that the folder fence
-can't be climbed with `..`, a symlink or a change of letter case, that startup
-items and git hooks can't be written, that a command below full trust is
-queued rather than run (checked by asserting the file it would have written
-doesn't exist), and that a disabled skill's tools never reach the model.
-`test_desktop.py` covers the local install: the Host guard, the owner sign-in
-key, pairing and paired-device limits, the settings screens, the launcher,
-serving the web app. `test_chat_live.py` covers the live chat stream, emailed
-schedules, the Vercel cron and password reset. `test_production_guards.py`
-covers the things that stay invisible until they cost money or leak something —
-spend cap enforcement, background budget isolation, rate-limit windows, security
-headers, `send_email` never claiming a send it didn't make, export excluding
-secret values, and account deletion cascading properly.
+What the tests cover:
+
+- **Permissions** (`test_perm_*`): the gate's order, every tool's catalogue entry,
+  rules and how they match, approval cards, the Auto reviewer, schedules,
+  inbound messages, connected folders, screen control, the change log, and the
+  upgrade of 1.0 settings.
+- **Review fixes** (`test_sec_*`): regression tests for each security fix.
+- **Tasks and memory**: the loop, resuming after an approval, past-work recall,
+  preferences, secret removal, work-item and memory controls.
+- **Migrations** (`test_migrations.py`): every revision on an empty database, a
+  1.0.0 database and a stamped one; locking; backups.
+- **Computer access** (`test_device.py`): mostly about refusal. It is off by
+  default, folders cannot be left with `..`, links or letter case, start-up
+  items and git hooks cannot be written, and an action that needs approval does
+  not run until it is given.
+- **The local install** (`test_desktop.py`): the Host guard, the sign-in key,
+  pairing, the settings screens, the launcher.
+- **Production guards** (`test_production_guards.py`): the spend cap, background
+  budget, rate-limit windows, security headers, `send_email` never claiming a
+  send it did not make, export excluding secret values, and account deletion.
 
 The desktop builds have their own end-to-end check, `--smoke-test`, which the
-release workflow runs against every build it makes (see
+release workflow runs against every build (see
 [desktop/README.md](./desktop/README.md)).
 
 ---
 
 ## Known limitations
 
-Honest list, because these are what will bite first:
-
-- **Never load-tested.** The test suite runs on three operating systems and the
-  desktop builds are started and checked end to end, but nobody has measured
-  how it behaves under real traffic.
-- **Schema changes are Alembic revisions; the app applies them at start-up.**
-  There is no `create_all` and no setting to choose (`AUTO_CREATE_SCHEMA` is
-  ignored). A 1.0.0 database is recognised and upgraded; SQLite is backed up
-  first. Details and the release checklist are in DEPLOY.md, Database migrations.
-- **One worker process only.** Schedule de-duplication is per-process, so a second
-  worker double-fires everything. A Redis lock around `run_due` is the fix.
+- **Never load-tested.** The tests run on three operating systems and the desktop
+  builds are started and checked end to end, but nobody has measured behaviour
+  under real traffic.
+- **One worker process only.** Schedule de-duplication is per process, so a second
+  worker double-fires everything.
 - **Background work on the hosted site runs three times a day.** Vercel's Hobby
   plan allows daily crons only, so `vercel.json` calls the worker at 01:00, 09:00
   and 17:00 UTC (once `CRON_SECRET` is set). A schedule fires on the next tick
-  after its time; the desktop app runs its worker continuously instead.
-- **Inbound channel tokens don't expire.** Rotatable and rate-limited, but no TTL.
-- **Similarity runs in Python.** Memory and document embeddings live in JSON
-  columns so one schema works on SQLite and Postgres. Fine to the low tens of
-  thousands of chunks. Past that, migrate to `vector(1536)` and swap the ranking
-  loop for `ORDER BY embedding <=> :q`.
-- **Streaming is step-level, not token-level.** The chat shows each tool as it
-  runs and each approval as it's queued, but the reply arrives whole: the adapters
-  make non-streaming calls so tool-calling behaves identically across providers.
-- **Correction detection is regex-triggered.** A correction phrased without a
-  marker phrase is missed; the model is only consulted once a marker fires, which
-  keeps cost near zero but means recall is imperfect. Teaching a skill always works.
-- **The vault protects against the model, not against you.** Anyone with your JWT
-  can't read values, but anyone with the database *and* `SECRET_KEY` can. Use a
-  real KMS in production.
-- **The cron matcher is minimal** — `*`, values, lists, `a-b`, `*/n`. Swap in
-  croniter for anything more.
+  after its time, and a task left waiting while the page is closed continues on
+  the next tick. The desktop app runs its worker continuously.
+- **Commands are not sandboxed.** A command runs as your operating-system user and
+  can reach anything that user can. What stands in front of it is the gate (mode,
+  rules, cards), block rules, the install's denylist, the refusal of commands
+  that name AURA's own files, and the change log. That is not an
+  operating-system wall. See [DEVICE.md](./DEVICE.md).
+- **Auto is a model's judgement.** It can be wrong. Use Ask first where a mistake
+  would cost you.
+- **Screen control is pixels, not structure.** AURA looks at a screenshot and
+  clicks a position. A window that moves between the screenshot and the click
+  means a misclick. Prefer the command line where a task has one.
+- **Without a model key it cannot see,** and it cannot review actions. The demo
+  model has no vision, so screen control needs a real model, and Auto is
+  unavailable.
+- **Schedules can use files and commands** in connected folders, under the
+  schedule's own approval setting. They cannot use the screen, the clipboard or
+  apps. Nothing else runs commands unattended.
+- **A restart loses the keyboard to background commands.** AURA can still list
+  one, read its output and stop it, but not type into it.
+- **Inbound channel tokens do not expire.** They are rotatable and rate-limited.
+- **Similarity runs in Python.** Embeddings live in JSON columns so one schema
+  works on SQLite and Postgres. Fine to the low tens of thousands of chunks.
+- **Streaming is step-level, not token-level.** The chat shows each tool as it runs
+  and each approval as it is queued, but the reply arrives whole.
+- **Secret removal is pattern-based.** Do not paste secrets into chat.
+- **The vault protects against the model, not against you.** Anyone with the
+  database and `SECRET_KEY` can read it. Use a real key-management service in
+  production.
+- **The cron matcher is minimal:** `*`, values, lists, `a-b`, `*/n`.
 - **`ALLOW_DEMO_LOGIN=true` is a password-free login.** Turn it off in production;
-  startup warns if you don't.
-- **The shell is not sandboxed.** A command runs as your OS user and can reach
-  anything that user can, whatever `DEVICE_ALLOWED_ROOTS` says — that fence
-  binds the file tools. What holds the shell back is the approval gate in front
-  of it and the denylist beneath it, which is why `run_command` needs full
-  trust or an explicit grant. If you want a real boundary rather than a gate,
-  leave the Command Line skill off and give AURA the file tools only.
-- **A restart loses the keyboard to background commands.** What `run_in_background`
-  started is recorded in `~/.aura/commands`, so after a restart AURA still lists
-  it, reads its output and can stop it (once `psutil` confirms the process id
-  still belongs to it) — but it can no longer type into it, because that pipe
-  belonged to the old process.
-- **Device actions never run unattended.** Every device skill is
-  `proactive=False`, so the heartbeat will not run commands or drive the screen
-  while you're away. That's a deliberate default rather than a limitation of
-  the mechanism — but it does mean "do this overnight" isn't available yet.
-- **Screen control is pixels, not structure.** AURA takes a screenshot, the
-  image goes to the model, and it clicks the coordinates it reads off it. There
-  is no accessibility-tree awareness, so it has no handle on "the Save button" —
-  only on a position. A window that moves between screenshot and click means a
-  misclick, and the downscaled copy it looks at costs it some precision on small
-  targets. Prefer the command line wherever the task has one.
-- **Without a model key, it cannot see.** The offline mock provider has no
-  vision, so screenshots reach it as a note that an image was attached. Screen
-  control needs a real model (`ANTHROPIC_API_KEY`, or OpenAI) to be worth
-  anything.
-- **Remote access is plain HTTP.** A paired phone talks to the computer over your
-  network unencrypted, so its token can be read by anyone on the same Wi-Fi. Use a
-  network you trust, or Tailscale (encrypted, and it works from anywhere). Off by
-  default.
-- **The desktop builds aren't code-signed.** Windows SmartScreen and macOS
-  Gatekeeper warn on first open; the download section says how to get past it.
-  Signing needs a Windows certificate and an Apple Developer ID.
-- **No automatic updates.** The desktop app's window says when a newer release is
-  out and links to it; installing it is still a download.
-
----
-
-## Where this goes next
-
-The plugin registry is the extension point. Slack, GitHub, Notion, travel and
-expenses each become a service module plus a plugin entry — no coordinator change.
-Voice and SMS are channel entries. Document RAG already reuses the embedding path.
-Multi-agent is the first change that would genuinely restructure the loop.
+  startup warns if you do not.
+- **Remote access is plain HTTP.** A paired phone talks to the computer unencrypted
+  on your network. Use a network you trust, or Tailscale. Off by default.
+- **The desktop builds are not code-signed.** Windows SmartScreen and macOS
+  Gatekeeper warn on first open.
+- **No automatic updates.** The desktop app says when a newer release is out and
+  links to it; installing it is a download.
