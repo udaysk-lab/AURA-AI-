@@ -123,6 +123,12 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
     max_agent_steps: int = 8
+    # Task loop (spec 20 section 7): model calls per work item across all segments, the wall time
+    # after which a segment starts no new model call, and how long the worker leaves a `ready` chat
+    # item alone so the open page continues it first.
+    max_task_steps: int = 40
+    segment_seconds: int = 200
+    resume_grace_seconds: int = 60
 
     # --- Spend guard ------------------------------------------------------
     # A tool-calling loop plus a heartbeat can spend money unattended. This is

@@ -23,6 +23,7 @@ from app.schemas import (
 from app.services import heartbeat as heartbeat_service
 from app.services import identity as identity_service
 from app.services import memory as memory_service
+from app.services import preferences as preference_service
 
 router = APIRouter(prefix="/api", tags=["intelligence"])
 
@@ -72,7 +73,7 @@ def _skill_views(db, user, category: str = "") -> list[SkillOut]:
                 run_count=row.run_count if row else 0,
                 success_count=row.success_count if row else 0,
                 last_run_at=row.last_run_at if row else None,
-                learned_notes=list(row.learned_notes or []) if row else [],
+                learned_notes=preference_service.skill_notes(db, user.id, code),
             )
         )
     return sorted(out, key=lambda s: (s.category, s.code))
@@ -184,17 +185,16 @@ def teach_skill(
     """Tell a skill how you want it done. Replayed into the prompt from now on."""
     code = code.upper()
     _require_visible(db, user, code)
-    skill_registry.teach(db, user.id, code, payload.note.strip())
+    preference_service.teach(db, user, code, payload.note.strip())
     return _skill_view(db, user, code)
 
 
 @router.delete("/skills/{code}/notes")
 def clear_skill_notes(code: str, user: CurrentUser, db: DbSession) -> dict:
-    row = skill_registry.get_user_skill(db, user.id, code.upper())
-    if not row:
+    code = code.upper()
+    if code not in skill_registry.CATALOG:
         raise HTTPException(status_code=404, detail="Unknown skill")
-    row.learned_notes = []
-    db.commit()
+    preference_service.clear_skill_notes(db, user.id, code)
     return {"message": "Cleared"}
 
 

@@ -211,6 +211,8 @@ def apply_environment(home: Path, config: Path, port: int, bind_host: str, web: 
     os.environ.setdefault("DATABASE_URL", f"sqlite:///{(home / 'aura.db').as_posix()}")
     os.environ.setdefault("DEBUG", "false")
     os.environ.setdefault("MAX_AGENT_STEPS", "16")
+    os.environ.setdefault("MAX_TASK_STEPS", "60")
+    os.environ.setdefault("SEGMENT_SECONDS", "600")
 
     # AURA's own data and its own code are off limits to its file tools.
     extra = [p for p in os.environ.get("DEVICE_EXTRA_PROTECTED_PATHS", "").split(",") if p.strip()]

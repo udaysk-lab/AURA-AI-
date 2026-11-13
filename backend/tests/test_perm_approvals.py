@@ -692,8 +692,9 @@ def test_a_failing_hook_never_undoes_the_answer(env, monkeypatch):
     assert out["work_item"] is None and status_of(db, a) == "approved" and db.get(Task, task.id) is None
 
 
-def test_without_a_loop_module_the_work_item_is_none(env):
+def test_without_a_loop_module_the_work_item_is_none(env, monkeypatch):
     _, db = env
+    monkeypatch.setitem(sys.modules, "app.agent.taskloop", None)  # as if the module did not exist
     user = mk(db)
     task = Task(user_id=user.id, title="Bye")
     db.add(task)

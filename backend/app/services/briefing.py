@@ -201,12 +201,12 @@ def build_briefing(db: Session, user: User) -> dict:
 
 
 def draft_reply(db: Session, user: User, email: EmailMessage, instruction: str) -> dict:
-    """Generate a reply draft, using stored writing-style memories as context."""
-    from app.services import memory as memory_service
+    """Generate a reply draft, using the user's email preferences as context."""
+    from app.services import preferences as preference_service
 
-    style, _ = memory_service.build_context_block(
-        db, user.id, "writing style tone email preferences", limit=4
-    )
+    rows = preference_service.select_rows(db, user.id, "email", None)
+    style, kept = preference_service.format_block(rows, "email")
+    preference_service.mark_used(db, kept)
     provider = get_provider()
 
     if provider.name == "mock":

@@ -47,6 +47,8 @@ class ToolContext:
     # The sealed gate decision that allowed this call (handlers may read its targets).
     # Set by coordinator.execute_tool; None only for code that builds a context by hand.
     decision: Any = None
+    # The work item this call belongs to (task loop); links the ActivityLog rows it writes.
+    work_item_id: str | None = None
 
 
 @dataclass
@@ -247,6 +249,7 @@ def _log(ctx: ToolContext, action: str, target: str = "", detail: dict | None = 
         ActivityLog(
             user_id=ctx.user.id, actor="agent", action=action,
             target=target[:300], status=status, detail=detail or {},
+            work_item_id=ctx.work_item_id,
         )
     )
     ctx.db.commit()
@@ -917,24 +920,32 @@ def _delete_task(ctx: ToolContext, args: dict) -> dict:
 
 @tool(
     "save_memory",
-    "Store a durable fact about the user: a preference, a project detail, a decision, or "
-    "how they like to communicate. Do not store transient one-off requests.",
+    "Store a durable fact about a person, project or decision. Do not store transient one-off "
+    "requests. (How the user wants work done is kept automatically; do not save it here.)",
     {
         "type": "object",
         "properties": {
             "content": {"type": "string"},
             "kind": {
                 "type": "string",
-                "enum": ["preference", "contact", "project", "decision", "style", "habit", "fact"],
+                "enum": ["fact", "contact", "project", "decision"],
             },
         },
         "required": ["content"],
     },
 )
 def _save_memory(ctx: ToolContext, args: dict) -> dict:
+    from app.models import UserSettings
+
+    row = ctx.db.scalars(select(UserSettings).where(UserSettings.user_id == ctx.user.id)).first()
+    if row is not None and row.memory_paused:
+        return {"saved": False, "reason": "Memory is paused"}
+    kind = args.get("kind") or "fact"
+    if kind not in ("fact", "contact", "project", "decision"):
+        kind = "fact"  # preference / style / habit live in the preference store now
     m = memory_service.remember(
         ctx.db, ctx.user.id, args["content"],
-        kind=args.get("kind") or "fact", source="chat", confidence=0.85,
+        kind=kind, source="chat", confidence=0.85,
     )
     _log(ctx, "save_memory", m.content[:80])
     return {"message": "Noted.", "id": m.id, "content": m.content, "kind": m.kind}

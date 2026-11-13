@@ -172,6 +172,7 @@ def record(
     usage: Usage,
     trigger: str = "chat",
     skill_code: str = "",
+    work_item_id: str | None = None,
 ) -> UsageRecord | None:
     """Log one model call. Cheap and unconditional — this is the audit trail."""
     if not usage.total:
@@ -181,6 +182,7 @@ def record(
         model=usage.model or "unknown",
         trigger=trigger,
         skill_code=skill_code,
+        work_item_id=work_item_id,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cost_usd=estimate_cost(usage),
@@ -222,7 +224,7 @@ def check(
 
     budget = state.cap_usd
     if background is None:
-        background = trigger in ("heartbeat", "schedule", "automation")
+        background = trigger in ("heartbeat", "schedule", "automation", "resume")
     if background:
         budget *= BACKGROUND_BUDGET_SHARE
 

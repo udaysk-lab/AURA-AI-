@@ -30,3 +30,26 @@ still in place for WP3 to replace.
   only for rows with a work_item_id) and the hook writes PendingAction.result; the reviewer's fall-back counters
   (3 consecutive / 20 per run) are kept by the loop per work item and passed in the gate context; maybe_learn
   runs only for trigger == "chat"; usage.check has background=.
+
+## After WP3-WP4 (committed). Suite: 1126 passed, 40 skipped. No new revision.
+New: app/agent/taskloop.py (loop, bookkeeping tools, outcome table, resume, stop, expiry, on_pending_resolved),
+app/agent/verifiers.py, tests scripted.py, test_taskloop, test_taskloop_resume, test_taskloop_memory.
+api/chat.py has continue, stop and the 409 answers. skills.teach and learned_notes_block are deleted; the teach
+and notes endpoints in api/intelligence.py call preferences.teach / skill_notes / clear_skill_notes (minimal
+rewire; WP6 owns their final form). PREFERENCE_EXTRACTOR is in prompts.py. demo.py seeds Preference rows;
+briefing.draft_reply takes its style from the preference service.
+- LoopState.dump deep-copies through JSON (SQLAlchemy does not see in-place edits of nested dicts): keep that.
+- The `recall` event carries its lists under `recalled: {past_work, preferences}` (preferences is the count key).
+- A reviewer block on a write tool counts as a bad write in the outcome table.
+- If the client disconnects or the loop raises, the item is parked ready / interrupted; resume marks open calls
+  interrupted. AgentResult lives in taskloop.py (coordinator re-exports it).
+- NOT written yet, for WP5: on_finished (schedule / inbound notifications), resume_due.
+  claim_for_resume(background=True) and iter_resume(background=True) give the "resume" budget trigger;
+  recover_stale is ready. schedules.run_one and channels.handle_inbound still use run_agent and work unchanged;
+  a schedule item that parks is only continued once resume_due exists.
+- NOT done yet, for WP6: ChatIn.memory_off (see 21-frontend-contract.md item 5); the final form of the work
+  item, preference and memory routes.
+- For WP7 (CLI): backend/aura_cli.py still reads the removed events (pending_action, skill, learned), so CLI
+  approvals are not prompted until it is rewritten for the section 8 events.
+- Lead decision: quick-answer turns that capture a preference get no "Noted:" footer; the preference_noted event
+  and message meta carry it and the web app shows a chip.

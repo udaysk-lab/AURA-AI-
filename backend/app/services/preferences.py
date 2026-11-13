@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agent.prompts import PREFERENCE_EXTRACTOR
 from app.llm import get_provider
 from app.models import Conversation, Message, Preference, User, UserSettings, WorkItem, utcnow
 from app.services import memory as memory_service
@@ -58,20 +59,6 @@ _CORRECTION = re.compile(
 )
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
-
-PREFERENCE_EXTRACTOR = """\
-The person you work for wrote the message below. Decide whether it states a lasting way they want
-work done. Return JSON only:
-{"is_preference": true|false, "text": "one imperative line, under 25 words",
- "task_type": "<one of: {types}, general>", "system": "<one of: {systems}, or empty>",
- "replaces": ["ids of listed preferences this one overrides"]}
-A one-off request is not a preference.
-Current preferences for this kind of work: {current}
-Message: {message}
-"""
-# NOTE: spec section 12.3 places this template in agent/prompts.py. WP2 does not own that file;
-# the loop package moves it there and re-exports it from here.
-
 
 def render_extractor(message: str, types: str, systems: str, current: str) -> str:
     """Fill the template without str.format: its JSON example is full of braces."""

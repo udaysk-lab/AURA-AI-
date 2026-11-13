@@ -45,17 +45,8 @@ def profile(db: Session, user: User) -> dict:
     }
 
 
-WORKING_GUIDANCE = (
-    "Act on clear tasks at once, check the result, and report what was done. "
-    "Ask only when a task is ambiguous or risky."
-)
-
-
 def persona_prompt(assistant: Assistant) -> str:
-    """The identity fragment injected at the top of every system prompt."""
+    """The identity fragment injected at the top of every system prompt: a name and a voice.
+    How the work is done lives in the system prompt itself."""
     style = PERSONALITIES.get(assistant.personality, PERSONALITIES["concise"])
-    return (
-        f"You are {assistant.name}, this person's personal employee.\n"
-        f"Voice: {style}\n"
-        f"{WORKING_GUIDANCE}"
-    )
+    return f"You are {assistant.name}.\nVoice: {style}"

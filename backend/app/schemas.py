@@ -160,6 +160,10 @@ class ChatIn(BaseModel):
     conversation_id: str | None = None
 
 
+class ChatContinueIn(BaseModel):
+    work_item_id: str
+
+
 class ChatOut(BaseModel):
     conversation_id: str
     message: MessageOut
@@ -167,7 +171,9 @@ class ChatOut(BaseModel):
     skill_runs: list[dict[str, Any]] = Field(default_factory=list)
     memories_used: list[str] = Field(default_factory=list)
     pending_actions: list[PendingActionOut] = Field(default_factory=list)
-    learned: str = ""
+    work_item_id: str | None = None
+    work_status: str = ""
+    preferences_noted: list[dict[str, str]] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

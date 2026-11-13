@@ -85,15 +85,15 @@ def test_the_stream_reports_each_tool_as_it_happens(client, auth, db_rollback):
     kinds = [e["type"] for e in events]
 
     assert kinds[0] == "start" and kinds[1] == "status"
-    started = kinds.index("tool_start")
-    finished = kinds.index("skill")
+    started = kinds.index("step_started")
+    finished = kinds.index("step_finished")
     first_text = kinds.index("delta")
     assert started < finished < first_text < kinds.index("done")
 
     tool = events[started]
-    assert tool["name"] == "get_daily_briefing"
+    assert tool["tool"] == "get_daily_briefing"
     assert tool["label"] == "Putting your day together"
-    assert events[finished]["code"] == tool["code"]
+    assert events[finished]["code"] and events[finished]["tool"] == tool["tool"]
 
     done = events[-1]
     convo = client.get(f"/api/chat/conversations/{done['conversation_id']}", headers=auth).json()
@@ -133,11 +133,12 @@ def test_a_queued_action_shows_up_while_the_turn_is_still_running(client, auth, 
     resp = client.post("/api/chat/stream", headers=auth, json={"message": "email priya hello"})
     events = _events(resp)
     kinds = [e["type"] for e in events]
-    assert "pending_action" in kinds
-    assert kinds.index("pending_action") < kinds.index("delta")
-    pending = events[kinds.index("pending_action")]
-    assert "priya@example.com" in pending["preview"]
-    assert "tool_start" not in kinds  # nothing ran; it waits for approval
+    assert "approval_needed" in kinds and "waiting" in kinds
+    assert kinds.index("approval_needed") < kinds.index("waiting") < kinds.index("delta")
+    pending = events[kinds.index("approval_needed")]
+    assert "priya@example.com" in pending["preview"] and pending["work_item_id"]
+    assert "step_started" not in kinds  # nothing ran; it waits for approval
+    assert events[-1]["work_status"] == "waiting"
 
 
 def test_the_next_turn_knows_what_the_last_one_did(client, auth, monkeypatch, db_rollback):

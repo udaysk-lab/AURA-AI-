@@ -12,7 +12,6 @@ from sqlalchemy import select  # noqa: E402
 
 from app import models  # noqa: E402
 from app.agent import coordinator  # noqa: E402
-from app.agent import skills as skill_registry  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.device.runtime import reset_cache  # noqa: E402
 from app.permissions import gate  # noqa: E402
@@ -215,17 +214,17 @@ def test_inbound_never_learns(env):
     db, user = env
     ch = connect(db, user, owner_sender="me")
     text = "No, from now on always sign off with Cheers, never use bullet points"
-    before = skill_registry.learned_notes_block(db, user.id)
+    prefs = lambda: db.scalars(select(models.Preference).where(models.Preference.user_id == user.id)).all()  # noqa: E731
     channels.handle_inbound(db, user, "telegram", text, sender="me", channel=ch)
-    assert skill_registry.learned_notes_block(db, user.id) == before
+    assert prefs() == []
     assert db.scalars(select(models.Memory).where(models.Memory.user_id == user.id,
                                                   models.Memory.kind == "preference")).first() is None
     convo = models.Conversation(user_id=user.id, title="chat")
     db.add(convo)
     db.commit()
     result = coordinator.run_agent(db, user, convo, text, trigger="chat")
-    assert result.learned, "the control: the owner's own chat does teach"
-    assert skill_registry.learned_notes_block(db, user.id) != before
+    assert result.preferences_noted, "the control: the owner's own chat does teach"
+    assert prefs()
 
 
 def test_a_schedule_prompt_does_not_learn_either(env):
@@ -235,7 +234,8 @@ def test_a_schedule_prompt_does_not_learn_either(env):
     db.commit()
     result = coordinator.run_agent(db, user, convo, "No, from now on always do it my way", trigger="schedule",
                                    origin_id="s1", approval_mode="ask")
-    assert result.learned == ""
+    assert result.preferences_noted == []
+    assert db.scalars(select(models.Preference)).all() == []
 
 
 @pytest.mark.parametrize(

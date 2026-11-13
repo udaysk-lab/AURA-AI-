@@ -291,7 +291,7 @@ def queue_action(
 
     Fills every card column, sets the expiry from the trigger, writes `approval_created` and, for
     schedules, automations and inbound messages, an urgent notification. `tool_call_id` is the
-    loop's own bookkeeping; the column that keeps it arrives with the task-loop revision.
+    loop's own bookkeeping, kept on the row so a resumed run can match the answer to the call.
     """
     from app.agent import skills as skill_registry
     from app.agent import tools as tool_registry
@@ -325,6 +325,7 @@ def queue_action(
         preview=preview,
         skill_code=skill.code if skill else "",
         work_item_id=ctx.work_item_id,
+        tool_call_id=(tool_call_id or "")[:64],
         origin=origin,
         origin_id=origin_id,
         expires_at=gate.expiry_for(ctx, card),

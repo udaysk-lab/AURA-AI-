@@ -809,42 +809,6 @@ def get_user_skill(db: Session, user_id: str, code: str) -> UserSkill | None:
     ).first()
 
 
-def learned_notes_block(db: Session, user_id: str, codes: set[str] | None = None) -> str:
-    """Corrections the user has given, formatted for the system prompt.
-
-    This is the mechanism behind "learns how you like things done" — a
-    correction on a skill is stored against that skill and replayed every time
-    the skill is in scope.
-    """
-    rows = db.scalars(select(UserSkill).where(UserSkill.user_id == user_id)).all()
-    lines: list[str] = []
-    for row in rows:
-        if codes and row.code not in codes:
-            continue
-        for note in row.learned_notes or []:
-            skill = CATALOG.get(row.code)
-            lines.append(f"- [{skill.name if skill else row.code}] {note}")
-    if not lines:
-        return ""
-    return "Corrections this user has given you (follow them):\n" + "\n".join(lines[:20])
-
-
-def teach(db: Session, user_id: str, code: str, note: str) -> UserSkill | None:
-    row = get_user_skill(db, user_id, code)
-    if not row:
-        ensure_user_skills(db, user_id)
-        row = get_user_skill(db, user_id, code)
-    if not row:
-        return None
-    notes = list(row.learned_notes or [])
-    if note not in notes:
-        notes.append(note)
-    row.learned_notes = notes[-10:]  # keep the most recent guidance
-    db.commit()
-    db.refresh(row)
-    return row
-
-
 def record_run(
     db: Session,
     user_id: str,
@@ -852,6 +816,7 @@ def record_run(
     result: Any,
     trigger: str = "chat",
     duration_ms: int = 0,
+    work_item_id: str | None = None,
 ) -> SkillRun | None:
     """Log a skill execution and update the skill's track record."""
     skill = skill_for_tool(tool_name)
@@ -867,6 +832,7 @@ def record_run(
         status="error" if failed else "success",
         detail={"tool": tool_name},
         duration_ms=duration_ms,
+        work_item_id=work_item_id,
     )
     db.add(run)
 

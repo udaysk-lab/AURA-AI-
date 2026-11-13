@@ -147,9 +147,8 @@ def test_disabling_a_skill_hides_its_tools(client, auth):
     client.patch("/api/skills/TK01", headers=auth, json={"enabled": True})
 
 
-def test_teaching_a_skill_persists_and_reaches_the_prompt(client, auth):
-    from app.agent import skills as registry
-    from app.models import User
+def test_teaching_a_skill_persists_as_a_preference(client, auth):
+    from app.models import Preference, User
 
     lesson = "Never schedule anything before 10am"
     updated = client.post(
@@ -160,8 +159,8 @@ def test_teaching_a_skill_persists_and_reaches_the_prompt(client, auth):
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == "test@aura.ai").one()
-        block = registry.learned_notes_block(db, user.id)
-        assert lesson in block
+        row = db.query(Preference).filter(Preference.user_id == user.id, Preference.text == lesson).one()
+        assert (row.task_type, row.origin) == ("scheduling", "skill_teach")
     finally:
         db.close()
 
@@ -401,8 +400,8 @@ def test_persona_prompt_is_the_same_for_every_user():
     from app.services.identity import persona_prompt
 
     text = persona_prompt(Assistant(name="Nova", personality="dry"))
-    assert "Nova" in text
-    assert "Act on clear tasks at once" in text and "ambiguous or risky" in text
+    assert "Nova" in text and "Voice:" in text
+    assert "trust" not in text.lower() and "stage" not in text.lower()
 
 
 # ---------------------------------------------------------------------------

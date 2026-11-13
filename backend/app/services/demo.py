@@ -21,6 +21,7 @@ from app.models import (
     EmailMessage,
     HeartbeatReport,
     Memory,
+    Preference,
     Notification,
     SampleRow,
     Schedule,
@@ -192,14 +193,18 @@ TASKS = [
 ]
 
 MEMORIES = [
-    ("preference", "Prefers meetings between 10:00 and 16:00; protects mornings before 10:00 for deep work.", True),
-    ("preference", "Wants email replies drafted short — three sentences or fewer unless asked otherwise.", True),
-    ("style", "Writes in British English, plain and direct, no exclamation marks.", True),
     ("contact", "Priya Raman is the lead partner at Northwind VC, running the Series A.", False),
     ("contact", "Sam Oduya is the contract product designer, works Tuesdays to Thursdays.", False),
     ("project", "Series A round is being led by Northwind; target close is end of Q3.", False),
-    ("habit", "Reviews the inbox once at 09:00 and once at 16:00, not continuously.", False),
     ("decision", "Chose FastAPI over Django for the backend to keep the agent tooling layer thin.", False),
+]
+
+# How the sample person likes work done: preference rows (task type, text), not Memory kinds.
+PREFERENCES = [
+    ("scheduling", "Keep meetings between 10:00 and 16:00; protect mornings before 10:00 for deep work."),
+    ("email", "Draft email replies short: three sentences or fewer unless asked otherwise."),
+    ("general", "Write in British English, plain and direct, no exclamation marks."),
+    ("briefing", "Review the inbox at 09:00 and 16:00 rather than continuously."),
 ]
 
 CONTACTS = [
@@ -367,6 +372,15 @@ def seed_user(db: Session, user: User) -> dict:
             ),
         )
 
+    for task_type, text in PREFERENCES:
+        add(
+            "preferences",
+            Preference(
+                user_id=user.id, task_type=task_type, text=text, source="stated", origin="settings",
+                origin_excerpt="sample data", active=True,
+            ),
+        )
+
     for c in CONTACTS:
         add("contacts", Contact(user_id=user.id, **c))
 
@@ -453,6 +467,7 @@ _MODELS = {
     "events": CalendarEvent,
     "tasks": Task,
     "memories": Memory,
+    "preferences": Preference,
     "contacts": Contact,
     "automations": AutomationRule,
     "skill_runs": SkillRun,

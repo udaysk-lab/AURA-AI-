@@ -24,7 +24,8 @@ from sqlalchemy.orm import Session
 from app import permissions
 from app.agent import skills as skill_registry
 from app.agent import tools as tool_registry
-from app.agent.prompts import build_system_prompt
+from app.agent import taskloop
+from app.agent.taskloop import AgentResult  # noqa: F401  (re-exported)
 from app.agent.tools import ToolContext
 from app.config import settings
 from app.llm import get_provider
@@ -46,41 +47,6 @@ from app.services import vault as vault_service
 log = logging.getLogger("aura.agent")
 
 HISTORY_LIMIT = 20
-
-# Phrases that mark a turn as a correction rather than a new request. Cheap and
-# deterministic — the model is only consulted when one of these fires.
-CORRECTION_MARKERS = re.compile(
-    r"\b(no,|not like that|don't do that|stop doing|that's wrong|wrong again|"
-    r"i said|i told you|next time|from now on|actually,? (i|please)|"
-    r"never (do|send|schedule|book)|always (do|send|use|ask))\b",
-    re.IGNORECASE,
-)
-
-SKILL_HINT_TO_CODE = {
-    "email": "EM02",
-    "calendar": "CA01",
-    "tasks": "TK01",
-    "memory": "MM01",
-    "meetings": "MP01",
-    "general": "MM01",
-}
-
-
-@dataclass
-class AgentResult:
-    text: str = ""
-    tool_calls: list[dict[str, Any]] = field(default_factory=list)
-    skill_runs: list[dict[str, Any]] = field(default_factory=list)
-    memories_used: list[str] = field(default_factory=list)
-    pending_actions: list[PendingAction] = field(default_factory=list)
-    steps: int = 0
-    latency_ms: int = 0
-    learned: str = ""
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cost_usd: float = 0.0
-    capped: bool = False
-
 
 # ---------------------------------------------------------------------------
 # Tool execution
@@ -120,7 +86,7 @@ def execute_tool(
         return {"error": f"Unknown tool: {name}"}
 
     started = time.perf_counter()
-    ctx = ToolContext(db=db, user=user, decision=decision)
+    ctx = ToolContext(db=db, user=user, decision=decision, work_item_id=work_item_id)
     try:
         # The user's connected folders, read now, for exactly this call (permissions/access.py).
         with access.bound(db, user):
@@ -132,6 +98,7 @@ def execute_tool(
             ActivityLog(
                 user_id=user.id, actor="agent", action=name,
                 status="error", detail={"error": str(exc), "arguments": args},
+                work_item_id=work_item_id,
             )
         )
         db.commit()
@@ -142,6 +109,7 @@ def execute_tool(
             db, user.id, name, result,
             trigger=trigger,
             duration_ms=int((time.perf_counter() - started) * 1000),
+            work_item_id=work_item_id,
         )
     return result
 
@@ -245,31 +213,6 @@ def _last_assistant_message(db: Session, conversation: Conversation) -> str:
     return row.content if row else ""
 
 
-def _prelude(
-    db: Session, user: User, user_message: str
-) -> tuple[list[dict], list[str]]:
-    memory_block, memory_ids = memory_service.build_context_block(db, user.id, user_message)
-    assistant = identity_service.get_or_create(db, user)
-
-    # The vault contributes key *names* only — never values. See services/vault.py.
-    learned = skill_registry.learned_notes_block(db, user.id)
-    vault_block = vault_service.prompt_block(db, user.id)
-    if vault_block:
-        learned = f"{learned}\n{vault_block}" if learned else vault_block
-
-    system = build_system_prompt(
-        user_name=user.name,
-        user_email=user.email,
-        timezone=user.timezone,
-        persona=identity_service.persona_prompt(assistant),
-        permission_mode=permissions.mode_label(db, user),
-        memory_block=memory_block,
-        learned_block=learned,
-        google_connected=google_service.is_connected(db, user.id),
-    )
-    return [{"role": "system", "content": system}], memory_ids
-
-
 def _available_specs(db: Session, user: User):
     """Only skills the user has enabled reach the model."""
     allowed = skill_registry.enabled_tools(db, user.id)
@@ -277,57 +220,7 @@ def _available_specs(db: Session, user: User):
 
 
 # ---------------------------------------------------------------------------
-# Learning from corrections
-# ---------------------------------------------------------------------------
-
-
-def maybe_learn(db: Session, user: User, conversation: Conversation, message: str) -> str:
-    """If this turn is a correction, store the lesson against the right skill."""
-    if not CORRECTION_MARKERS.search(message):
-        return ""
-
-    previous = _last_assistant_message(db, conversation)
-    provider = get_provider()
-
-    lesson, hint = "", "general"
-    if provider.name != "mock":
-        from app.agent.prompts import CORRECTION_DETECTOR
-
-        try:
-            resp = provider.complete(
-                [
-                    {"role": "system", "content": "You extract durable lessons. JSON only."},
-                    {
-                        "role": "user",
-                        "content": CORRECTION_DETECTOR.format(
-                            previous=previous[:1500] or "(none)", message=message[:1500]
-                        ),
-                    },
-                ]
-            )
-            match = re.search(r"\{.*\}", resp.text, re.DOTALL)
-            if match:
-                data = json.loads(match.group(0))
-                if data.get("is_correction") and data.get("lesson"):
-                    lesson = str(data["lesson"])[:160]
-                    hint = str(data.get("skill_hint", "general"))
-        except Exception as exc:
-            log.warning("Correction extraction failed: %s", exc)
-
-    if not lesson:
-        # Offline fallback: keep the user's own words, trimmed.
-        lesson = message.strip()[:160]
-
-    code = SKILL_HINT_TO_CODE.get(hint, "MM01")
-    skill_registry.teach(db, user.id, code, lesson)
-    memory_service.remember(
-        db, user.id, lesson, kind="preference", source="correction", confidence=0.95
-    )
-    return lesson
-
-
-# ---------------------------------------------------------------------------
-# Main loop
+# Main loop (the engine lives in agent/taskloop.py)
 # ---------------------------------------------------------------------------
 
 
@@ -340,232 +233,19 @@ def iter_agent(
     origin_id: str = "",
     approval_mode: str | None = None,
 ) -> Generator[dict, None, AgentResult]:
-    """The agent loop, reporting as it goes.
-
-    Yields progress events while it works — which tool is running now, what a
-    finished one found, what was queued for approval — and returns the
-    AgentResult when it's done. `run_agent` drains it; `stream_agent` forwards
-    every event to the browser as it happens, so a turn that takes sixteen
-    steps (look at the screen, click, look again) shows each one live instead
-    of a spinner and then everything at once.
-
-    `trigger` drives both the skill-run log and the spend budget: background
-    work is capped at a fraction of the daily allowance so it can never starve
-    the interactive budget the user actually notices.
-    """
-    started = time.perf_counter()
-    result = AgentResult()
-
-    # Only the signed-in owner's own chat teaches AURA anything: a schedule's stored prompt and,
-    # above all, a message that came in through a channel never become learned notes or
-    # preferences (decisions 7 and 11).
-    result.learned = maybe_learn(db, user, conversation, user_message) if trigger == "chat" else ""
-    if result.learned:
-        yield {"type": "learned", "value": result.learned}
-
-    messages, result.memories_used = _prelude(db, user, user_message)
-    if result.memories_used:
-        yield {"type": "memory", "count": len(result.memories_used)}
-    messages += _history(db, conversation)
-    messages.append({"role": "user", "content": user_message})
-
-    provider = get_provider()
-    specs = _available_specs(db, user)
-    # One gate context per run: the mode and rules are read from the database on every decision.
-    gate_ctx = permissions.build_context(
-        db, user, trigger,
-        conversation_id=conversation.id, instruction=user_message,
-        origin_id=origin_id, approval_mode=approval_mode,
-    )
-    cheap_model = (
-        settings.background_model
-        if settings.background_model and trigger != "chat"
-        else None
-    )
-
-    for step in range(settings.max_agent_steps):
-        result.steps = step + 1
-
-        # Checked before the call, never after — refusing to start is
-        # recoverable, discovering you're over budget is not.
-        try:
-            usage_service.check(db, user.id, trigger=trigger)
-        except usage_service.SpendCapReached as capped:
-            log.warning("Spend cap hit for %s (%s)", user.email, trigger)
-            result.capped = True
-            yield {"type": "capped", "value": True}
-            result.text = (
-                f"I've stopped here — today's spend cap of "
-                f"${capped.state.cap_usd:.2f} has been reached "
-                f"(${capped.state.spent_usd:.2f} used across {capped.state.calls} calls). "
-                "Nothing was left half-done. Raise `DAILY_SPEND_CAP_USD` or wait for "
-                "the daily reset."
-            )
-            break
-
-        yield {"type": "status", "value": "thinking", "step": step + 1}
-        try:
-            # Background work runs orders of magnitude more often than anyone
-            # chats and needs far less judgement, so it gets the cheap model
-            # when one is configured.
-            response = provider.complete(messages, specs, model=cheap_model)
-        except Exception as exc:
-            log.exception("Model call failed")
-            result.text = (
-                "I couldn't reach the model just now. Your data is untouched — "
-                f"try again in a moment.\n\n`{exc}`"
-            )
-            break
-
-        usage_service.record(db, user.id, response.usage, trigger=trigger)
-        result.input_tokens += response.usage.input_tokens
-        result.output_tokens += response.usage.output_tokens
-        result.cost_usd += usage_service.estimate_cost(response.usage)
-
-        if not response.tool_calls:
-            result.text = response.text or "Done."
-            break
-
-        messages.append(
-            {"role": "assistant", "content": response.text, "tool_calls": response.tool_calls}
-        )
-
-        for call in response.tool_calls:
-            skill = skill_registry.skill_for_tool(call.name)
-
-            decision = permissions.decide(db, user, call.name, call.arguments, gate_ctx)
-            if decision.source == "reviewer":
-                if decision.kind == "allow":
-                    gate_ctx.reviewer_streak = 0
-                else:
-                    gate_ctx.reviewer_streak += 1
-                    gate_ctx.reviewer_total += 1
-
-            if decision.kind == "ask":
-                action = approvals.queue_action(db, user, gate_ctx, call, decision)
-                result.pending_actions.append(action)
-                yield {
-                    "type": "pending_action",
-                    "id": action.id,
-                    "tool_name": action.tool_name,
-                    "skill_code": action.skill_code,
-                    "preview": action.preview,
-                    "card": action.card,
-                    "options": list(action.options or []),
-                    "always_user": bool(action.always_user),
-                    "reason": action.reason,
-                    "conversation_id": action.conversation_id,
-                }
-                payload: Any = {
-                    "status": "awaiting_approval",
-                    "approval_id": action.id,
-                    "reason": decision.reason,
-                    "message": (
-                        f"{call.name} is queued and waiting for the user to approve it. "
-                        "Tell them what is pending, then stop."
-                    ),
-                    "preview": action.preview,
-                    "pending_action_id": action.id,
-                }
-            elif decision.kind == "deny":
-                payload = {
-                    "status": "blocked",
-                    "error": decision.reason,  # what clients of the old refusal shape read
-                    "reason": decision.reason,
-                    "reason_code": decision.reason_code,
-                    "message": "Not run. Try another acceptable way, or explain to the user.",
-                }
-                if decision.source == "reviewer":
-                    payload["reviewer"] = True
-            else:
-                yield {
-                    "type": "tool_start",
-                    "name": call.name,
-                    "code": skill.code if skill else "",
-                    "label": skill_registry.activity_label(call.name, call.arguments),
-                }
-                payload = execute_tool(
-                    db, user, call.name, call.arguments, trigger=trigger, decision=decision
-                )
-                if skill:
-                    run = {
-                        "code": skill.code,
-                        "name": skill.name,
-                        "summary": skill_registry.summarise(call.name, payload),
-                        "ok": not (isinstance(payload, dict) and payload.get("error")),
-                        "tool": call.name,
-                    }
-                    result.skill_runs.append(run)
-                    yield {"type": "skill", **run}
-
-            # An image a tool produced (a screenshot) travels separately from
-            # its tool result: both providers take an image on a user turn,
-            # while only one takes it inside a tool result. Lift it out before
-            # the payload goes anywhere else, so a megabyte of base64 isn't
-            # carried through the result object, the stream and the HTTP
-            # response for the sake of one model call.
-            image = None
-            if isinstance(payload, dict) and isinstance(payload.get("image"), dict):
-                image = payload["image"]
-                payload = {k: v for k, v in payload.items() if k != "image"}
-
-            result.tool_calls.append(
-                {
-                    "name": call.name,
-                    "skill_code": skill.code if skill else "",
-                    "arguments": call.arguments,
-                    "result": payload,
-                }
-            )
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "name": call.name,
-                    "content": json.dumps(payload, default=str)[:8000],
-                }
-            )
-            if image and image.get("data"):
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": f"[{call.name}] what it captured:"},
-                            {
-                                "type": "image",
-                                "media_type": image.get("media_type", "image/png"),
-                                "data": image["data"],
-                            },
-                        ],
-                    }
-                )
-    else:
-        result.text = result.text or (
-            "I ran out of steps on that one. Here's where I got to — ask me to continue "
-            "if you want me to keep going."
-        )
-
-    if not result.text:
-        result.text = "Done."
-
-    result.latency_ms = int((time.perf_counter() - started) * 1000)
-    return result
+    """Start the task loop for one owner message, reporting as it goes (spec 20 section 5.1)."""
+    return (yield from taskloop.start_run(
+        db, user, conversation, user_message, trigger, origin_id, approval_mode))
 
 
-def run_agent(
-    db: Session,
-    user: User,
-    conversation: Conversation,
-    user_message: str,
-    trigger: str = "chat",
-    origin_id: str = "",
-    approval_mode: str | None = None,
-) -> AgentResult:
-    """The whole turn, without the running commentary."""
-    events = iter_agent(
-        db, user, conversation, user_message,
-        trigger=trigger, origin_id=origin_id, approval_mode=approval_mode,
-    )
+def iter_resume(
+    db: Session, user: User, work_item_id: str, *, token: str | None = None, background: bool = False
+) -> Generator[dict, None, AgentResult]:
+    """Continue a paused work item: one more segment of the same run."""
+    return (yield from taskloop.iter_resume(db, user, work_item_id, token=token, background=background))
+
+
+def _drain(events: Generator[dict, None, AgentResult]) -> AgentResult:
     while True:
         try:
             next(events)
@@ -573,14 +253,32 @@ def run_agent(
             return finished.value
 
 
+def run_agent(
+    db: Session,
+    user: User,
+    conversation: Conversation,
+    user_message: str | None,
+    trigger: str = "chat",
+    origin_id: str = "",
+    approval_mode: str | None = None,
+    work_item_id: str | None = None,
+) -> AgentResult:
+    """The whole turn (or one more segment of `work_item_id`), without the running commentary."""
+    if work_item_id:
+        return _drain(iter_resume(db, user, work_item_id))
+    return _drain(iter_agent(db, user, conversation, user_message, trigger=trigger,
+                             origin_id=origin_id, approval_mode=approval_mode))
+
+
 def persist_exchange(
     db: Session,
     conversation: Conversation,
-    user_message: str,
+    user_message: str | None,
     result: AgentResult,
 ) -> Message:
-    """Write the user turn and the assistant turn, and title new conversations."""
-    db.add(Message(conversation_id=conversation.id, role="user", content=user_message))
+    """Write the user turn (unless this segment continues a run) and the assistant turn."""
+    if user_message is not None:
+        db.add(Message(conversation_id=conversation.id, role="user", content=user_message))
 
     assistant = Message(
         conversation_id=conversation.id,
@@ -596,21 +294,38 @@ def persist_exchange(
             "memories_used": result.memories_used,
             "steps": result.steps,
             "latency_ms": result.latency_ms,
-            "learned": result.learned,
             "tokens": result.input_tokens + result.output_tokens,
             "cost_usd": round(result.cost_usd, 5),
             "capped": result.capped,
             "pending_action_ids": [a.id for a in result.pending_actions],
+            "work_item_id": result.work_item_id,
+            "work_status": result.work_status,
+            "preferences_noted": result.preferences_noted,
         },
     )
     db.add(assistant)
 
-    if conversation.title in ("", "New conversation"):
+    if user_message is not None and conversation.title in ("", "New conversation"):
         conversation.title = user_message.strip().split("\n")[0][:60] or "New conversation"
     conversation.updated_at = utcnow()
-
     db.commit()
     db.refresh(assistant)
+
+    # The preferences this turn captured now know which message they came from.
+    ids = [p["id"] for p in result.preferences_noted]
+    if ids and user_message is not None:
+        from sqlalchemy import update
+
+        from app.models import Preference
+
+        last_user = db.scalars(
+            select(Message).where(Message.conversation_id == conversation.id, Message.role == "user")
+            .order_by(Message.created_at.desc()).limit(1)
+        ).first()
+        if last_user is not None:
+            db.execute(update(Preference).where(Preference.id.in_(ids), Preference.origin_message_id.is_(None))
+                       .values(origin_message_id=last_user.id))
+            db.commit()
     return assistant
 
 
@@ -623,23 +338,24 @@ def stream_agent(
     db: Session,
     user: User,
     conversation: Conversation,
-    user_message: str,
+    user_message: str | None,
     trigger: str = "chat",
+    *,
+    work_item_id: str | None = None,
+    token: str | None = None,
 ) -> Iterator[dict]:
-    """Yield progress events for SSE, as they happen.
+    """Yield progress events for SSE (spec 20 section 8), then the answer in chunks, then `done`.
 
-    Each tool call is announced when it starts (`tool_start`, with a plain
-    label like "Reading your inbox") and reported when it finishes (`skill`).
-    The answer itself still arrives in chunks once it's complete: the provider
-    adapters make non-streaming calls so tool use behaves identically across
-    providers. Token streaming would only change OpenAIProvider and
-    AnthropicProvider.
+    With `work_item_id` this continues a paused run (`token` is the lease the route already took).
+    The answer arrives once complete: the provider adapters make non-streaming calls so tool use
+    behaves identically across providers.
     """
     yield {"type": "status", "value": "thinking"}
 
-    events = iter_agent(
-        db, user, conversation, user_message, trigger=trigger,
-    )
+    if work_item_id:
+        events = iter_resume(db, user, work_item_id, token=token)
+    else:
+        events = iter_agent(db, user, conversation, user_message, trigger=trigger)
     while True:
         try:
             event = next(events)
@@ -664,6 +380,8 @@ def stream_agent(
         "steps": result.steps,
         "tokens": result.input_tokens + result.output_tokens,
         "cost_usd": round(result.cost_usd, 5),
+        "work_item_id": result.work_item_id,
+        "work_status": result.work_status or None,
     }
 
 
