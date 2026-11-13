@@ -500,8 +500,11 @@ def _request(url: str, method: str = "GET", body: dict | None = None,
         return exc.code, dict(exc.headers), exc.read().decode("utf-8", "replace")
 
 
-def smoke_test(base: str, key: str) -> list[tuple[str, bool, str]]:
+def smoke_test(base: str, key: str, smoke_secret: str = "") -> list[tuple[str, bool, str]]:
+    """`smoke_secret` is the in-memory secret main() registered with the guard (app.deps); it goes
+    only in the request header of the calls below that the guard would otherwise refuse as AURA's own."""
     import re
+    from app.deps import SMOKE_HEADER
 
     results: list[tuple[str, bool, str]] = []
 
@@ -548,13 +551,14 @@ def smoke_test(base: str, key: str) -> list[tuple[str, bool, str]]:
     token = json.loads(text).get("access_token", "") if status == 200 else ""
     check("owner sign-in", bool(token), f"{status} {text[:120]}")
     auth = {"Authorization": f"Bearer {token}"}
+    guarded = {**auth, SMOKE_HEADER: smoke_secret}
 
     status, _, text = _request(f"{base}/api/device", headers=auth)
     device = json.loads(text) if status == 200 else {}
     check("device control", device.get("enabled") is True, text[:200])
 
     status, _, text = _request(
-        f"{base}/api/device/run", method="POST", headers=auth,
+        f"{base}/api/device/run", method="POST", headers=guarded,
         body={"command": "echo aura-smoke-ok", "timeout": 60},
     )
     out = json.loads(text) if status == 200 else {}
@@ -567,7 +571,7 @@ def smoke_test(base: str, key: str) -> list[tuple[str, bool, str]]:
     check("model settings", status == 200 and json.loads(text).get("writable") is True, text[:200])
 
     status, _, text = _request(
-        f"{base}/api/chat/stream", method="POST", headers=auth,
+        f"{base}/api/chat/stream", method="POST", headers=guarded,
         body={"message": "What does my day look like?"}, timeout=120,
     )
     check("chat answers", status == 200 and '"type": "done"' in text, text[-300:])
@@ -753,8 +757,14 @@ def main(argv: list[str] | None = None) -> int:
     log.info("AURA is ready at %s", app_url)
 
     if smoke:
+        # A random secret that lives only in this process: not written to disk, the environment,
+        # the log or the report. The guard accepts it for the self check's own calls.
+        from app.deps import register_smoke_secret
+
+        smoke_secret = secrets.token_urlsafe(32)
+        register_smoke_secret(smoke_secret)
         try:
-            results = smoke_test(app_url, key)
+            results = smoke_test(app_url, key, smoke_secret)
         except Exception as exc:  # a crash in the checks is a failed check
             log.exception("Smoke test crashed")
             results = [("smoke test ran", False, repr(exc))]

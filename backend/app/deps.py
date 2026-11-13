@@ -523,6 +523,29 @@ def peer_is_aura_spawned(request: Request) -> bool:
     return _classify(request) == "aura"
 
 
+# The launcher's self check (`aura_desktop.py --smoke-test`) calls this server from inside the AURA
+# process, which the guard below refuses by design. Only that mode registers a random in-memory
+# secret here, through `register_smoke_secret` (an in-process call; no route, no environment
+# variable, no file reads or sets it), and its client sends it in this header. Without a registered
+# secret the header is ignored whatever it holds.
+SMOKE_HEADER = "X-Aura-Smoke-Secret"
+_smoke_secret: str | None = None
+
+
+def register_smoke_secret(secret: str) -> None:
+    """The only way a smoke secret comes to exist. Called in-process by the launcher's self check."""
+    global _smoke_secret
+    _smoke_secret = secret if secret else None
+
+
+def _carries_smoke_secret(request: Request) -> bool:
+    expected = _smoke_secret
+    if not expected:
+        return False
+    offered = request.headers.get(SMOKE_HEADER) or ""
+    return hmac.compare_digest(offered.encode("utf-8"), expected.encode("utf-8"))
+
+
 def _refuse_self(db: Session, user: User, what: str) -> None:
     from app.permissions import changes
 
@@ -540,6 +563,8 @@ def guard_local_caller(request: Request, db: Session, user: User, what: str, *, 
     clicking or typing (`synthetic`). Routes that are not permission changes (chat) use `strict=False`:
     a caller that cannot be identified is let through, one that is AURA's own is not."""
     if not settings.local_mode or is_remote_session(request):
+        return
+    if _carries_smoke_secret(request):
         return
     kind = classify_peer(request)
     if kind == "aura":
