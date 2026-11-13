@@ -533,7 +533,7 @@ def test_app_grant_card_refuses_a_blocked_app(device):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("caller", [Caller("remote", "dev-1"), Caller("local-open")])
+@pytest.mark.parametrize("caller", [Caller("remote", "dev-1")])
 def test_restricted_callers_say_once_or_no_only(env, caller):
     _, db = env
     user = mk(db)
@@ -556,7 +556,7 @@ def test_remote_device_once_only(env):
     assert a.resolved_by == "remote:phone-7"
 
 
-@pytest.mark.parametrize("caller", [Caller("remote", "d"), Caller("local-open")])
+@pytest.mark.parametrize("caller", [Caller("remote", "d")])
 def test_always_user_card_remote_403(device, caller):
     tmp, db = device
     user = mk(db)
@@ -789,35 +789,6 @@ def test_double_click_over_http_is_409_with_the_state(client, session):
     assert second.json()["status"] == "approved" and second.json()["decision"] == "once" and second.json()["detail"]
 
 
-def test_cli_local_open_token_may_say_once_not_longer(client, session):
-    from app.security import create_access_token
-
-    _, uid = session
-    token = create_access_token(uid, {"amr": "local-open"})
-    aid = _api_park(uid, to="cli@example.com")
-    longer = client.post(f"/api/pending-actions/{aid}", headers=_bearer(token), json={"decision": "always"})
-    assert longer.status_code == 403
-    once = client.post(f"/api/pending-actions/{aid}", headers=_bearer(token), json={"decision": "once"})
-    assert once.status_code == 200
-    from app.db import SessionLocal
-
-    db = SessionLocal()
-    try:
-        assert db.get(PendingAction, aid).resolved_by == "local-open"
-    finally:
-        db.close()
-
-
-def test_cli_local_open_once_only_for_the_card(client, session):
-    """cli_local_open_once_only: the keyless login cannot pick 'window' either."""
-    from app.security import create_access_token
-
-    _, uid = session
-    token = create_access_token(uid, {"amr": "local-open"})
-    aid = _api_park(uid, to="cli2@example.com")
-    assert client.post(f"/api/pending-actions/{aid}", headers=_bearer(token), json={"decision": "window"}).status_code == 403
-
-
 def test_the_caller_is_read_from_the_request():
     from types import SimpleNamespace
 
@@ -832,7 +803,7 @@ def test_the_caller_is_read_from_the_request():
                                headers={"authorization": authorization})
 
     assert _caller(req("dev-1")) == Caller("remote", "dev-1")
-    assert _caller(req(None, "Bearer " + create_access_token("u", {"amr": "local-open"}))) == Caller("local-open")
+    assert _caller(req(None, "Bearer " + create_access_token("u", {"amr": "local-key"}))) == Caller("session")
     assert _caller(req(None, "Bearer " + create_access_token("u", {"amr": "password"}))) == Caller("session")
     assert _caller(req(None, "Bearer " + create_access_token("u"))) == Caller("session")
     assert _caller(req(None, "")) == Caller("session")

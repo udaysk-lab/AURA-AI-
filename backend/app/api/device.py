@@ -30,7 +30,7 @@ from app.device import policy as device_policy
 from app.device import shell as device_shell
 from app.device import system as device_system
 from app.device.runtime import DeviceUnavailable, capabilities
-from app.deps import CurrentUser, DbSession, PresentUser, is_remote_session
+from app.deps import CurrentUser, DbSession, GuardedUser, PresentUser, is_remote_session
 from app.device import appnames, windows
 from app.middleware import is_loopback
 from app.models import ActivityLog, DeviceAppBlock, DeviceAppGrant, DeviceFolder, User, utcnow
@@ -232,7 +232,7 @@ def _presence_source_ok(request: Request) -> bool:
 
 
 @router.post("/presence", status_code=204)
-def presence(request: Request, user: CurrentUser) -> Response:
+def presence(request: Request, user: GuardedUser) -> Response:
     """The web app says the person is looking at AURA (every 30 s while a page is visible)."""
     _require_device()
     if not _presence_source_ok(request):

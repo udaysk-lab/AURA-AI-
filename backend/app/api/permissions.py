@@ -1,8 +1,8 @@
 """The permissions API (spec 10 section 11): mode, boundaries, catalogue, rules, event log.
 
 Reading is open to the signed-in user. Every change needs presence (`PresentUser`): on a local
-install that means a request from this computer, not from a paired device, not from a keyless
-`local-open` sign-in and not from a program AURA started; and every change is written to the
+install that means a request from this computer, not from a paired device, from a session opened
+with the sign-in key, and not from a program AURA started; and every change is written to the
 permission log and announced to the user (`changes.record`). Nothing AURA does in a run can reach
 these routes: it has no credential and no tool that calls them.
 

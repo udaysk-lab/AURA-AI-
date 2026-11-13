@@ -32,6 +32,37 @@ import httpx
 
 DEFAULT_URL = os.environ.get("AURA_URL", "http://127.0.0.1:8000")
 TOKEN_PATH = Path(os.path.expanduser("~/.aura/cli-token"))
+KEY_FILE = "local-login.key"
+
+
+def aura_home() -> Path:
+    return Path(os.environ.get("AURA_HOME") or "~/.aura").expanduser()
+
+
+def read_local_key() -> str:
+    """The sign-in key of the AURA on this computer, from AURA's home (owner-only files).
+
+    `local-login.key` (a source install) or `AURA_LOCAL_LOGIN_KEY` in `aura.env` (the desktop
+    app). Nothing is guessed, and the key is never printed."""
+    home = aura_home()
+    try:
+        key = (home / KEY_FILE).read_text(encoding="utf-8").strip()
+        if key:
+            return key
+    except OSError:
+        pass
+    try:
+        for line in (home / "aura.env").read_text(encoding="utf-8-sig").splitlines():
+            name, sep, value = line.strip().partition("=")
+            if sep and name.strip() == "AURA_LOCAL_LOGIN_KEY":
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                    value = value[1:-1]
+                if value:
+                    return value
+    except OSError:
+        pass
+    return ""
 
 # Enough colour to make the skill lines scannable, and none if the terminal
 # isn't one (a pipe, a CI log, Windows without ANSI).
@@ -114,7 +145,19 @@ class Aura:
                 return True
             self.token = ""  # expired or revoked
 
-        resp = self._request("POST", "/api/auth/local")
+        key = read_local_key()
+        if not key:
+            print(red("Can't sign in from here."), file=sys.stderr)
+            print(
+                dim(
+                    f"No sign-in key found in {aura_home()}. Start AURA first (it makes the key), "
+                    "run this as the same user, or set AURA_HOME. For a remote install set "
+                    "AURA_TOKEN to a token from the web app."
+                ),
+                file=sys.stderr,
+            )
+            return False
+        resp = self._request("POST", "/api/auth/local", json={"key": key})
         if resp.status_code == 200:
             body = resp.json()
             self.token = body["access_token"]

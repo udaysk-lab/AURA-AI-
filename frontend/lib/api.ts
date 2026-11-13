@@ -534,8 +534,6 @@ export interface AuthConfig {
   local_mode: boolean;
   /** True when it can operate the computer it's running on. */
   device_control: boolean;
-  /** The desktop app: signing in needs the key from the link it opened. */
-  local_login_key_required?: boolean;
   /** This browser is on another device, reaching a local install. */
   remote_client?: boolean;
   remote_access?: boolean;
@@ -966,13 +964,13 @@ export interface DeviceApps {
 export const api = {
   authConfig: () => get<AuthConfig>("/api/auth/config"),
   /**
-   * Sign in as this machine's owner. Only works on a local install, and only
-   * from the machine itself — the backend checks the request came from
-   * loopback. There is no password because there is nothing to protect it
-   * from: anyone who can reach loopback here can already run commands as this
-   * user.
+   * Sign in as this machine's owner. Only works on a local install, only from
+   * the machine itself (the backend checks the request came from loopback),
+   * and only with the sign-in key from the link AURA opened or printed: any
+   * program on this computer can reach loopback, but only its owner can read
+   * the file the key lives in.
    */
-  localLogin: (key = "") =>
+  localLogin: (key: string) =>
     post<{ access_token: string; user: User }>("/api/auth/local", { key }),
   forgotPassword: (email: string) =>
     post<{ message: string }>("/api/auth/password/forgot", { email }),

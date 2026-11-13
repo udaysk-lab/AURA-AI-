@@ -15,7 +15,7 @@ from app.agent import taskloop
 from app.agent.coordinator import persist_exchange, run_agent, stream_agent
 from app.config import settings
 from app.db import SessionLocal
-from app.deps import CurrentUser, DbSession
+from app.deps import CurrentUser, DbSession, GuardedUser
 from app.models import Conversation, Message, User, WorkItem
 from app.schemas import (
     ChatContinueIn,
@@ -181,7 +181,7 @@ def _still_working(db, convo: Conversation) -> JSONResponse | None:
 
 
 @router.post("", response_model=ChatOut)
-def chat(payload: ChatIn, user: CurrentUser, db: DbSession):
+def chat(payload: ChatIn, user: GuardedUser, db: DbSession):
     """Non-streaming turn. Use /stream for the live UI."""
     convo = _get_or_create(db, user, payload.conversation_id, payload.memory_off)
     busy = _still_working(db, convo)
@@ -215,7 +215,7 @@ def _sse(source: Iterator[str]) -> StreamingResponse:
 
 
 @router.post("/continue")
-def chat_continue(payload: ChatContinueIn, user: CurrentUser, db: DbSession):
+def chat_continue(payload: ChatContinueIn, user: GuardedUser, db: DbSession):
     """Carry on a paused work item (after an approval, a denial, an expiry or a step budget).
 
     The lease is taken here, before the stream starts, so a second call (another tab, a retry)
@@ -251,7 +251,7 @@ def chat_continue(payload: ChatContinueIn, user: CurrentUser, db: DbSession):
 
 
 @router.post("/stop")
-def chat_stop(payload: ChatContinueIn, user: CurrentUser, db: DbSession) -> dict:
+def chat_stop(payload: ChatContinueIn, user: GuardedUser, db: DbSession) -> dict:
     item = db.get(WorkItem, payload.work_item_id)
     if item is None or item.user_id != user.id:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -259,7 +259,7 @@ def chat_stop(payload: ChatContinueIn, user: CurrentUser, db: DbSession) -> dict
 
 
 @router.post("/stream")
-def chat_stream(payload: ChatIn, user: CurrentUser, db: DbSession):
+def chat_stream(payload: ChatIn, user: GuardedUser, db: DbSession):
     convo = _get_or_create(db, user, payload.conversation_id, payload.memory_off)
     busy = _still_working(db, convo)
     if busy is not None:

@@ -343,7 +343,9 @@ class Target:
     raw: str = ""
     scheme: str = ""
     parsed: shellparse.Parsed | None = None
-    matchable: bool = True  # False: checked by floors only, never by rules (workdir, pid)
+    matchable: bool = True  # False: not what an allow rule must cover (workdir, pid, paths named in a command)
+    tree: bool = False  # stands for everything beneath it (a search root): an ask rule anywhere inside it applies
+    named: bool = False  # a path a shell command names or runs in: block and ask rules see it, allow rules do not need it
 
 
 def extract(
@@ -379,7 +381,8 @@ def extract(
             if not isinstance(value, str):
                 raise BadArgs(f"{spec.arg} must be text")
             workdir = None
-            out.append(Target("path", normalize_path(value, base, ops), spec.role, value, matchable=spec.role != "exec"))
+            out.append(Target("path", normalize_path(value, base, ops), spec.role, value, matchable=spec.role != "exec",
+                              named=spec.role == "exec", tree=policy.name == "search_files"))
         elif spec.kind == "command":
             if not isinstance(value, str) or not value.strip():
                 raise BadArgs(f"{spec.arg} is required")
@@ -392,6 +395,7 @@ def extract(
                     wd_real = None
             parsed = shellparse.parse(value, dialect, wd_real)
             out.append(Target("command", value, "", value, parsed=parsed))
+            out.extend(named_paths(parsed, wd_real or base, base, ops))
         elif spec.kind == "recipient":
             addrs = parse_recipients(value)
             if not addrs and policy.name == "send_email":
@@ -420,6 +424,43 @@ def extract(
             if app_id:
                 out.append(Target("app", appnames.canonical(app_id), "pid", app_id))
     return tuple(out)
+
+
+def named_paths(parsed: shellparse.Parsed, base_dir: str, home: str, ops: PathOps | None = None) -> list[Target]:
+    """The paths a shell command names, as targets for path block and ask rules (F7).
+
+    Every path the parser found, with wildcard and brace words replaced by what they expand to now,
+    each resolved the way a path argument is (relative paths from the working directory). They
+    are never something an allow rule has to cover: only a rule that blocks or asks can match them.
+    """
+    from app.permissions import pathglob
+
+    ops = ops or PathOps()
+    windows = ops.pm is not os.path or os.name == "nt" or parsed.dialect != shellparse.POSIX
+    ci = ops.ci or windows
+    dot_ok = windows or pathglob.dotglob_on(parsed.raw)
+    out: list[Target] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(raw: str, value: str, role: str) -> None:
+        key = (fold(value, ops, always=True), role)
+        if key not in seen and len(out) < 200:
+            seen.add(key)
+            out.append(Target("path", value, role, raw, matchable=False, named=True))
+
+    for ref in parsed.paths:
+        raw = ref.raw
+        if "\x00" in raw or not raw.strip():
+            continue
+        if pathglob.has_glob(raw):
+            for found in pathglob.existing_matches(raw, base_dir, home, ci=ci, windows=windows, dot_ok=dot_ok, limit=100):
+                add(raw, found, ref.role)
+            continue
+        try:
+            add(raw, normalize_path(raw, base_dir, ops), ref.role)
+        except BadArgs:
+            continue
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +492,7 @@ def pattern_covers(rule_kind: str, pattern: str, target: Target, dialect: str, o
 
 
 def _targets_of(rule_kind: str, targets: Sequence[Target]) -> list[Target]:
-    return [t for t in targets if t.matchable and RULE_KIND_FOR_TARGET.get(t.kind) == rule_kind]
+    return [t for t in targets if (t.matchable or t.named) and RULE_KIND_FOR_TARGET.get(t.kind) == rule_kind]
 
 
 def rule_applies_to(rule: Any, targets: Sequence[Target]) -> bool:
@@ -461,8 +502,25 @@ def rule_applies_to(rule: Any, targets: Sequence[Target]) -> bool:
     return bool(_targets_of(rule.target_kind, targets))
 
 
-def rule_matches_any(rule: Any, targets: Sequence[Target], dialect: str = shellparse.POSIX, ops: PathOps | None = None) -> bool:
-    """For block and ask rules: does the rule match any target? A tool-wide rule always does."""
+def path_pattern_inside(pattern: str, folder: str, ops: PathOps | None = None) -> bool:
+    """Does the tree a stored path pattern names lie inside `folder` (or is it that folder)?"""
+    ops = ops or PathOps()
+    kind, head, _glob = _split_pattern(pattern, ops)
+    if kind == "bad":
+        return False
+    anchor = head if kind in ("tree", "exact") else ops.pm.dirname(pattern)
+    a, f = fold(anchor, ops), fold(folder, ops)
+    try:
+        return ops.pm.commonpath([a, f]) == f
+    except ValueError:
+        return False
+
+
+def rule_matches_any(rule: Any, targets: Sequence[Target], dialect: str = shellparse.POSIX, ops: PathOps | None = None,
+                     descend: bool = False) -> bool:
+    """For block and ask rules: does the rule match any target? A tool-wide rule always does.
+
+    `descend` (ask rules): a search root also matches a path rule whose tree lies anywhere inside it."""
     if not rule.target_kind:
         return not rule.pattern
     mine = _targets_of(rule.target_kind, targets)
@@ -482,6 +540,8 @@ def rule_matches_any(rule: Any, targets: Sequence[Target], dialect: str = shellp
                 return True
         elif pattern_covers(rule.target_kind, rule.pattern, t, dialect, ops):
             return True
+        elif descend and t.tree and rule.target_kind == "path" and path_pattern_inside(rule.pattern, t.value, ops):
+            return True
     return False
 
 
@@ -491,7 +551,7 @@ def first_match(
 ) -> Any | None:
     """First block/ask rule (in the order given) that matches this call."""
     for rule in rules:
-        if rule.effect == effect and rule_matches_any(rule, targets, dialect, ops):
+        if rule.effect == effect and rule_matches_any(rule, targets, dialect, ops, descend=effect == "ask"):
             return rule
     return None
 

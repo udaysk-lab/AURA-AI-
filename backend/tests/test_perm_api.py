@@ -542,15 +542,15 @@ def remote(client, h):
     return {"Authorization": f"Bearer {create_access_token(uid, {'typ': 'remote', 'did': did})}"}
 
 
-def test_local_open_cannot_change_mode(client, owner):
-    keyless = bearer(sign_in(client, None, configured=""))
+def test_there_is_no_keyless_sign_in_to_change_the_mode_with(client, owner):
+    assert sign_in(client, None, configured="").status_code == 403
+    assert sign_in(client, None).status_code == 403
+    from app.security import create_access_token
+
+    keyless = {"Authorization": "Bearer " + create_access_token(me(client, owner), {"amr": "password"})}
     for method, path, body in changing_routes():
         r = client.request(method, path, headers=keyless, json=body)
-        assert r.status_code == 403, (path, r.status_code)
-        assert "cannot change permissions" in r.json()["detail"], path
-    for path in ("/api/permissions", "/api/permissions/catalogue", "/api/permissions/rules",
-                 "/api/permissions/events", "/api/permissions/events/verify"):
-        assert client.get(path, headers=keyless).status_code == 200, path
+        assert r.status_code == 401, (path, r.status_code)
     assert client.get("/api/permissions", headers=owner).json()["mode"] == "ask"
 
 

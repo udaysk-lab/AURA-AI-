@@ -521,7 +521,7 @@ class PendingAction(Base, TimestampMixin):
     args_digest: Mapped[str] = mapped_column(String(64), default="", server_default="")
     # once | window | always | reject, as answered.
     decision: Mapped[str] = mapped_column(String(10), default="", server_default="")
-    # session | remote:<device id> | local-open | system
+    # session | remote:<device id> | system
     resolved_by: Mapped[str] = mapped_column(String(40), default="", server_default="")
     rule_id: Mapped[str | None] = mapped_column(String(36))
     # The model's tool call this card answers, so a resumed run can pair the result with it.

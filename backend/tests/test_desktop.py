@@ -171,7 +171,7 @@ def test_the_owner_sign_in_needs_the_key_from_the_apps_link(local, here):
     me = here.get("/api/auth/me", headers=_bearer(token))
     assert me.status_code == 200 and me.json()["email"].endswith("@localhost")
     config = here.get("/api/auth/config").json()
-    assert config["local_login_key_required"] is True
+    assert "local_login_key_required" not in config  # there is no keyless mode to describe (F5)
     assert config["remote_client"] is False
 
 

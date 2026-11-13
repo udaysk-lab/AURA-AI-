@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 
-from app.device import files
+from app.device import childenv, files
 from app.device.runtime import DeviceUnavailable, hidden_process, require_enabled
 
 
@@ -97,7 +97,7 @@ def open_app(name: str) -> dict:
         return {"error": problem}
     try:
         if sys.platform == "darwin":
-            subprocess.run(["open", "-a", target], check=True)
+            subprocess.run(["open", "-a", target], check=True, env=childenv.child_env())
         elif os.name == "nt":
             _windows_open(target)
         else:
@@ -107,6 +107,7 @@ def open_app(name: str) -> dict:
             subprocess.Popen(
                 [exe], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, start_new_session=True,
+                env=childenv.child_env(),
             )
         return {"message": f"Launched {target}.", "app": target}
     except (subprocess.CalledProcessError, OSError):
@@ -119,13 +120,14 @@ def _open_target(target: str, label: str) -> dict:
         return {"error": "That isn't something I can open."}
     try:
         if sys.platform == "darwin":
-            subprocess.run(["open", target], check=False)
+            subprocess.run(["open", target], check=False, env=childenv.child_env())
         elif os.name == "nt":
             _windows_open(target)
         elif shutil.which("xdg-open"):
             subprocess.Popen(
                 ["xdg-open", target], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, start_new_session=True,
+                env=childenv.child_env(),
             )
         else:
             return {"error": "No opener available (install xdg-utils)."}

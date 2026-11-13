@@ -114,6 +114,9 @@ class Decision:
     options: tuple[str, ...] = ()
     proposed_rule: RuleDraft | None = None
     user_id: str = ""
+    # Path patterns of the block rules that applied to this call. A search or a listing leaves those
+    # trees out and says so (F7); the handler reads them from here, so it skips what the gate saw.
+    skip_paths: tuple[str, ...] = ()
     _seal: str | None = field(default=None, repr=False, compare=False)
 
 
@@ -331,8 +334,11 @@ def _ask(pre: _Pre, ctx: GateContext, source: str, code: str, reason: str, *, ru
 
 def _allow(pre: _Pre, source: str, code: str, reason: str, *, rule_id: str | None = None, user: User, tool: str,
            verdict=None) -> Decision:
+    skip = tuple(dict.fromkeys(r.pattern for r in pre.rules
+                               if r.effect == "block" and r.target_kind == "path" and r.pattern))
     return _make(kind="allow", source=source, reason_code=code, reason=reason, tool=tool, args_digest=pre.digest,
-                 targets=pre.targets, tool_kind=pre.policy.kind, rule_id=rule_id, reviewer=verdict, user_id=user.id)
+                 targets=pre.targets, tool_kind=pre.policy.kind, rule_id=rule_id, reviewer=verdict, user_id=user.id,
+                 skip_paths=skip if pre.policy.name in ("search_files", "list_directory") else ())
 
 
 # ---------------------------------------------------------------------------

@@ -74,7 +74,6 @@ class Caller:
 
     session     the owner's signed-in session (web app on the hosted site, or the local app)
     remote      a paired phone or other device
-    local-open  the keyless local login (the terminal client)
     system      the server itself (expiry)
     """
 
@@ -89,7 +88,7 @@ class Caller:
 
     @property
     def restricted(self) -> bool:
-        return self.kind in ("remote", "local-open")
+        return self.kind == "remote"
 
 
 class ApprovalError(Exception):

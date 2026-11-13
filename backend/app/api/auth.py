@@ -172,8 +172,6 @@ def auth_config(request: Request) -> dict:
         # a single "open" button instead of asking them to invent an account.
         "local_mode": settings.local_mode,
         "device_control": settings.device_control_enabled,
-        # The desktop app's sign-in needs the key from the link it opened.
-        "local_login_key_required": bool(settings.local_mode and settings.aura_local_login_key),
         # A browser on another device, reaching this computer's AURA. Its
         # sign-in screen is the pairing form.
         "remote_client": remote_client,
@@ -198,10 +196,11 @@ def local_login(
 
     Three things keep that honest. The request must come from loopback, so the
     door doesn't open to the network if someone binds AURA to 0.0.0.0. It
-    requires LOCAL_MODE, which is off on every hosted deployment. And on the
-    desktop app it requires the key from the link the app opened: every
-    account on a shared computer can reach 127.0.0.1, but only the person who
-    started AURA can read the settings file the key lives in.
+    requires LOCAL_MODE, which is off on every hosted deployment. And it always
+    requires the sign-in key: every account on a shared computer can reach
+    127.0.0.1, but only the person who started AURA can read the file the key
+    lives in (the desktop app's settings file, or local-login.key in AURA's
+    home).
     """
     if not settings.local_mode:
         raise HTTPException(
@@ -221,17 +220,16 @@ def local_login(
             ),
         )
 
-    expected = settings.aura_local_login_key
-    if expected:
-        offered = (payload.key if payload else "") or ""
-        if not offered or not hmac.compare_digest(offered.encode(), expected.encode()):
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "Open AURA from its app window (the \"Open AURA\" button) to sign in "
-                    "on this computer."
-                ),
-            )
+    # A local install always has a sign-in key; there is no sign-in without it.
+    offered = (payload.key if payload else "") or ""
+    if not check_local_key(offered):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Open AURA from its app window (the \"Open AURA\" button), or from the link AURA "
+                "printed in the terminal it was started from, to sign in on this computer."
+            ),
+        )
 
     os_user = local_os_user()
     email = local_owner_email()
@@ -257,12 +255,7 @@ def local_login(
             log.exception("Seeding sample data for the local owner failed")
             db.rollback()
 
-    # How this session was opened decides what it may do: a session opened with a key (the
-    # configured one, or the one made at startup) can change permissions; one opened without
-    # cannot (spec 8.5).
-    offered = (payload.key if payload else "") or ""
-    amr = "local-key" if (expected or check_local_key(offered)) else "local-open"
-    return _issue(db, user, amr=amr)
+    return _issue(db, user, amr="local-key")
 
 
 @router.post("/register", response_model=TokenOut, status_code=201)

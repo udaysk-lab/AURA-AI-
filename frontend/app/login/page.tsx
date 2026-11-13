@@ -203,10 +203,11 @@ export default function LoginPage() {
 
   /**
    * On a local install there's one person — whoever is at the keyboard — so
-   * there's nothing to sign in *to*. One button, no account to invent. The
-   * backend only honours it from this machine.
+   * there's no account to invent. One button; the backend only honours it from
+   * this machine, and only with the sign-in key from AURA's own link.
    */
   const openLocally = async () => {
+    if (!localKey) return;
     setBusy(true);
     setError("");
     try {
@@ -224,8 +225,7 @@ export default function LoginPage() {
   // double-click on AURA lands in AURA rather than on a button to press.
   useEffect(() => {
     if (autoTried.current || loading || user || !config?.local_mode || config.remote_client) return;
-    if (config.local_login_key_required && !localKey) return;
-    if (!localKey) return; // a source install: the button is enough
+    if (!localKey) return; // no key in the link: nothing to try
     autoTried.current = true;
     void openLocally();
     // openLocally is recreated each render; the guard makes this run once.
@@ -370,12 +370,12 @@ export default function LoginPage() {
         <div className="glass space-y-4 p-6">
           {config?.local_mode && (
             <>
-              <button onClick={openLocally} disabled={busy || (config.local_login_key_required && !localKey)} className="btn-primary w-full">
+              <button onClick={openLocally} disabled={busy || !localKey} className="btn-primary w-full">
                 {busy ? <Spinner /> : null} Open AURA on this computer
               </button>
               <p className="text-center text-[11.5px] leading-relaxed text-faint">
-                {config.local_login_key_required && !localKey
-                  ? "To sign in, press “Open AURA” in the AURA AI window on this computer."
+                {!localKey
+                  ? "To sign in, press “Open AURA” in the AURA AI window on this computer, or use the link AURA printed in the terminal you started it from."
                   : config.device_control
                     ? "This is your own install. AURA will work as you, on this machine."
                     : "This is your own install — no account needed."}

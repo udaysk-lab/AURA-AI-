@@ -78,11 +78,10 @@ def _user_id(client, headers):
     return client.get("/api/auth/me", headers=headers).json()["id"]
 
 
-def local_open(client):
-    """A session opened without a key (nothing configured, none offered)."""
-    r = sign_in(client, None, configured="")
-    assert r.status_code == 200, r.text
-    return bearer(r.json()["access_token"])
+def unkeyed(client, owner):
+    """A session that was not opened with the sign-in key (F5: there is no keyless sign-in any more,
+    so this is one made by hand or left over from before): a local install does not honour it at all."""
+    return bearer(create_access_token(_user_id(client, owner), {"amr": "password"}))
 
 
 def remote(client, owner_headers):
@@ -122,25 +121,25 @@ def call(client, method, path, headers, body):
 def test_the_token_says_how_the_session_was_opened(client):
     keyed = sign_in(client, KEY).json()["access_token"]
     assert deps.decode_access_token(keyed)["amr"] == "local-key"
-    keyless = sign_in(client, None, configured="").json()["access_token"]
-    assert deps.decode_access_token(keyless)["amr"] == "local-open"
-    # a configured key is still required
+    # there is no sign-in without the key (F5): none offered, a wrong one, with a key configured or not
+    assert sign_in(client, None, configured="").status_code == 403
+    assert sign_in(client, None).status_code == 403
     assert sign_in(client, "wrong").status_code == 403
     # the key made at startup also gives local-key
     deps._generated_local_key = "made-at-start"
+    deps._generated_for = deps.local_key_path()
     r = sign_in(client, "made-at-start", configured="")
     assert deps.decode_access_token(r.json()["access_token"])["amr"] == "local-key"
-    assert deps.decode_access_token(sign_in(client, "nope", configured="").json()["access_token"])["amr"] == "local-open"
+    assert sign_in(client, "nope", configured="").status_code == 403
 
 
-def test_local_open_cannot_change_permissions(client, owner, tmp_path):
-    keyless = local_open(client)
+def test_an_unkeyed_session_cannot_change_permissions(client, owner, tmp_path):
+    keyless = unkeyed(client, owner)
     for method, path, body in changing_routes(tmp_path):
         r = call(client, method, path, keyless, body)
-        assert r.status_code == 403, (path, r.status_code, r.text)
-        assert "cannot change permissions" in r.json()["detail"], path
-    # reading is fine, and the keyed session is not refused
-    assert client.get("/api/device/folders", headers=keyless).status_code == 200
+        assert r.status_code == 401, (path, r.status_code, r.text)
+    # it is not a session at all, reading included; the keyed session is not refused
+    assert client.get("/api/device/folders", headers=keyless).status_code == 401
     for method, path, body in changing_routes(tmp_path):
         assert call(client, method, path, owner, body).status_code != 403, path
 
@@ -152,10 +151,11 @@ def test_remote_cannot_change_permissions(client, owner, tmp_path):
         assert r.status_code == 403, (path, r.status_code)
 
 
-def test_a_token_without_the_claim_counts_as_local_open(client):
-    uid = _user_id(client, local_open(client))
+def test_a_token_without_the_claim_is_not_honoured(client, owner):
+    uid = _user_id(client, owner)
     old = bearer(create_access_token(uid))  # made before `amr` existed
-    assert client.put("/api/device/screen-control", headers=old, json={"enabled": True}).status_code == 403
+    assert client.put("/api/device/screen-control", headers=old, json={"enabled": True}).status_code == 401
+    assert client.get("/api/auth/me", headers=old).status_code == 401
 
 
 def test_hosted_sessions_are_not_affected(client, monkeypatch):
@@ -219,19 +219,23 @@ def test_spawned_process_refused(client, owner, monkeypatch, tmp_path, label, fa
     assert client.post("/api/pending-actions/x", headers=owner, json={"decision": "reject"}).status_code == 403
 
 
-def test_other_processes_and_lookup_failures_pass(client, owner, monkeypatch):
+@pytest.mark.real_peer
+def test_other_processes_pass_and_lookup_failures_refuse(client, owner, monkeypatch):
     monkeypatch.setattr(deps, "_load_psutil", lambda: _fake_psutil({50000: 31337}, parents=(1,)))
     assert client.put("/api/device/screen-control", headers=owner, json={"enabled": True}).status_code == 200
 
+    # F3: a peer that cannot be identified is refused on a permission-changing route (it used to pass)
     def boom():
         raise PermissionError("access denied")
 
     broken = _fake_psutil({})
     broken.net_connections = lambda kind: boom()
     monkeypatch.setattr(deps, "_load_psutil", lambda: broken)
-    assert client.put("/api/device/screen-control", headers=owner, json={"enabled": True}).status_code == 200
+    monkeypatch.setattr(deps, "_run_tool", lambda argv: (_ for _ in ()).throw(FileNotFoundError(argv[0])))
+    r = client.put("/api/device/screen-control", headers=owner, json={"enabled": True})
+    assert r.status_code == 403 and "could not tell" in r.json()["detail"]
     monkeypatch.setattr(deps, "_load_psutil", lambda: None)
-    assert client.put("/api/device/screen-control", headers=owner, json={"enabled": True}).status_code == 200
+    assert client.put("/api/device/screen-control", headers=owner, json={"enabled": True}).status_code == 403
 
 
 def test_a_browser_aura_opened_is_not_mistaken_for_aura(client, owner, monkeypatch):
@@ -251,8 +255,8 @@ def test_cooldown_after_click(client, owner):
 
 
 def test_console_requires_presence(client, owner):
-    keyless = local_open(client)
-    assert client.post("/api/device/run", headers=keyless, json={"command": "echo x"}).status_code == 403
+    keyless = unkeyed(client, owner)
+    assert client.post("/api/device/run", headers=keyless, json={"command": "echo x"}).status_code == 401
     assert client.post("/api/device/run", headers=remote(client, owner), json={"command": "echo x"}).status_code == 403
     uid = _user_id(client, owner)
     access.note_synthetic_input(uid)
@@ -321,7 +325,7 @@ def test_generated_key_file(monkeypatch, tmp_path):
 
 
 def test_the_owner_route_and_schedules_need_presence(client, owner):
-    keyless = local_open(client)
+    keyless = unkeyed(client, owner)
     for method, path, body in (
         ("PUT", "/api/channels/telegram/owner", {"owner_sender": "x", "bridge_owner_only": False}),
         ("POST", "/api/schedules", {"prompt": "p", "natural_language": "daily", "name": "n", "cron": "0 9 * * *"}),
@@ -332,5 +336,4 @@ def test_the_owner_route_and_schedules_need_presence(client, owner):
         ("PATCH", "/api/skills/DV01", {"enabled": False}),
     ):
         r = call(client, method, path, keyless, body)
-        assert r.status_code == 403, (path, r.status_code)
-        assert "cannot change permissions" in r.json()["detail"], path
+        assert r.status_code == 401, (path, r.status_code)

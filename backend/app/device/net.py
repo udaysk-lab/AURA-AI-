@@ -19,8 +19,12 @@ fetch that can never succeed is refused instead of asked about.
 from __future__ import annotations
 
 import ipaddress
+import os
+import platform
 import re
 import socket
+import struct
+import sys
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -126,6 +130,88 @@ def _refuse_names(host: str) -> None:
         raise FetchDenied(
             "That address is on this computer or its network. fetch_url only reads public web pages."
         )
+
+
+# --- "is this host this computer?" (shared by the fetch floors and the shell's self-API floor, F12) --------
+
+
+def parse_address(host: str):
+    """An IP address from any spelling a client library accepts, or None.
+
+    Dotted and IPv6 forms (including IPv4-mapped), and the legacy IPv4 forms `inet_aton` reads:
+    127.1, 0x7f000001, 017700000001, 2130706433."""
+    text = (host or "").strip().strip("[]").split("%")[0]
+    if not text:
+        return None
+    try:
+        return ipaddress.ip_address(text)
+    except ValueError:
+        pass
+    if _NUMERIC_HOST.fullmatch(text.lower()):
+        try:
+            return ipaddress.IPv4Address(struct.unpack("!I", socket.inet_aton(text))[0])
+        except (OSError, ValueError, struct.error):
+            return None
+    return None
+
+
+def is_this_computer(host: str) -> bool:
+    """Does this host name or address mean this machine: localhost (any case, with or without the
+    trailing dot), a loopback or unspecified address in any spelling (including IPv4-mapped IPv6), one of the
+    names AURA answers to, or the computer's own host name?"""
+    h = (host or "").strip().strip("[]").split("%")[0].rstrip(".").lower()
+    if not h:
+        return False
+    if h == "localhost" or h.endswith(".localhost") or h in ("ip6-localhost", "ip6-loopback"):
+        return True
+    if h in settings.local_allowed_host_set or h in {x.lower() for x in settings.remote_hostname_list}:
+        return True
+    node = (platform.node() or "").lower().rstrip(".")
+    if len(node) >= 3 and h == node:
+        return True
+    ip = parse_address(h)
+    if ip is None:
+        return False
+    return any(c.is_loopback or c.is_unspecified for c in {ip, _unwrap(ip)})
+
+
+# --- the port AURA is really on ------------------------------------------------------------------------------
+
+_BOUND_PORTS: set[int] = set()
+
+
+def note_bound_port(server) -> None:
+    """Remember the port a request arrived on (the ASGI `server` pair): that is where AURA is."""
+    try:
+        port = int(server[1]) if server and server[1] else 0
+    except (TypeError, ValueError, IndexError):
+        return
+    if 0 < port < 65536:
+        _BOUND_PORTS.add(port)
+
+
+def _argv_ports() -> set[int]:
+    ports: set[int] = set()
+    args = sys.argv[1:]
+    for i, a in enumerate(args):
+        value = ""
+        if a in ("--port", "-p") and i + 1 < len(args):
+            value = args[i + 1]
+        elif a.startswith("--port="):
+            value = a.split("=", 1)[1]
+        if value.isdigit() and 0 < int(value) < 65536:
+            ports.add(int(value))
+    return ports
+
+
+def bound_ports() -> set[int]:
+    """Ports AURA is on: those requests arrived on, AURA_PORT, a `--port` on the command line. With
+    nothing known yet, the two defaults (8765 for the app, 8000 for a source install)."""
+    ports = set(_BOUND_PORTS) | _argv_ports()
+    env = (os.environ.get("AURA_PORT") or "").strip()
+    if env.isdigit() and 0 < int(env) < 65536:
+        ports.add(int(env))
+    return ports or {8765, 8000}
 
 
 @dataclass(frozen=True)

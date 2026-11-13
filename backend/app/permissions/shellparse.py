@@ -25,6 +25,7 @@ import re
 from dataclasses import dataclass, field
 
 from app.device import policy as _policy
+from app.permissions import pathglob as _pathglob
 
 POSIX, PWSH, CMD = "posix", "pwsh", "cmd"
 DIALECTS = (POSIX, PWSH, CMD)
@@ -361,6 +362,22 @@ _DANGEROUS_ENV = re.compile(
 )
 _ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
 
+# F6: any NAME=value ahead of a command can change what the command runs (HOME= or XDG_CONFIG_HOME= point
+# git at an attacker's config, JAVA_TOOL_OPTIONS= loads an agent ...), so a command that sets a variable is
+# never covered by an allow rule, except for these few that only change how output looks or reads.
+_SAFE_ENV = re.compile(r"^(LANG|LC_[A-Z_]+|TZ|NO_COLOR|TERM|CI|FORCE_COLOR)$")
+_ENV_BUILTINS = {"export", "declare", "typeset", "readonly", "local", "setenv", "unset", "unsetenv"}
+_PS_ENV_ASSIGN = re.compile(r"^\$\{?env:\s*([A-Za-z_]\w*)\}?\s*([-+*/%.]?=)", re.IGNORECASE)
+_PS_ENV_WRITERS = {"set-item", "si", "set-content", "sc", "new-item", "ni", "add-content", "ac", "clear-item", "cli",
+                   "clear-content", "clc", "remove-item", "ri", "rm", "del", "erase", "rename-item", "rni", "copy-item",
+                   "cpi", "move-item", "mi", "out-file", "set-variable", "sv"}
+_PS_ENV_PATH = re.compile(r"(^|[\s=,(:'\"-])\$?\{?env:", re.IGNORECASE)
+
+
+def _safe_env(name: str, dialect: str) -> bool:
+    """A variable whose value cannot change what a command runs."""
+    return bool(_SAFE_ENV.match(name if dialect == POSIX else name.upper()))
+
 _ELEVATORS = {"sudo", "doas", "runas", "su", "pkexec", "gsudo"}
 _POSIX_SHELLS = {"bash", "sh", "zsh", "fish", "dash", "ksh", "ash", "csh", "tcsh"}
 _PWSH_NAMES = {"powershell", "pwsh"}
@@ -463,6 +480,18 @@ def _is_path_like(tok: str) -> bool:
     return False
 
 
+def _glob_in_path_position(tok: str) -> bool:
+    """A pattern where a path goes: it holds wildcard / brace / extended-glob characters and reads
+    as a path (a separator, a leading ~ or ., a drive or a variable), also after `--option=`."""
+    cand = [tok]
+    if "=" in tok and not tok.startswith("="):
+        cand.append(tok.split("=", 1)[1])
+    for c in cand:
+        if _pathglob.has_glob(c) and (_is_path_like(c) or _SEP.search(c) or c.startswith(".")):
+            return True
+    return False
+
+
 def _collect_paths(words: list[str], ctx: _Ctx) -> None:
     for tok in words:
         cand = [tok]
@@ -473,7 +502,9 @@ def _collect_paths(words: list[str], ctx: _Ctx) -> None:
         for c in cand:
             if _is_path_like(c):
                 ctx.paths.append(PathRef(c, "read"))
-            elif _SEP.search(c) and ctx.workdir:
+            elif ctx.workdir and c and c not in (".", "..") and not c.startswith("-") and len(c) < 400:
+                # a relative name that exists where the command runs (with or without a separator):
+                # the rules that block or ask about a path need to see it (F7)
                 try:
                     if os.path.exists(os.path.join(ctx.workdir, c)):
                         ctx.paths.append(PathRef(c, "read"))
@@ -505,6 +536,8 @@ def _parse_group(group: list, raw: str, ctx: _Ctx, depth: int) -> None:
             dup = item.op in (">&", "<&") and (value.isdigit() or value == "-")
             if dup:
                 continue
+            if _pathglob.has_glob(value):
+                ctx.flag("pattern in a path")
             if item.op.startswith("<") and item.op != "<>":
                 ctx.paths.append(PathRef(value, "read"))
             else:
@@ -542,11 +575,45 @@ def _analyse(tokens: list[str], words: list[_Word], raw: str, ctx: _Ctx, depth: 
     # a. leading NAME=value (posix); a dangerous variable makes the segment opaque
     if d == POSIX:
         while cur and _ASSIGN.match(cur[0]):
-            if _DANGEROUS_ENV.match(_ASSIGN.match(cur[0]).group(1)):
+            if not _safe_env(_ASSIGN.match(cur[0]).group(1), d):
                 opaque = True
             drop(1)
-    if d == CMD and cur and _base(cur[0]) in ("set", "setx") and len(cur) > 1 and _DANGEROUS_ENV.match(re.split(r"[= ]", cur[1], 1)[0].strip('"')):
-        opaque = True
+        if not cur and opaque:
+            # only assignments (`HOME=/x; git status`): the rest of the line runs under them
+            ctx.flag("sets a variable")
+            ctx.segments.append(Segment(" ".join(outer_tokens), " ".join(outer_tokens), tuple(outer_tokens), "",
+                                        opaque=True))
+            return
+
+    # PowerShell: `$env:NAME = value` and the cmdlets that write the env: drive; cmd: `set NAME=value`
+    if d == PWSH and cur:
+        m = _PS_ENV_ASSIGN.match(" ".join(cur[:2]))
+        if m:
+            harmless = _safe_env(m.group(1), d) and m.group(2) == "="
+            ctx.segments.append(Segment(" ".join(outer_tokens), " ".join(outer_tokens), tuple(outer_tokens),
+                                        cur[0], opaque=not harmless, inline=harmless))
+            if not harmless:
+                ctx.flag("sets a variable")
+            return
+        low0 = _base(cur[0])
+        if (low0 in _PS_ENV_WRITERS and any(_PS_ENV_PATH.search(t) or t.lower().startswith("env:") for t in cur[1:])) \
+                or any("::" in t and "environment" in t.lower() for t in cur):
+            opaque = True
+            ctx.flag("sets a variable")
+    if d == CMD and cur and _base(cur[0]) in ("set", "setx"):
+        word = _base(cur[0])
+        arg = cur[1] if len(cur) > 1 else ""
+        if word == "setx" or arg.lower() in ("/a", "/p"):
+            opaque = True
+            ctx.flag("sets a variable")
+        elif "=" in arg:
+            name = arg.split("=", 1)[0].strip('"')
+            harmless = _safe_env(name, d) and len(cur) == 2
+            ctx.segments.append(Segment(" ".join(outer_tokens), " ".join(outer_tokens), tuple(outer_tokens),
+                                        cur[0], opaque=not harmless, inline=harmless))
+            if not harmless:
+                ctx.flag("sets a variable")
+            return
 
     # leading shell keywords (if/then/do/{ ...): the real command follows
     stripped_control = False
@@ -580,7 +647,7 @@ def _analyse(tokens: list[str], words: list[_Word], raw: str, ctx: _Ctx, depth: 
         drop(n)
         if name == "env":
             while cur and _ASSIGN.match(cur[0]):
-                if _DANGEROUS_ENV.match(_ASSIGN.match(cur[0]).group(1)):
+                if not _safe_env(_ASSIGN.match(cur[0]).group(1), d):
                     opaque = True
                 drop(1)
         if d == PWSH and name == "start-process":
@@ -594,6 +661,8 @@ def _analyse(tokens: list[str], words: list[_Word], raw: str, ctx: _Ctx, depth: 
             break
         if d == POSIX:
             while cur and _ASSIGN.match(cur[0]) and name in ("nohup", "time", "nice", "timeout", "command", "exec", "stdbuf", "caffeinate"):
+                if not _safe_env(_ASSIGN.match(cur[0]).group(1), d):
+                    opaque = True
                 drop(1)
 
     if not cur:
@@ -605,6 +674,13 @@ def _analyse(tokens: list[str], words: list[_Word], raw: str, ctx: _Ctx, depth: 
     program = cur[0]
     base = _base(program)
     directory = _has_dir(program)
+
+    # export / declare / unset ...: they change the variables every later command sees
+    if d == POSIX and base in _ENV_BUILTINS:
+        calm = len(cur) > 1 and all(_ASSIGN.match(t) and _safe_env(_ASSIGN.match(t).group(1), d) for t in cur[1:])
+        if not calm:
+            opaque = True
+            ctx.flag("sets a variable")
 
     # variable as the program: `$X args`, `%X% args`
     if words and cur_words and getattr(cur_words[0], "var_start", False):
@@ -621,6 +697,12 @@ def _analyse(tokens: list[str], words: list[_Word], raw: str, ctx: _Ctx, depth: 
             c = _flag_arg(cur[1:], "c")
             if c:
                 _recurse_text(c, POSIX, ctx, depth)
+
+    # a pattern (wildcard, brace list, extended glob) in a path position: the shell turns it into
+    # paths nobody can read from the text, so no allow rule covers the command (F4)
+    if any(_glob_in_path_position(t) for t in cur[1:]):
+        opaque = True
+        ctx.flag("pattern in a path")
 
     # d. interpreters with inline code, launchers
     nested: list[tuple[str, str]] = []  # (text, dialect)

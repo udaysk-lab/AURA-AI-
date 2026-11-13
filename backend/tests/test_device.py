@@ -696,19 +696,25 @@ def test_local_sign_in_works_from_the_machine_itself(client, monkeypatch):
     from app.api import auth as auth_api
 
     monkeypatch.setattr(settings, "local_mode", True, raising=False)
+    monkeypatch.setattr(settings, "aura_local_login_key", "test-sign-in-key", raising=False)
+    offered = auth_api.LocalLoginIn(key="test-sign-in-key")
     db = SessionLocal()
     try:
-        token = auth_api.local_login(_StubRequest("127.0.0.1"), db)
+        token = auth_api.local_login(_StubRequest("127.0.0.1"), db, offered)
         assert token.access_token
         assert token.user.email.endswith("@localhost")
 
         # Called twice, it signs into the same account rather than making another.
-        again = auth_api.local_login(_StubRequest("::1"), db)
+        again = auth_api.local_login(_StubRequest("::1"), db, offered)
         assert again.user.id == token.user.id
 
         with pytest.raises(HTTPException) as refused:
-            auth_api.local_login(_StubRequest("10.0.0.7"), db)
+            auth_api.local_login(_StubRequest("10.0.0.7"), db, offered)
         assert refused.value.status_code == 403
+        # from this machine, but without the key (there is no keyless sign-in)
+        with pytest.raises(HTTPException) as keyless:
+            auth_api.local_login(_StubRequest("127.0.0.1"), db)
+        assert keyless.value.status_code == 403
     finally:
         db.close()
 
@@ -718,9 +724,10 @@ def test_local_sign_in_gives_the_owner_a_working_session(client, monkeypatch):
     from app.api import auth as auth_api
 
     monkeypatch.setattr(settings, "local_mode", True, raising=False)
+    monkeypatch.setattr(settings, "aura_local_login_key", "test-sign-in-key", raising=False)
     db = SessionLocal()
     try:
-        token = auth_api.local_login(_StubRequest("127.0.0.1"), db)
+        token = auth_api.local_login(_StubRequest("127.0.0.1"), db, auth_api.LocalLoginIn(key="test-sign-in-key"))
     finally:
         db.close()
 

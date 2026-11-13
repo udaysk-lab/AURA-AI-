@@ -28,7 +28,7 @@ import uuid
 from dataclasses import asdict, dataclass
 
 from app.config import settings
-from app.device import files, policy
+from app.device import childenv, files, policy
 from app.device.runtime import (
     INSTANCE_ID,
     DeviceUnavailable,
@@ -122,8 +122,9 @@ def run(command: str, workdir: str | None = None, timeout: int | None = None) ->
             encoding="utf-8",
             errors="replace",
             timeout=limit,
-            # A fresh env is risky on Windows (SystemRoot etc.); inherit instead.
-            env={**os.environ, "AURA_SHELL": "exec", "AURA_SPAWNED_BY": INSTANCE_ID},
+            # A fresh env is risky on Windows (SystemRoot etc.), so the user's environment is
+            # inherited, minus everything AURA itself is configured with (childenv.py).
+            env=childenv.child_env({"AURA_SHELL": "exec", "AURA_SPAWNED_BY": INSTANCE_ID}),
             **hidden_process(),
         )
     except subprocess.TimeoutExpired as exc:
@@ -293,8 +294,8 @@ def run_in_background(command: str, workdir: str | None = None) -> dict:
             text=True,
             encoding="utf-8",
             errors="replace",
-            env={**os.environ, "AURA_SHELL": "exec", "PYTHONUNBUFFERED": "1",
-                 "AURA_SPAWNED_BY": INSTANCE_ID},
+            env=childenv.child_env({"AURA_SHELL": "exec", "PYTHONUNBUFFERED": "1",
+                                    "AURA_SPAWNED_BY": INSTANCE_ID}),
             **extra,
         )
 

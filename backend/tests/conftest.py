@@ -92,3 +92,25 @@ def db_rollback():
             # switched off back to the pool.
             connection.invalidate()
         connection.close()
+
+
+@pytest.fixture(autouse=True)
+def _test_peers_are_ordinary_programs(request, monkeypatch):
+    """The ASGI test client's peer ("127.0.0.1", 50000) is not a real socket, so the process lookup cannot
+    find an owner and answers "unknown", which permission-changing routes refuse (F3). Tests that are not
+    about that lookup see an ordinary program instead; a test marked `real_peer` gets the real answer."""
+    if request.node.get_closest_marker("real_peer"):
+        yield
+        return
+    deps = sys.modules.get("app.deps")
+    if deps is None:
+        yield
+        return
+    real = deps._classify
+
+    def classify(req):
+        kind = real(req)
+        return "other" if kind == "unknown" else kind
+
+    monkeypatch.setattr(deps, "classify_peer", classify)
+    yield

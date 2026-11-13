@@ -346,6 +346,9 @@ class LocalAccessMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         peer = request.client.host if request.client else ""
+        from app.device import net
+
+        net.note_bound_port(request.scope.get("server"))  # where AURA really is, for the shell's self-API floor
         if is_loopback(peer):
             name = host_name(request.headers.get("host"))
             # No Host at all names nothing, so it doesn't name this computer.

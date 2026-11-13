@@ -164,7 +164,10 @@ def ensure_home(home: Path) -> Path:
 
     config = home / "aura.env"
     if not config.exists():
-        config.write_text(SETTINGS_TEMPLATE, encoding="utf-8")
+        # Created owner-only from the start: the generated secrets go into this file next.
+        fd = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(SETTINGS_TEMPLATE)
         if os.name != "nt":
             os.chmod(config, 0o600)
 
@@ -187,9 +190,15 @@ def apply_environment(home: Path, config: Path, port: int, bind_host: str, web: 
     """
     from app import envfile
 
-    for key, value in envfile.read_values(config).items():
-        if value != "":
-            os.environ.setdefault(key, value)
+    # The settings file is NOT copied into os.environ: every program AURA starts for the user
+    # would inherit its secrets (the signing key, the sign-in key, the model keys). The settings
+    # loader reads the file itself (app/config.py `_settings_files`, from AURA_CONFIG_FILE below);
+    # the real environment still beats it. Only what the desktop app decides is set here.
+    from_file = {k for k, v in envfile.read_values(config).items() if v != ""}
+
+    def default(name: str, value: str) -> None:
+        if name not in from_file:
+            os.environ.setdefault(name, value)
 
     base = f"http://127.0.0.1:{port}"
     forced = {
@@ -208,11 +217,11 @@ def apply_environment(home: Path, config: Path, port: int, bind_host: str, web: 
         forced["AURA_WEB_DIR"] = str(web)
     os.environ.update(forced)
 
-    os.environ.setdefault("DATABASE_URL", f"sqlite:///{(home / 'aura.db').as_posix()}")
-    os.environ.setdefault("DEBUG", "false")
-    os.environ.setdefault("MAX_AGENT_STEPS", "16")
-    os.environ.setdefault("MAX_TASK_STEPS", "60")
-    os.environ.setdefault("SEGMENT_SECONDS", "600")
+    default("DATABASE_URL", f"sqlite:///{(home / 'aura.db').as_posix()}")
+    default("DEBUG", "false")
+    default("MAX_AGENT_STEPS", "16")
+    default("MAX_TASK_STEPS", "60")
+    default("SEGMENT_SECONDS", "600")
 
     # AURA's own data and its own code are off limits to its file tools.
     extra = [p for p in os.environ.get("DEVICE_EXTRA_PROTECTED_PATHS", "").split(",") if p.strip()]
@@ -514,7 +523,6 @@ def smoke_test(base: str, key: str) -> list[tuple[str, bool, str]]:
     check("no schema guard", status == 200, f"{status} {text[:120]}")
     config = json.loads(text) if status == 200 else {}
     check("local mode on", config.get("local_mode") is True and config.get("device_control") is True, text)
-    check("sign-in key required", config.get("local_login_key_required") is True, text)
 
     status, headers, page = _request(f"{base}/")
     check("web app index", status == 200 and "<html" in page.lower(), f"{status}")
@@ -743,7 +751,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     app_url = f"http://127.0.0.1:{port}"
-    key = os.environ.get("AURA_LOCAL_LOGIN_KEY", "")
+    key = os.environ.get("AURA_LOCAL_LOGIN_KEY") or file_values.get("AURA_LOCAL_LOGIN_KEY", "")
     log.info("AURA is ready at %s", app_url)
 
     if smoke:
@@ -793,7 +801,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if headless:
         print(f"\n  {APP_NAME} {__version__} is running at {app_url}")
-        print(f"  Sign in:  {app_url}/login#key={key}")
+        if sys.stdout.isatty():
+            # The link carries the sign-in key: only a person at a terminal is shown it, never a
+            # pipe, a log file or a service manager's output.
+            print(f"  Sign in:  {app_url}/login#key={key}")
+        else:
+            print(f"  Sign in:  open {app_url} from the AURA window, or read the key in {config}")
         for url in network_urls:
             print(f"  On your network: {url}")
         print("  Press Ctrl+C to stop.\n")

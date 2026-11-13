@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from app.config import settings
 from app.device import appnames
 from app.permissions import access as access_mod
-from app.permissions import match
+from app.permissions import match, pathglob
 from app.permissions.catalogue import ToolPolicy
 
 # Sentinel ports/hosts the shell floor looks for next to a network client.
@@ -185,9 +185,14 @@ def aura_port() -> str:
 # ---------------------------------------------------------------------------
 
 
+def _file_writes_tool_config(targets) -> bool:
+    """A file tool writing a tool's configuration file (.npmrc, pip.ini, .cargo/config ...) anywhere."""
+    return any(t.kind == "path" and not t.named and t.role in ("write",) and is_tool_config(t.value) for t in targets)
+
+
 def _file_floor(targets) -> FloorResult:
     for t in targets:
-        if t.kind != "path" or t.role == "exec":
+        if t.kind != "path" or t.role == "exec" or t.named:
             continue
         real = t.value
         if in_self_path(real):
@@ -232,16 +237,216 @@ def _mentions_self(raw: str) -> bool:
     return bool(_names_pattern(_self_names()).search(text))
 
 
+_AUTHORITY = re.compile(r"://(?:[^@/\s'\"]*@)?(\[[^\]]+\]|[^/:\s'\"?#\\]+)(?::(\d{1,5}))?")
+_BRACKETED = re.compile(r"\[([0-9A-Fa-f:.%a-z]+)\]")
+_WORD_SPLIT = re.compile(r"[\s'\"`(),;=<>|&{}]+")
+
+
+def _host_candidates(raw: str) -> list[str]:
+    """Everything in a command that could be the host of a connection, in any spelling."""
+    out: list[str] = []
+    for m in _AUTHORITY.finditer(raw):
+        out.append(m.group(1))
+    out.extend(m.group(1) for m in _BRACKETED.finditer(raw))
+    for word in _WORD_SPLIT.split(raw):
+        if not word:
+            continue
+        w = word.split("://", 1)[-1]
+        w = w.split("/", 1)[0].split("?", 1)[0]
+        out.append(w)
+        if w.count(":") == 1:
+            out.append(w.rsplit(":", 1)[0])
+        elif w.startswith("[") and "]" in w:
+            out.append(w[1:w.index("]")])
+        elif w.count(":") > 1:
+            out.append(w)  # a bare IPv6 address
+        if w.count(":") >= 2 and not w.startswith("["):
+            out.extend(w.split(":")[:1])
+    return _unique(x for x in out if x)
+
+
 def _hits_local_api(raw: str) -> bool:
+    """Does the command reach AURA's own API or a service on this computer's loopback?
+
+    Hosts are read by the same code the fetch floors use (`net.is_this_computer`), so decimal, hex and octal
+    spellings, IPv4-mapped IPv6, `localhost.` and bracketed forms all count; the port is the one AURA is
+    really on, not an assumed one."""
+    from app.device import net
+
     low = raw.casefold()
-    hostname = (platform.node() or "").casefold()
-    places = ["localhost", "127.", "[::1]", "0.0.0.0", f":{aura_port()}"]
-    near_host = any(p in low for p in places)
-    if not near_host and len(hostname) >= 3:
-        near_host = re.search(rf"(?<![\w.-]){re.escape(hostname)}(?![\w-])", low) is not None
+    near_host = any(net.is_this_computer(h) for h in _host_candidates(raw))
+    if not near_host:
+        near_host = any(p in low for p in ("localhost", "127.", "[::1]", "0.0.0.0"))
+    if not near_host:
+        # AURA listening on the network is reached by this computer's own LAN address: a private address
+        # on the port AURA is on. (A public host on that port number is some other service.)
+        ports = {str(p) for p in net.bound_ports()}
+        for m in _AUTHORITY.finditer(raw):
+            ip = net.parse_address(m.group(1))
+            if m.group(2) in ports and ip is not None and not net.is_public(str(ip)):
+                near_host = True
     if near_host and _CLIENT_WORDS.search(raw):
         return True
     return "/api/" in low and "aura_cli" in low
+
+
+# ---------------------------------------------------------------------------
+# Patterns in a command's paths (F4), searches over AURA's folders, tool configuration (F6)
+# ---------------------------------------------------------------------------
+
+_RECURSIVE_ALWAYS = {"find", "rg", "ag", "ack", "fd", "fdfind", "tree", "du", "locate", "plocate"}
+_PWSH_LIST = {"get-childitem", "gci", "ls", "dir", "select-string", "sls"}
+_GREPS = {"grep", "egrep", "fgrep", "zgrep"}
+_RECURSE_FLAG = re.compile(r"^-[A-Za-z]*[rR][A-Za-z]*$")
+
+
+def _prog(seg) -> str:
+    return re.sub(r"\.(exe|cmd|bat|ps1)$", "", os.path.basename(seg.program.replace("\\", "/")).casefold())
+
+
+def _windows_like(parsed) -> bool:
+    return os.name == "nt" or parsed.dialect != "posix"
+
+
+def _candidate_words(parsed, raw: str) -> list[str]:
+    words: list[str] = []
+    for seg in parsed.segments:
+        words.extend(seg.tokens[1:])
+    words.extend(r.raw for r in parsed.paths)
+    words.extend(pathglob.words_of(raw))
+    out = list(words)
+    for w in words:  # --output=~/.a*/x, of=~/.a*/x
+        if "=" in w and not w.startswith("="):
+            out.append(w.split("=", 1)[1])
+    return pathglob.unique(w for w in out if w)
+
+
+def _glob_check(parsed, raw: str, bases: list[str], workdir: str | None) -> tuple[bool, bool]:
+    """(refers to AURA's own paths, could name a protected path) for the pattern words of a command."""
+    home = os.path.expanduser("~")
+    windows = _windows_like(parsed)
+    ci = match._case_insensitive() or windows
+    dot_ok = windows or pathglob.dotglob_on(raw)
+    own = self_paths()
+    prot = settings.device_protected_path_list
+    hit = protected = False
+    # A relative pattern may be read from the working directory, from home, or from a folder the
+    # command itself changes to (`cd DIR`, `tar -C DIR`): try each.
+    bases = list(bases)
+    for ref in parsed.paths:
+        try:
+            d = match.normalize_path(ref.raw, bases[0] if bases else home)
+        except match.BadArgs:
+            continue
+        for cand in (d, os.path.dirname(d)):
+            if os.path.isdir(cand) and cand not in bases:
+                bases.append(cand)
+    if home not in bases:
+        bases.append(home)
+    for word in _candidate_words(parsed, raw):
+        if not pathglob.has_glob(word):
+            continue
+        if pathglob.expand_braces(word) is None:
+            protected = True  # more variants than can be listed: ask, rather than guess
+        for b in bases:
+            for real in pathglob.existing_matches(word, b, home, ci=ci, windows=windows, dot_ok=dot_ok):
+                if in_self_path(real) or (parsed.deletes and any(_f(p) != _f(real) and _under(_f(p), _f(real)) for p in own)):
+                    hit = True
+                if in_protected(real):
+                    protected = True
+            if any(pathglob.could_match(word, o, b, home, ci=ci, windows=windows, dot_ok=dot_ok) for o in own):
+                hit = True
+            if any(pathglob.could_match(word, o, b, home, ci=ci, windows=windows, dot_ok=dot_ok) for o in prot):
+                protected = True
+    return hit, protected
+
+
+def _search_roots(seg, base: str, home: str, windows: bool) -> list[str]:
+    roots: list[str] = []
+    for tok in seg.tokens[1:]:
+        if tok.startswith("-") or (windows and tok.startswith("/") and len(tok) <= 3 and tok[1:2].isalpha()):
+            continue
+        word = tok
+        if pathglob.has_glob(word):
+            comps = []
+            for comp in re.split(r"[\\/]", word.replace("\\", "/")):
+                if pathglob.has_glob(comp):
+                    break
+                comps.append(comp)
+            word = "/".join(comps) or "."
+            if word.startswith("/") is False and tok.startswith("/"):
+                word = "/" + word
+        try:
+            roots.append(match.normalize_path(word, base))
+        except match.BadArgs:
+            continue
+    return roots
+
+
+def _recursive_over_self(parsed, base: str, workdir: str | None) -> bool:
+    """A command that walks a whole tree starting at (or above) a folder that holds AURA's own files."""
+    own = self_paths()
+    home = os.path.expanduser("~")
+    windows = _windows_like(parsed)
+    for seg in parsed.segments:
+        prog = _prog(seg)
+        args = [t.casefold() for t in seg.tokens[1:]]
+        if prog in _RECURSIVE_ALWAYS:
+            recursive = True
+        elif prog in _GREPS:
+            recursive = any(_RECURSE_FLAG.match(t) or t in ("--recursive", "--dereference-recursive") for t in seg.tokens[1:]) \
+                or any(t.startswith("--directories=recurse") for t in args)
+        elif prog == "ls":
+            recursive = any((_RECURSE_FLAG.match(t) and "R" in t) or t == "--recursive" for t in seg.tokens[1:]) \
+                or any(t in ("-recurse", "-r") for t in args)
+        elif prog in _PWSH_LIST:
+            recursive = any(t in ("-recurse", "-r", "-rec", "-recur") or (t.startswith("-rec")) for t in args) \
+                or any(t == "/s" for t in args)
+        else:
+            recursive = False
+        if not recursive:
+            continue
+        roots = _search_roots(seg, base, home, windows)
+        roots = [r for r in roots if os.path.isdir(r)] or [base]
+        for r in roots:
+            fr = _f(r)
+            if any(_under(_f(o), fr) for o in own):
+                return True
+    return False
+
+
+_TOOL_CONFIG_NAMES = re.compile(
+    r"(^|/)(\.gitconfig|\.gitmodules|\.npmrc|\.yarnrc(\.yml|\.yaml)?|\.pnpmrc|pip\.(conf|ini)|\.pypirc|\.netrc|\.condarc|"
+    r"\.cargo/config(\.toml)?|\.m2/settings(-security)?\.xml|\.docker/config\.json|\.git/config)$",
+    re.IGNORECASE,
+)
+_CONFIG_WRITERS = (
+    (re.compile(r"^git$"), re.compile(r"^config$"), re.compile(r"^(--get|--get-all|--get-regexp|--get-urlmatch|-l|--list|--show-origin|--show-scope|--name-only|--help|-h)$")),
+    (re.compile(r"^(npm|pnpm|yarn)$"), re.compile(r"^config$"), re.compile(r"^(get|list|ls)$")),
+    (re.compile(r"^(pip|pip3)$"), re.compile(r"^config$"), re.compile(r"^(get|list|debug)$")),
+)
+
+
+def is_tool_config(path: str) -> bool:
+    """A tool's configuration file anywhere (`.npmrc`, `.gitconfig`, `pip.ini`, `.cargo/config*`, `.m2/settings.xml` ...).
+
+    Windows ignores trailing dots and spaces and alternate-stream suffixes, so they are dropped first."""
+    comps = pathglob.components(path.replace("\\", "/"), windows=True)
+    return bool(_TOOL_CONFIG_NAMES.search("/".join(c for c in comps if c != "/")))
+
+
+def _writes_tool_config(parsed) -> bool:
+    for ref in parsed.paths:
+        if ref.role == "write" and is_tool_config(ref.raw):
+            return True
+    for seg in parsed.segments:
+        toks = [t.casefold() for t in seg.tokens]
+        prog = _prog(seg)
+        for p_re, verb_re, read_re in _CONFIG_WRITERS:
+            if p_re.match(prog) and len(toks) > 1 and verb_re.match(toks[1]):
+                if not any(read_re.match(t) for t in toks[2:]):
+                    return True
+    return False
 
 
 def _unique(items):
@@ -304,6 +509,20 @@ def _shell_floor(policy: ToolPolicy, targets, roots=None) -> tuple[FloorResult, 
                     continue
                 if in_self_path(real):
                     return _deny("FLOOR_SELF_PATH", "That command refers to AURA's own data, database, settings or program files. AURA never touches those."), False
+
+    # 1b. Wildcards, braces and extended globs: the shell expands them before the program runs, so
+    # the text of the command is not the path it will touch. Checked two ways: what the word
+    # expands to today, and whether it could expand to one of AURA's own or a protected path.
+    glob_hit, glob_protected = _glob_check(parsed, raw, bases, workdir)
+    if glob_hit:
+        return _deny("FLOOR_SELF_PATH", "That command refers to AURA's own data, database, settings or program files (by a wildcard or pattern). AURA never touches those."), False
+    protected = protected or glob_protected
+    # 1c. A search that walks a whole folder tree would walk into AURA's own files.
+    if _recursive_over_self(parsed, base, workdir):
+        protected = True
+    # 1d. Tool configuration files are written only with the user's say-so.
+    if _writes_tool_config(parsed):
+        protected = True
 
     # 2. database tools and migrations.
     for seg in parsed.segments:
@@ -403,7 +622,7 @@ def _outside(acc, ctx, real: str, role: str) -> FloorResult:
 
 def _fence_floor(acc, policy: ToolPolicy, targets, ctx) -> FloorResult:
     for t in targets:
-        if t.kind != "path":
+        if t.kind != "path" or (t.named and t.role != "exec"):
             continue
         real = t.value
         if t.role == "exec":  # a shell's working directory
@@ -517,6 +736,7 @@ def check(db, user, policy: ToolPolicy, targets, ctx=None, *, front=None, access
     shell, always = _shell_floor(policy, targets, None if acc is None else list(acc.roots))
     if shell.deny:
         return shell
+    always = always or _file_writes_tool_config(targets)
     r = _fetch_floor(targets)
     if r.deny:
         return r

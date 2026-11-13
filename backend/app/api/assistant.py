@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from app.automation import engine as automation_engine
-from app.deps import CurrentUser, DbSession, PresentUser, get_user_settings, guard_local_caller, is_remote_session, token_amr
+from app.deps import CurrentUser, DbSession, GuardedUser, PresentUser, get_user_settings, guard_local_caller, is_remote_session
 from app.models import (
     ActivityLog,
     AutomationRule,
@@ -295,7 +295,7 @@ def delete_automation(rule_id: str, user: CurrentUser, db: DbSession) -> dict:
 
 
 @router.post("/automations/{rule_id}/run")
-def run_automation(rule_id: str, user: CurrentUser, db: DbSession) -> dict:
+def run_automation(rule_id: str, user: GuardedUser, db: DbSession) -> dict:
     rule = db.get(AutomationRule, rule_id)
     if not rule or rule.user_id != user.id:
         raise HTTPException(status_code=404, detail="Automation not found")
@@ -303,7 +303,7 @@ def run_automation(rule_id: str, user: CurrentUser, db: DbSession) -> dict:
 
 
 @router.post("/automations/tick")
-def tick(user: CurrentUser, db: DbSession) -> dict:
+def tick(user: GuardedUser, db: DbSession) -> dict:
     """Fire any scheduled rules that are due. Call from a cron/worker each minute."""
     results = automation_engine.run_due_schedules(db)
     results += automation_engine.on_task_due(db, user)
@@ -327,11 +327,9 @@ def _pending_out(action: PendingAction) -> PendingActionOut:
 
 
 def _caller(request: Request) -> approvals.Caller:
-    """Who is answering: a paired device, the keyless local login (`amr` = local-open), or the owner."""
+    """Who is answering: a paired device, or the owner."""
     if is_remote_session(request):
         return approvals.Caller("remote", str(getattr(request.state, "remote_device_id", "") or ""))
-    if token_amr(request) == "local-open":
-        return approvals.Caller("local-open")
     return approvals.Caller("session")
 
 

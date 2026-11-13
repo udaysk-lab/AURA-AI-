@@ -49,6 +49,22 @@ def _front_app(ctx: ToolContext) -> str | None:
     return None
 
 
+def _canon(ctx: ToolContext, raw: str, *roles: str) -> str:
+    """The absolute path the gate decided on for this argument; the handler acts on that, never
+    on the raw text. If the place the argument names has changed since the decision (a folder
+    swapped for a link), the call is refused. Without a decision target the raw text goes to
+    files.resolve, which uses the gate's own resolver."""
+    decision = getattr(ctx, "decision", None)
+    for t in getattr(decision, "targets", ()) or ():
+        if t.kind == "path" and t.role != "exec" and not t.named and t.raw == raw and (not roles or t.role in roles):
+            if not files.same_place(raw, t.value):
+                raise files.PathNotAllowed(
+                    f"{raw!r} no longer points where it did when this was checked, so nothing was done."
+                )
+            return t.value
+    return raw
+
+
 def _screen_call(ctx: ToolContext, fn):
     """Run one screen tool: check the same window is still in front, then (for input) watch the aftermath.
 
@@ -215,7 +231,7 @@ def _list_background(ctx: ToolContext, args: dict) -> list:
 )
 @_safe
 def _read_file(ctx: ToolContext, args: dict) -> dict:
-    return files.read_text(args["path"])
+    return files.read_text(_canon(ctx, args["path"]))
 
 
 @tool(
@@ -237,7 +253,7 @@ def _read_file(ctx: ToolContext, args: dict) -> dict:
 )
 @_safe
 def _write_file(ctx: ToolContext, args: dict) -> dict:
-    result = files.write_text(args["path"], args["content"], append=bool(args.get("append")))
+    result = files.write_text(_canon(ctx, args["path"]), args["content"], append=bool(args.get("append")))
     _log(ctx, "write_file", args["path"])
     return result
 
@@ -261,7 +277,7 @@ def _write_file(ctx: ToolContext, args: dict) -> dict:
 )
 @_safe
 def _edit_file(ctx: ToolContext, args: dict) -> dict:
-    result = files.edit_text(args["path"], args["find"], args["replace"], count=int(args.get("count") or 0))
+    result = files.edit_text(_canon(ctx, args["path"]), args["find"], args["replace"], count=int(args.get("count") or 0))
     _log(ctx, "edit_file", args["path"])
     return result
 
@@ -279,7 +295,8 @@ def _edit_file(ctx: ToolContext, args: dict) -> dict:
 )
 @_safe
 def _list_directory(ctx: ToolContext, args: dict) -> dict:
-    return files.list_directory(args.get("path") or "~", bool(args.get("show_hidden")))
+    return files.list_directory(_canon(ctx, args.get("path") or "~"), bool(args.get("show_hidden")),
+                                skip=tuple(getattr(getattr(ctx, "decision", None), "skip_paths", ()) or ()))
 
 
 @tool(
@@ -297,10 +314,11 @@ def _list_directory(ctx: ToolContext, args: dict) -> dict:
     },
 )
 @_safe
-def _search_files(ctx: ToolContext, args: dict) -> list:
+def _search_files(ctx: ToolContext, args: dict) -> list | dict:
     return files.search_files(
-        args["query"], args.get("root") or "~",
+        args["query"], _canon(ctx, args.get("root") or "~"),
         in_content=bool(args.get("in_content")), limit=int(args.get("limit") or 50),
+        skip=tuple(getattr(getattr(ctx, "decision", None), "skip_paths", ()) or ()),
     )
 
 
@@ -317,7 +335,7 @@ def _search_files(ctx: ToolContext, args: dict) -> list:
 )
 @_safe
 def _move_file(ctx: ToolContext, args: dict) -> dict:
-    result = files.move_path(args["source"], args["destination"])
+    result = files.move_path(_canon(ctx, args["source"], "delete"), _canon(ctx, args["destination"], "write"))
     _log(ctx, "move_file", f"{args['source']} -> {args['destination']}")
     return result
 
@@ -331,7 +349,7 @@ def _move_file(ctx: ToolContext, args: dict) -> dict:
 )
 @_safe
 def _delete_file(ctx: ToolContext, args: dict) -> dict:
-    result = files.delete_path(args["path"])
+    result = files.delete_path(_canon(ctx, args["path"]))
     _log(ctx, "delete_file", args["path"], status="success")
     return result
 
@@ -345,7 +363,7 @@ def _delete_file(ctx: ToolContext, args: dict) -> dict:
 )
 @_safe
 def _make_directory(ctx: ToolContext, args: dict) -> dict:
-    return files.make_directory(args["path"])
+    return files.make_directory(_canon(ctx, args["path"]))
 
 
 # ---------------------------------------------------------------------------

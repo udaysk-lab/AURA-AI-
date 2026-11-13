@@ -177,7 +177,8 @@ def test_env_wrapper_unwrapped():
     assert texts("caffeinate -i git status") == ["git status"]
     assert texts("FOO=1 BAR=2 git status") == ["git status"]
     assert texts("nohup env X=1 nice git status") == ["git status"]
-    assert covered("env FOO=1 git status", ["git status"])
+    assert covered("env LANG=C git status", ["git status"])
+    assert not covered("env FOO=1 git status", ["git status"])  # F6: a variable can change what the command runs
     assert blocked("nohup git push", "git push")
     assert blocked("env FOO=1 git push", "env", effect="ask")  # the wrapper is visible to block/ask
     # a wrapper that changes what is found or loaded is opaque
@@ -269,7 +270,8 @@ def test_card_pattern_two_tokens():
     assert pats("ls") == ["=ls"]
     assert pats("cat /etc/hosts") == ["=cat /etc/hosts"]
     assert pats("python -m pytest") == ["=python -m pytest"]
-    assert pats("env X=1 git status") == ["git status"]
+    assert pats("env LANG=C git status") == ["git status"]
+    assert pats("env X=1 git status") == []  # F6: only once / reject for a command that sets a variable
     assert pats("bash -c 'git status'") == ["git status"]  # the launcher itself is not a pattern
     assert pats("echo $(id)") == [] and pats("sudo ls") == [] and pats("rm -rf x") == []
     assert not parse("rm -rf x").offers_durations

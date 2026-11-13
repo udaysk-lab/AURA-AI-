@@ -51,10 +51,27 @@ def _discover_database_url() -> str:
     return "sqlite:///./aura.db"
 
 
+def _settings_files() -> tuple[str, ...]:
+    """The files settings are read from, later ones winning. The real environment beats them all.
+
+    The desktop app points AURA_CONFIG_FILE at its settings file and does NOT copy that file into
+    the process environment: a command AURA runs for the user would inherit every secret in it.
+    The file is read here, directly."""
+    files = [".env", "../.env"]
+    config = os.environ.get("AURA_CONFIG_FILE", "").strip()
+    if config:
+        files.append(os.path.expanduser(config))
+    return tuple(files)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"), env_file_encoding="utf-8", extra="ignore"
     )
+
+    def __init__(self, **values):
+        values.setdefault("_env_file", _settings_files())
+        super().__init__(**values)
 
     # --- Core -------------------------------------------------------------
     app_name: str = "AURA AI"

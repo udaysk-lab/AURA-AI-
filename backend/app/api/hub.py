@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from app import plugins as plugin_registry
 from app.agent import skills as skill_registry
 from app.config import settings
-from app.deps import CurrentUser, DbSession, PresentUser
+from app.deps import CurrentUser, DbSession, GuardedUser, PresentUser
 from app.models import Delegation, Document, DocumentChunk, Schedule, User, utcnow
 from app.permissions import changes as perm_changes, events as permission_events, reviewer
 from app.schemas import (
@@ -152,7 +152,7 @@ def list_channels(user: CurrentUser, db: DbSession) -> list[ChannelOut]:
 
 @router.post("/channels/connect", response_model=ChannelOut)
 def connect_channel(
-    payload: ChannelConnectIn, user: CurrentUser, db: DbSession
+    payload: ChannelConnectIn, user: GuardedUser, db: DbSession
 ) -> ChannelOut:
     try:
         row = channel_service.connect(db, user.id, payload.kind, payload.identifier)
@@ -163,7 +163,7 @@ def connect_channel(
 
 
 @router.post("/channels/{kind}/rotate", response_model=ChannelOut)
-def rotate_channel_token(kind: str, user: CurrentUser, db: DbSession) -> ChannelOut:
+def rotate_channel_token(kind: str, user: GuardedUser, db: DbSession) -> ChannelOut:
     row = channel_service.rotate_token(db, user.id, kind)
     if not row:
         raise HTTPException(status_code=404, detail="Channel not connected")
@@ -409,7 +409,7 @@ def update_schedule(
 
 
 @router.post("/schedules/{schedule_id}/run")
-def run_schedule(schedule_id: str, user: CurrentUser, db: DbSession) -> dict:
+def run_schedule(schedule_id: str, user: GuardedUser, db: DbSession) -> dict:
     row = db.get(Schedule, schedule_id)
     if not row or row.user_id != user.id:
         raise HTTPException(status_code=404, detail="Schedule not found")

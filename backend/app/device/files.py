@@ -57,15 +57,17 @@ def _protected(real: str) -> bool:
 
 
 def _holds_protected(real: str) -> bool:
-    """A folder with a protected path somewhere inside it.
+    """A folder with a protected path, or one of AURA's own paths, somewhere inside it.
 
-    Moving or deleting it would take the protected path along — move
+    Moving or deleting it would take that path along — move
     ~/Library aside, write into its LaunchAgents, move it back.
     """
+    from app.permissions import floors
+
     folded = _fold(real)
     return any(
         _under(_fold(p), folded) and _fold(p) != folded
-        for p in settings.device_protected_path_list
+        for p in [*settings.device_protected_path_list, *floors.self_paths()]
     )
 
 
@@ -94,12 +96,15 @@ def resolve(path: str, *, must_exist: bool = False) -> str:
     if not path or not str(path).strip():
         raise PathNotAllowed("No path was given.")
 
-    expanded = os.path.expanduser(os.path.expandvars(str(path).strip()))
-    if not os.path.isabs(expanded):
-        expanded = os.path.join(os.getcwd(), expanded)
+    # One resolver for the gate and for this layer (permissions/match.py): a relative path is
+    # taken from the home folder, `~` and the environment forms are expanded the same way, and
+    # symlinks are followed on the parts that exist. The gate judged exactly this path.
+    from app.permissions import floors, match
 
-    # realpath resolves symlinks so a link inside a root can't point outside it.
-    real = os.path.realpath(expanded)
+    try:
+        real = match.normalize_path(str(path).strip(), os.path.expanduser("~"))
+    except match.BadArgs as exc:
+        raise PathNotAllowed(f"{path!r} is not a usable path: {exc}") from exc
 
     # The connected folders of the user this call runs for (permissions/access.py). Nothing
     # bound means no folders, so a call outside a gated tool call refuses.
@@ -113,6 +118,11 @@ def resolve(path: str, *, must_exist: bool = False) -> str:
             "Connect the folder in Settings, This computer, or let AURA ask."
         )
 
+    if floors.in_self_path(real):
+        raise PathNotAllowed(
+            f"{path!r} is part of AURA itself (its data, database, settings or program files). "
+            "AURA never touches those."
+        )
     if _protected(real):
         raise PathNotAllowed(
             f"{path!r} is in a protected location AURA won't touch "
@@ -122,6 +132,20 @@ def resolve(path: str, *, must_exist: bool = False) -> str:
     if must_exist and not os.path.exists(real):
         raise PathNotAllowed(f"No such file or directory: {path}")
     return real
+
+
+def same_place(path: str, canonical: str) -> bool:
+    """True when `path` still resolves to `canonical` (the path the gate decided on).
+
+    A folder replaced by a link between the decision and the action resolves somewhere else;
+    the handler then refuses rather than act on a place nobody approved."""
+    from app.permissions import match
+
+    try:
+        now = match.normalize_path(path, os.path.expanduser("~"))
+    except match.BadArgs:
+        return False
+    return os.path.normcase(now) == os.path.normcase(canonical)
 
 
 def _rel(path: str) -> str:
@@ -159,14 +183,32 @@ def read_text(path: str, max_bytes: int | None = None) -> dict:
     }
 
 
-def list_directory(path: str = "~", show_hidden: bool = False) -> dict:
+def _blocked(real: str, skip: tuple[str, ...]) -> bool:
+    """Is this path inside a tree the user's block rules cover?"""
+    if not skip:
+        return False
+    from app.permissions import match
+
+    return any(match.path_matches(pattern, real) for pattern in skip)
+
+
+def _skipped_note(count: int) -> str:
+    return (f"{count} folder(s) or file(s) were left out because they are blocked by your rules. "
+            "That is your setting, not an error; do not try another way to read them.")
+
+
+def list_directory(path: str = "~", show_hidden: bool = False, skip: tuple[str, ...] = ()) -> dict:
     real = resolve(path, must_exist=True)
     if not os.path.isdir(real):
         raise PathNotAllowed(f"{path} is not a directory.")
     entries: list[dict] = []
+    skipped = 0
     with os.scandir(real) as it:
         for entry in it:
             if not show_hidden and entry.name.startswith("."):
+                continue
+            if _blocked(os.path.realpath(entry.path), skip):
+                skipped += 1
                 continue
             try:
                 stat = entry.stat()
@@ -182,29 +224,49 @@ def list_directory(path: str = "~", show_hidden: bool = False) -> dict:
             except OSError:
                 continue
     entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
-    return {"path": _rel(real), "count": len(entries), "entries": entries[:500]}
+    out = {"path": _rel(real), "count": len(entries), "entries": entries[:500]}
+    if skipped:
+        out.update(skipped=skipped, message=_skipped_note(skipped))
+    return out
 
 
 def search_files(
-    query: str, root: str = "~", *, in_content: bool = False, limit: int = 50
-) -> list[dict]:
-    """Find files by name, or grep their text when in_content is set."""
+    query: str, root: str = "~", *, in_content: bool = False, limit: int = 50, skip: tuple[str, ...] = ()
+) -> list[dict] | dict:
+    """Find files by name, or grep their text when in_content is set.
+
+    Trees the user's block rules cover are left out; when that happened the answer is
+    {"results", "skipped", "message"} so the agent is told, otherwise a plain list."""
     base = resolve(root, must_exist=True)
     needle = (query or "").lower()
     if not needle:
         return []
     hits: list[dict] = []
+    skipped = 0
+
+    def done():
+        if skipped:
+            return {"results": hits, "skipped": skipped, "message": _skipped_note(skipped)}
+        return hits
+
     for dirpath, dirnames, filenames in os.walk(base):
         # Don't descend into protected dirs or obvious noise.
-        dirnames[:] = [
-            d
-            for d in dirnames
-            if not d.startswith(".")
-            and d not in {"node_modules", "__pycache__", "venv", ".venv", "dist", "build"}
-            and _safe(os.path.join(dirpath, d))
-        ]
+        keep = []
+        for d in dirnames:
+            if d.startswith(".") or d in {"node_modules", "__pycache__", "venv", ".venv", "dist", "build"}:
+                continue
+            full_dir = os.path.join(dirpath, d)
+            if _blocked(os.path.realpath(full_dir), skip):
+                skipped += 1
+                continue
+            if _safe(full_dir):
+                keep.append(d)
+        dirnames[:] = keep
         for name in filenames:
             full = os.path.join(dirpath, name)
+            if _blocked(os.path.realpath(full), skip):
+                skipped += 1
+                continue
             if not _safe(full):
                 continue
             if not in_content:
@@ -215,8 +277,8 @@ def search_files(
                 if match:
                     hits.append({"path": _rel(full), "name": name, "match": match})
             if len(hits) >= limit:
-                return hits
-    return hits
+                return done()
+    return done()
 
 
 def _safe(path: str) -> bool:
