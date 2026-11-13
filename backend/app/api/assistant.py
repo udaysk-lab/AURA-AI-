@@ -28,6 +28,11 @@ from app.schemas import (
     EventOut,
     MemoryIn,
     MemoryOut,
+    MemoryPatch,
+    MemoryResetIn,
+    MemoryResetOut,
+    MemorySettingsIn,
+    MemorySettingsOut,
     NotificationOut,
     PendingActionOut,
     PendingDecisionIn,
@@ -40,6 +45,8 @@ from app.services import demo as demo_service
 from app.permissions import approvals, changes as perm_changes, events as permission_events, reviewer
 from app.security import decode_access_token
 from app.services import memory as memory_service
+from app.services import preferences as preference_service
+from app.services import workmemory as workmemory_service
 
 router = APIRouter(prefix="/api", tags=["assistant"])
 
@@ -160,6 +167,54 @@ def pin_memory(memory_id: str, user: CurrentUser, db: DbSession) -> MemoryOut:
     db.commit()
     db.refresh(m)
     return MemoryOut.model_validate(m)
+
+
+@router.patch("/memories/{memory_id}", response_model=MemoryOut)
+def edit_memory(memory_id: str, payload: MemoryPatch, user: CurrentUser, db: DbSession) -> MemoryOut:
+    """The owner's edit of a fact: content, kind, pinned. The row becomes `manual`, so compaction
+    never merges or decays it afterwards."""
+    m = db.get(Memory, memory_id)
+    if not m or m.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    try:
+        memory_service.edit(db, m, **payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return MemoryOut.model_validate(m)
+
+
+@router.get("/memory/settings", response_model=MemorySettingsOut)
+def get_memory_settings(user: CurrentUser, db: DbSession) -> MemorySettingsOut:
+    return MemorySettingsOut(paused=bool(get_user_settings(db, user).memory_paused))
+
+
+@router.patch("/memory/settings", response_model=MemorySettingsOut)
+def set_memory_settings(payload: MemorySettingsIn, user: CurrentUser, db: DbSession) -> MemorySettingsOut:
+    """Pause memory: no new preferences or facts from chat, new tasks are not kept for recall.
+    What is already stored is still used. Only the signed-in owner can change it."""
+    row = get_user_settings(db, user)
+    row.memory_paused = payload.paused
+    db.commit()
+    return MemorySettingsOut(paused=bool(row.memory_paused))
+
+
+@router.post("/memory/reset", response_model=MemoryResetOut)
+def reset_memory(payload: MemoryResetIn, user: CurrentUser, db: DbSession) -> MemoryResetOut:
+    """Wipe one kind of memory, or all of it. The caller has to send confirm = "RESET"."""
+    if payload.confirm != "RESET":
+        raise HTTPException(status_code=422, detail='Type RESET to confirm. This cannot be undone.')
+    deleted = {"preferences": 0, "work_items": 0, "memories": 0}
+    if payload.scope in ("preferences", "all"):
+        deleted["preferences"] = preference_service.reset(db, user.id)
+    if payload.scope in ("task_memory", "all"):
+        deleted["work_items"] = workmemory_service.reset(db, user.id)
+    if payload.scope in ("facts", "all"):
+        rows = db.scalars(select(Memory).where(Memory.user_id == user.id)).all()
+        for row in rows:
+            db.delete(row)
+        db.commit()
+        deleted["memories"] = len(rows)
+    return MemoryResetOut(deleted=deleted)
 
 
 # ---------------------------------------------------------------------------

@@ -332,4 +332,8 @@ def handle_inbound(
         "conversation_id": convo.id,
         "skills": [r["code"] for r in result.skill_runs],
         "pending": len(result.pending_actions),
+        # A run that parked is carried on by the worker once the card is answered, and the owner is
+        # notified when it finishes (taskloop.on_finished).
+        "work_item_id": result.work_item_id,
+        "work_status": result.work_status,
     }

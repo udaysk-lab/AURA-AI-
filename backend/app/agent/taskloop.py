@@ -18,9 +18,9 @@ How a turn runs
   * Finishing applies the outcome table (5.5), adds missing report sections in code, and closes the
     item through `workmemory.finalise`.
 
-Segments, leases and stop are spec 6.3 to 6.6. The worker that continues `ready` items on its own
-(`resume_due`) belongs to the continuation package; `recover_stale` is here because it is the same
-state machine.
+Segments, leases and stop are spec 6.3 to 6.6. `resume_due` is what the worker and the cron tick call
+to continue `ready` items with nobody watching (spec 7); `on_finished` delivers the result of a run
+that finished after its first segment.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from app import permissions
@@ -48,6 +48,7 @@ from app.models import (
     ActivityLog,
     Conversation,
     Message,
+    Notification,
     PendingAction,
     Preference,
     UsageRecord,
@@ -468,7 +469,7 @@ class TaskRun:
 
     def __init__(self, db: Session, user: User, conversation: Conversation | None, state: LoopState,
                  item: WorkItem | None = None, *, token: str = "", budget_trigger: str = "chat",
-                 resumed: bool = False) -> None:
+                 resumed: bool = False, segment_seconds: float | None = None) -> None:
         self.db = db
         self.user = user
         self.conversation = conversation
@@ -477,6 +478,9 @@ class TaskRun:
         self.token = token or secrets.token_hex(16)
         self.budget_trigger = budget_trigger
         self.resumed = resumed
+        # A cron call has a deadline of its own: a background segment may be given less than the
+        # configured wall time so that it parks (`segment_time`) before the tick's budget runs out.
+        self.segment_limit = float(segment_seconds) if segment_seconds is not None else float(settings.segment_seconds)
         self.result = AgentResult()
         self.recall: workmemory.Recall | None = None
         self.first_events: list[dict] = []
@@ -531,12 +535,14 @@ class TaskRun:
         return run
 
     @classmethod
-    def resume(cls, db: Session, user: User, item: WorkItem, *, token: str, background: bool = False) -> "TaskRun":
+    def resume(cls, db: Session, user: User, item: WorkItem, *, token: str, background: bool = False,
+               segment_seconds: float | None = None) -> "TaskRun":
         """Continue a claimed item (`claim_for_resume` has already set it `running`)."""
         state = LoopState.load(item.loop_state)
         conversation = db.get(Conversation, item.conversation_id) if item.conversation_id else None
         run = cls(db, user, conversation, state, item, token=token,
-                  budget_trigger="resume" if background else state.trigger, resumed=True)
+                  budget_trigger="resume" if background else state.trigger, resumed=True,
+                  segment_seconds=segment_seconds)
         run.result.work_item_id = item.id
         run._settle_open_step()
         return run
@@ -715,7 +721,7 @@ class TaskRun:
                 return (yield from self._park("segment_budget"))
             if st.steps_total >= settings.max_task_steps:
                 return (yield from self._finish("step_cap"))
-            if seg_steps > 0 and time.monotonic() - t0 > settings.segment_seconds:
+            if seg_steps > 0 and time.monotonic() - t0 > self.segment_limit:
                 return (yield from self._park("segment_time"))
 
             # Checked before the call, never after: refusing to start is recoverable.
@@ -1033,6 +1039,9 @@ class TaskRun:
             item.error = self.error
         status, report = finalise_item(db, user, item, st, hint=hint, text=text, has_text=self.model_text)
         self.final_text = report
+        if self.resumed:
+            # A run that carried on after its first segment has no caller waiting to deliver it.
+            on_finished(db, item, background=self.budget_trigger == "resume")
         yield {"type": "report", "work_item_id": item.id, "status": status, "title": item.title,
                "outcome": item.outcome, "verification": (item.verification or {}).get("status", "none")}
         return self._result(status)
@@ -1105,12 +1114,12 @@ def _claim(db: Session, item: WorkItem, *, background: bool = False) -> str:
 
 
 def iter_resume(db: Session, user: User, work_item_id: str, *, token: str | None = None,
-                background: bool = False) -> Generator[dict, None, AgentResult]:
+                background: bool = False, segment_seconds: float | None = None) -> Generator[dict, None, AgentResult]:
     """Continue the same run after an approval, a denial, an expiry or a budget pause."""
     if token is None:
         token = claim_for_resume(db, user, work_item_id, background=background)
     item = db.get(WorkItem, work_item_id)
-    run = TaskRun.resume(db, user, item, token=token, background=background)
+    run = TaskRun.resume(db, user, item, token=token, background=background, segment_seconds=segment_seconds)
     return (yield from run.segment())
 
 
@@ -1258,6 +1267,11 @@ def recover_stale(db: Session) -> int:
     return n
 
 
+def is_live(item: WorkItem) -> bool:
+    """True while a process holds the item: `running` with a lease that has not run out."""
+    return item.status == "running" and item.lease_until is not None and _aware(item.lease_until) > utcnow()
+
+
 def running_item(db: Session, conversation_id: str) -> WorkItem | None:
     """The item of this conversation that a live segment is working on, if any (spec 6.6)."""
     now = utcnow()
@@ -1267,3 +1281,149 @@ def running_item(db: Session, conversation_id: str) -> WorkItem | None:
         if item.lease_until is not None and _aware(item.lease_until) > now:
             return item
     return None
+
+
+# ---------------------------------------------------------------------------
+# Background continuation (spec 7) and delivery (spec 5.5 step 7)
+# ---------------------------------------------------------------------------
+
+TERMINAL = ("done", "partly_done", "failed", "stopped")
+RESUME_BATCH = 20
+# A segment that cannot start a model call (the tick has no time left) is not worth claiming.
+MIN_SEGMENT_SECONDS = 15
+GIVE_UP_TEXT = ("I couldn't carry this on: it kept stopping before it could finish, so I've closed it. "
+                "Nothing further was done. Ask me again if you still want it.")
+
+
+def _notify_waiting(db: Session, item: WorkItem) -> None:
+    """A chat task that the worker carried on and that now needs an answer: tell the owner, because
+    nobody is looking at the page (a schedule or inbound run already raised its own card alert)."""
+    db.add(Notification(
+        user_id=item.user_id, level="urgent", title=f"Approval needed: {item.title}"[:300],
+        body="A task is waiting for your approval.",
+        link=f"/chat?c={item.conversation_id}" if item.conversation_id else "/dashboard",
+    ))
+    db.commit()
+
+
+def on_finished(db: Session, item: WorkItem, *, background: bool = False) -> dict | None:
+    """Deliver the result of an item that finished after its first segment.
+
+    A schedule item goes the way its `deliver_to` says; an inbound item always raises a
+    notification (there is no channel to answer on); a chat item raises one only when the worker
+    finished it, since the owner is not looking. Never raises: a delivery problem must not undo a
+    finished task."""
+    try:
+        user = db.get(User, item.user_id)
+        if user is None:
+            return None
+        if item.trigger == "schedule":
+            from app.services import schedules
+
+            if schedules.deliver_finished(db, user, item):
+                return {"delivered": "schedule"}
+            # The schedule was deleted meanwhile: the owner still hears how it ended.
+        if item.trigger != "inbound" and not background:
+            return None
+        text = (item.outcome or item.report or "").strip()
+        db.add(Notification(
+            user_id=user.id, level="info" if item.status == "done" else "warning",
+            title=(item.title or "Task finished")[:300], body=text[:2000],
+            link=f"/chat?c={item.conversation_id}" if item.conversation_id else "/dashboard",
+        ))
+        db.commit()
+        return {"delivered": "notification"}
+    except Exception:
+        log.exception("Could not deliver the result of work item %s", item.id)
+        db.rollback()
+        return None
+
+
+def _give_up(db: Session, user: User, item: WorkItem) -> None:
+    """An item that has been claimed again and again without finishing (each healthy segment makes
+    at least one model call, so more segments than the step cap allows means it is stuck)."""
+    state = LoopState.load(item.loop_state)
+    approvals.expire_due(db, user.id)
+    _reject_pending(db, item, actor_note="stop")
+    item.error = item.error or "Gave up: the task kept stopping before it finished."
+    finalise_item(db, user, item, state, hint="model_error", text=GIVE_UP_TEXT, has_text=False)
+    on_finished(db, item, background=True)
+
+
+def resume_due(db: Session, should_stop=None, time_left=None, limit: int = RESUME_BATCH) -> dict:
+    """The first phase of a worker tick (spec 7).
+
+    Expires overdue approvals, recovers runs whose process died, then claims `ready` items, oldest
+    first, and runs one segment of each until `should_stop()` says the tick is out of time. A chat
+    item is left alone for `resume_grace_seconds` so the page that is open can continue it first.
+    `time_left()` (seconds, or None) caps a segment so it parks before the tick's budget runs out.
+    Leftovers stay `ready` for the next tick. Returns counts for the log."""
+    from app.agent import coordinator
+
+    out = {"expired": 0, "recovered": 0, "resumed": 0, "finished": 0, "waiting": 0, "parked": 0, "failed": 0}
+    out["expired"] = approvals.expire_due(db)
+    out["recovered"] = recover_stale(db)
+
+    now = utcnow()
+    grace_cut = now - timedelta(seconds=settings.resume_grace_seconds)
+    ids = db.scalars(
+        select(WorkItem.id)
+        .where(
+            WorkItem.status == "ready",
+            or_(WorkItem.lease_until.is_(None), WorkItem.lease_until < now),
+            or_(WorkItem.trigger != "chat", WorkItem.ready_at.is_(None), WorkItem.ready_at < grace_cut),
+            WorkItem.user_id.in_(select(User.id).where(User.is_active.is_(True))),
+        )
+        .order_by(WorkItem.ready_at, WorkItem.id)
+        .limit(max(1, limit))
+    ).all()
+
+    for item_id in ids:
+        if should_stop is not None and should_stop():
+            break
+        seconds = float(settings.segment_seconds)
+        if time_left is not None:
+            left = time_left()
+            if left is not None:
+                if left < MIN_SEGMENT_SECONDS:
+                    break
+                seconds = min(seconds, left - 10)
+        item = db.get(WorkItem, item_id)
+        user = db.get(User, item.user_id) if item is not None else None
+        if item is None or user is None:
+            continue
+        try:
+            if item.segments > settings.max_task_steps + 3:
+                _give_up(db, user, item)
+                out["failed"] += 1
+                continue
+            token = _claim(db, item, background=True)
+        except Busy:
+            continue  # someone else took it between the query and the claim
+        except Exception:
+            log.exception("Could not claim work item %s", item_id)
+            db.rollback()
+            out["failed"] += 1
+            continue
+        try:
+            result = coordinator._drain(
+                coordinator.iter_resume(db, user, item_id, token=token, background=True, segment_seconds=seconds))
+            db.refresh(item)
+            convo = db.get(Conversation, item.conversation_id) if item.conversation_id else None
+            # "Still working" between segments is not worth a message of its own.
+            if convo is not None and item.status != "ready":
+                coordinator.persist_exchange(db, convo, None, result)
+            out["resumed"] += 1
+            if item.status in TERMINAL:
+                out["finished"] += 1
+            elif item.status == "waiting":
+                out["waiting"] += 1
+                if item.trigger == "chat":
+                    _notify_waiting(db, item)
+            else:
+                out["parked"] += 1
+        except Exception:
+            log.exception("Carrying on work item %s failed", item_id)
+            db.rollback()
+            out["failed"] += 1
+    return out

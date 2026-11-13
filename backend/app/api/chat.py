@@ -22,6 +22,7 @@ from app.schemas import (
     ChatIn,
     ChatOut,
     ConversationDetail,
+    ConversationMemoryIn,
     ConversationOut,
     MessageOut,
     PendingActionOut,
@@ -45,13 +46,18 @@ def _stream_error(exc: Exception) -> str:
     return "Something went wrong on my side while answering. Please try again."
 
 
-def _get_or_create(db, user, conversation_id: str | None) -> Conversation:
+def _get_or_create(db, user, conversation_id: str | None, memory_off: bool | None = None) -> Conversation:
+    """The conversation a message goes to. `memory_off` (from ChatIn) is applied before the run
+    starts, so the very first message of a new chat can already opt out of memory."""
     if conversation_id:
         convo = db.get(Conversation, conversation_id)
         if not convo or convo.user_id != user.id:
             raise HTTPException(status_code=404, detail="Conversation not found")
+        if memory_off is not None and bool(convo.memory_off) != memory_off:
+            convo.memory_off = memory_off
+            db.commit()
         return convo
-    convo = Conversation(user_id=user.id)
+    convo = Conversation(user_id=user.id, memory_off=bool(memory_off))
     db.add(convo)
     db.commit()
     db.refresh(convo)
@@ -135,6 +141,20 @@ def toggle_pin(conversation_id: str, user: CurrentUser, db: DbSession) -> Conver
     return ConversationOut.model_validate(convo)
 
 
+@router.patch("/conversations/{conversation_id}/memory", response_model=ConversationOut)
+def set_conversation_memory(
+    conversation_id: str, payload: ConversationMemoryIn, user: CurrentUser, db: DbSession
+) -> ConversationOut:
+    """"Don't use memory in this chat": no recall, no capture, and its tasks are not kept for recall."""
+    convo = db.get(Conversation, conversation_id)
+    if not convo or convo.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    convo.memory_off = payload.memory_off
+    db.commit()
+    db.refresh(convo)
+    return ConversationOut.model_validate(convo)
+
+
 @router.delete("/conversations/{conversation_id}")
 def delete_conversation(conversation_id: str, user: CurrentUser, db: DbSession) -> dict:
     convo = db.get(Conversation, conversation_id)
@@ -163,7 +183,7 @@ def _still_working(db, convo: Conversation) -> JSONResponse | None:
 @router.post("", response_model=ChatOut)
 def chat(payload: ChatIn, user: CurrentUser, db: DbSession):
     """Non-streaming turn. Use /stream for the live UI."""
-    convo = _get_or_create(db, user, payload.conversation_id)
+    convo = _get_or_create(db, user, payload.conversation_id, payload.memory_off)
     busy = _still_working(db, convo)
     if busy is not None:
         return busy
@@ -240,7 +260,7 @@ def chat_stop(payload: ChatContinueIn, user: CurrentUser, db: DbSession) -> dict
 
 @router.post("/stream")
 def chat_stream(payload: ChatIn, user: CurrentUser, db: DbSession):
-    convo = _get_or_create(db, user, payload.conversation_id)
+    convo = _get_or_create(db, user, payload.conversation_id, payload.memory_off)
     busy = _still_working(db, convo)
     if busy is not None:
         return busy

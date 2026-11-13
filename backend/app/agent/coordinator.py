@@ -239,10 +239,12 @@ def iter_agent(
 
 
 def iter_resume(
-    db: Session, user: User, work_item_id: str, *, token: str | None = None, background: bool = False
+    db: Session, user: User, work_item_id: str, *, token: str | None = None, background: bool = False,
+    segment_seconds: float | None = None,
 ) -> Generator[dict, None, AgentResult]:
     """Continue a paused work item: one more segment of the same run."""
-    return (yield from taskloop.iter_resume(db, user, work_item_id, token=token, background=background))
+    return (yield from taskloop.iter_resume(db, user, work_item_id, token=token, background=background,
+                                            segment_seconds=segment_seconds))
 
 
 def _drain(events: Generator[dict, None, AgentResult]) -> AgentResult:

@@ -1,6 +1,8 @@
 """Background worker.
 
-Four loops on one timer:
+Five loops on one timer:
+  * task continuation (parked work)      — every minute: approvals that expired, runs whose
+                                           process died, items waiting to carry on
   * automation rules (fixed tool lists)  — every minute
   * schedules (full agent prompts)       — every minute
   * heartbeat (proactive work)           — per-user interval, checked every minute
@@ -21,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
+from app.agent import taskloop
 from app.automation import engine
 from app.db import SessionLocal
 from app.migrate import ensure_schema
@@ -70,7 +73,7 @@ def tick(
     limit, and whatever didn't fit is still due on the next one. Returns what
     ran, for the cron's log.
     """
-    summary = {"automations": 0, "schedules": 0, "heartbeats": 0, "compacted": False, "ok": True}
+    summary = {"resumed": 0, "automations": 0, "schedules": 0, "heartbeats": 0, "compacted": False, "ok": True}
     deadline = time.monotonic() + budget_seconds if budget_seconds is not None else None
 
     def out_of_time() -> bool:
@@ -79,8 +82,20 @@ def tick(
         summary["stopped_early"] = True
         return True
 
+    def time_left() -> float | None:
+        return None if deadline is None else deadline - time.monotonic()
+
     db = SessionLocal()
     try:
+        # First: work that is already started and only needs its next segment (after an approval,
+        # an expiry, a step budget or a crash). Finishing it beats starting something new.
+        if not out_of_time():
+            resumed = taskloop.resume_due(db, should_stop=out_of_time, time_left=time_left)
+            summary["resumed"] = resumed["resumed"]
+            if resumed["resumed"] or resumed["expired"] or resumed["recovered"] or resumed["failed"]:
+                summary["tasks"] = resumed
+                log.info("Task continuation: %s", resumed)
+
         if not out_of_time():
             fired = engine.run_due_schedules(db, should_stop=out_of_time)
             summary["automations"] = len(fired)

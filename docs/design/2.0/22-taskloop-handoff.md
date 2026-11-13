@@ -53,3 +53,16 @@ briefing.draft_reply takes its style from the preference service.
   approvals are not prompted until it is rewritten for the section 8 events.
 - Lead decision: quick-answer turns that capture a preference get no "Noted:" footer; the preference_noted event
   and message meta carry it and the web app shows a chip.
+
+## After WP5-WP6 and the CLI part of WP7 (committed). Suite: 1156 passed, 40 skipped. No new revision.
+New: app/api/work.py, tests test_continuation, test_cli_events. taskloop.resume_due and on_finished exist;
+worker.tick calls resume_due first, so /api/cron/tick and the in-process worker both resume ready items.
+schedules.deliver_finished holds the delivery logic. Controls API: work items, task types, preferences, memory
+edit, memory settings, reset (confirm "RESET"), per-conversation memory off, ChatIn.memory_off. The CLI reads
+the section 8 events, answers approval cards after [DONE], continues and stops.
+Known loose ends for the contract audit:
+- frontend streamChat does not send memory_off for the first message of a new chat (backend accepts it).
+- aura_cli.py status() still reads policy.exec_mode and allowed_roots from /api/device (may no longer exist).
+- A first-segment inbound run uses budget trigger "inbound", which usage.check does not count as background;
+  spec 20 section 7 says inbound should use the background share.
+- MemoryIn still accepts the 1.0 kinds and files them as "fact"; PATCH /api/memories/{id} is strict.

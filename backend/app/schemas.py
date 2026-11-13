@@ -158,6 +158,9 @@ class ConversationDetail(ConversationOut):
 class ChatIn(BaseModel):
     message: str = Field(min_length=1, max_length=20000)
     conversation_id: str | None = None
+    # "Don't use memory in this chat", chosen before the first message is sent. Sets the
+    # conversation's flag before the run starts; omitted leaves the flag as it is.
+    memory_off: bool | None = None
 
 
 class ChatContinueIn(BaseModel):
@@ -316,12 +319,29 @@ class MemoryOut(ORMModel):
     created_at: datetime
 
 
+MEMORY_KINDS = ("fact", "contact", "project", "decision")
+LEGACY_MEMORY_KINDS = ("preference", "style", "habit")
+
+
 class MemoryIn(BaseModel):
     content: str = Field(min_length=1, max_length=2000)
-    kind: Literal[
-        "preference", "contact", "project", "decision", "style", "habit", "fact"
-    ] = "fact"
+    kind: Literal["fact", "contact", "project", "decision"] = "fact"
     pinned: bool = False
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _legacy_kind(cls, raw: Any) -> Any:
+        # Older clients still send the 1.0 kinds; those lines are how-to preferences now and
+        # this store holds facts, so they are filed as facts (as memory.remember does).
+        return "fact" if raw in LEGACY_MEMORY_KINDS else raw
+
+
+class MemoryPatch(BaseModel):
+    """PATCH /api/memories/{id}: the owner's edit. A bad kind or empty content is a 422."""
+
+    content: str | None = Field(default=None, min_length=1, max_length=2000)
+    kind: Literal["fact", "contact", "project", "decision"] | None = None
+    pinned: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +474,49 @@ class PreferenceOut(ORMModel):
 
 class MemorySettingsOut(BaseModel):
     paused: bool = False
+
+
+class MemorySettingsIn(BaseModel):
+    paused: bool
+
+
+class ConversationMemoryIn(BaseModel):
+    memory_off: bool
+
+
+class MemoryResetIn(BaseModel):
+    scope: Literal["preferences", "task_memory", "facts", "all"]
+    # The caller must type the word: a reset cannot be undone.
+    confirm: str = ""
+
+
+class MemoryResetOut(BaseModel):
+    deleted: dict[str, int]
+
+
+class WorkItemPatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    task_type: str | None = Field(default=None, max_length=40)
+    summary: str | None = Field(default=None, max_length=1200)
+    recallable: bool | None = None
+
+
+class WorkItemFeedbackIn(BaseModel):
+    rating: Literal["up", "down"]
+    note: str = Field(default="", max_length=500)
+
+
+class PreferenceIn(BaseModel):
+    text: str = Field(min_length=1, max_length=300)
+    task_type: str = Field(default="general", max_length=40)
+    system_scope: str = Field(default="", max_length=60)
+
+
+class PreferencePatch(BaseModel):
+    text: str | None = Field(default=None, min_length=1, max_length=300)
+    task_type: str | None = Field(default=None, max_length=40)
+    system_scope: str | None = Field(default=None, max_length=60)
+    active: bool | None = None
 
 
 # ---------------------------------------------------------------------------

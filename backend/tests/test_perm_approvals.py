@@ -890,9 +890,12 @@ def test_cli_leaves_the_always_ask_cards_to_the_app(monkeypatch, capsys):
 
 
 def test_cli_continues_a_task_that_is_ready(monkeypatch):
+    # An answer reports the task it freed; the CLI carries it on once the stream's approvals are done.
     c, sent, streamed = _cli(monkeypatch, ["y"], {"message": "ok", "work_item": {"id": "w1", "status": "ready"}})
-    c._approve({"id": "p4", "preview": "Go", "options": ["once", "reject"]})
-    assert streamed == [("/api/chat/continue", {"work_item_id": "w1"})]
+    turn = __import__("aura_cli").Turn()
+    turn.approvals.append({"pending_action_id": "p4", "work_item_id": "w1", "preview": "Go", "options": ["once", "reject"]})
+    assert c._settle(turn) == "w1"
     c, sent, streamed = _cli(monkeypatch, ["y"], {"message": "ok", "work_item": {"id": "w1", "status": "waiting"}})
-    c._approve({"id": "p5", "preview": "Go", "options": ["once", "reject"]})
-    assert streamed == []
+    turn = __import__("aura_cli").Turn()
+    turn.approvals.append({"pending_action_id": "p5", "work_item_id": "w1", "preview": "Go", "options": ["once", "reject"]})
+    assert c._settle(turn) is None

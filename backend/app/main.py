@@ -23,6 +23,7 @@ from app.api import (
     local,
     permissions,
     remote,
+    work,
     workspace,
 )
 from app.config import settings
@@ -158,6 +159,7 @@ app.include_router(cron.router)
 app.include_router(local.router)
 app.include_router(permissions.router)
 app.include_router(remote.router)
+app.include_router(work.router)
 
 
 def _first_line(exc: BaseException) -> str:

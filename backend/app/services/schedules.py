@@ -245,11 +245,30 @@ def run_one(db: Session, user: User, schedule: Schedule) -> dict:
     schedule.last_run_at = utcnow()
     schedule.last_result = result.text[:4000]
     schedule.run_count += 1
+    db.commit()
 
-    body = result.text[:1500]
+    # A run that parked for approval tells the owner so now; the finished report follows from
+    # `taskloop.on_finished` once the worker (or the open chat) has carried it on.
+    emailed = deliver(db, user, schedule, convo, result.text, waiting=bool(result.pending_actions))
+
+    return {
+        "schedule": schedule.name,
+        "text": result.text,
+        "skills": [r["code"] for r in result.skill_runs],
+        "pending": len(result.pending_actions),
+        "conversation_id": convo.id,
+        "emailed": bool(emailed and emailed.get("sent")),
+        "work_item_id": result.work_item_id,
+        "work_status": result.work_status,
+    }
+
+
+def deliver(db: Session, user: User, schedule: Schedule, convo, text: str, *, waiting: bool = False) -> dict | None:
+    """Hand a schedule's result to its owner as `deliver_to` says. Says why when email fails."""
+    body = (text or "")[:1500]
     emailed: dict | None = None
     if schedule.deliver_to == "email":
-        emailed = _email_result(db, user, schedule, result.text)
+        emailed = _email_result(db, user, schedule, text or "")
         if not emailed.get("sent"):
             # It used to report nothing and send nothing. Now the result still
             # arrives, in the app, with the reason it didn't arrive by email.
@@ -261,20 +280,28 @@ def run_one(db: Session, user: User, schedule: Schedule) -> dict:
                 user_id=user.id,
                 title=schedule.name[:300],
                 body=body[:2000],
-                level="urgent" if result.pending_actions or (emailed and not emailed.get("sent")) else "info",
-                link=f"/chat?c={convo.id}",
+                level="urgent" if waiting or (emailed and not emailed.get("sent")) else "info",
+                link=f"/chat?c={convo.id}" if convo is not None else "/dashboard",
             )
         )
     db.commit()
+    return emailed
 
-    return {
-        "schedule": schedule.name,
-        "text": result.text,
-        "skills": [r["code"] for r in result.skill_runs],
-        "pending": len(result.pending_actions),
-        "conversation_id": convo.id,
-        "emailed": bool(emailed and emailed.get("sent")),
-    }
+
+def deliver_finished(db: Session, user: User, item) -> bool:
+    """A schedule's work item finished after its first segment (approved, resumed, done): record
+    the report on the schedule and deliver it the way the first segment would have."""
+    from app.models import Conversation
+
+    schedule = db.get(Schedule, item.origin_ref) if item.origin_ref else None
+    if schedule is None or schedule.user_id != user.id:
+        return False
+    convo = db.get(Conversation, item.conversation_id) if item.conversation_id else None
+    text = item.report or item.outcome or ""
+    schedule.last_result = text[:4000]
+    db.commit()
+    deliver(db, user, schedule, convo, text, waiting=item.status == "failed")
+    return True
 
 
 _NOT_SENT = {
