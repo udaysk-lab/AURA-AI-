@@ -20,12 +20,12 @@ from app.device.runtime import DeviceUnavailable, hidden_process, require_enable
 # Characters that mean something to a shell or to a process-name pattern. An
 # app name never needs them, and without this an "app name" like
 # `calc&del ...` or `*` would be a command, or every process, in disguise —
-# and these tools run at a lower trust tier than run_command does.
+# and these tools run under a lower permission floor than run_command does.
 _UNSAFE_NAME = set('&|<>^%!"`$;*?\n\r\t\x00')
 
 
 # Opening one of these runs it, and that's what run_command is for — which
-# asks first, where opening an app doesn't at relaxed trust. Scripts are plain
+# asks first, where opening an app doesn't in auto mode. Scripts are plain
 # text, so the file tools could write one; they're never opened, by path or by
 # name (a name is looked up on PATH, which can include folders in your home).
 _SCRIPTS = (

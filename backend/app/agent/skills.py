@@ -31,7 +31,7 @@ class Skill:
     category: str
     description: str
     tools: tuple[str, ...]
-    # Skills the heartbeat may run unattended, and the lowest autonomy tier at
+    # Skills the heartbeat may run unattended, and the lowest permission floor at
     # which it will do so.
     proactive: bool = False
     autonomy_floor: str = "conservative"
@@ -217,14 +217,6 @@ def _sum_command(result: Any) -> str:
     code = result.get("exit_code")
     verb = "ran" if result.get("ok") else f"exited {code}"
     return f"`{str(result.get('command', ''))[:60]}` {verb}"
-
-
-def _sum_file_read(result: Any) -> str:
-    if isinstance(result, dict) and result.get("path"):
-        return f"Read {result['path']} ({result.get('size', 0)} bytes)"
-    if isinstance(result, dict) and result.get("entries") is not None:
-        return f"Listed {result.get('path', 'a folder')} · {result.get('count', 0)} items"
-    return f"Searched · {_n(result)} matches"
 
 
 def _sum_file_write(result: Any) -> str:
@@ -587,8 +579,8 @@ CATALOG: dict[str, Skill] = {
             category="Device",
             description="Fetches a specific URL — a page, a feed, an API — and reads what comes back.",
             tools=("fetch_url",),
-            # A request leaves the machine, so it asks below relaxed trust
-            # (fetch_url is "external" in autonomy.py).
+            # A request leaves the machine, so the permission floor makes it ask
+            # (see app/permissions/floors.py).
             autonomy_floor="relaxed",
             summarize=_sum_web,
         ),
@@ -856,11 +848,6 @@ def recent_runs(db: Session, user_id: str, limit: int = 40) -> list[SkillRun]:
             .limit(limit)
         ).all()
     )
-
-
-def activity_line(run: SkillRun) -> str:
-    """The scannable log format: [SKILL·EM01] Processed 47 emails · 3 flagged"""
-    return f"[SKILL·{run.code}] {run.summary}"
 
 
 def stats(db: Session, user_id: str) -> dict:

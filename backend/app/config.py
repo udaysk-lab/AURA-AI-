@@ -121,7 +121,6 @@ class Settings(BaseSettings):
     # Embeddings need OpenAI. Without it, memory and document search fall back to
     # lexical overlap — degraded but working, never broken.
     embedding_model: str = "text-embedding-3-small"
-    embedding_dimensions: int = 1536
     max_agent_steps: int = 8
     # Task loop (spec 20 section 7): model calls per work item across all segments, the wall time
     # after which a segment starts no new model call, and how long the worker leaves a `ready` chat
@@ -148,16 +147,10 @@ class Settings(BaseSettings):
     )
 
     # --- Behaviour --------------------------------------------------------
-    # Tools the agent may never fire without explicit user confirmation, on top
-    # of whatever the user's autonomy tier already forbids (see agent/autonomy.py).
-    destructive_tools: str = "send_email,archive_email,delete_event,delete_task"
     allow_demo_login: bool = True
 
     # --- Heartbeat --------------------------------------------------------
     heartbeat_enabled: bool = True
-    heartbeat_default_interval_minutes: int = 30
-    heartbeat_default_quiet_hours: str = "22:00-07:00"
-    default_autonomy_level: str = "conservative"
 
     # --- Web research -----------------------------------------------------
     # brave | serper | tavily. Without a key, research falls back to the
@@ -217,14 +210,15 @@ class Settings(BaseSettings):
         "~/.ssh,~/.aws,~/.gnupg,~/.config/gcloud,~/.kube,~/.docker/config.json"
     )
 
-    # How shell command approval works, on top of the autonomy tier:
+    # How shell command approval works, on top of the permission mode and rules
+    # (see app/permissions/):
     #   ask        every command is previewed and queued for approval unless a
     #              standing grant covers it (the safe default)
     #   allowlist  commands matching device_exec_allowlist run without asking;
     #              everything else is queued
     #   full       commands run without asking (still subject to the denylist)
-    # The autonomy tier still applies: at "full" trust the tier already waves
-    # shell through, and this narrows that back down when you want it.
+    # The permission mode still applies: in auto mode it already waves shell
+    # through, and this narrows that back down when you want it.
     device_exec_mode: Literal["ask", "allowlist", "full"] = "ask"
 
     # Command prefixes allowed to run without approval under device_exec_mode
@@ -232,7 +226,7 @@ class Settings(BaseSettings):
     # against the command with its arguments, prefix-wise.
     device_exec_allowlist: str = ""
 
-    # Commands refused outright, even after approval and even at full trust —
+    # Commands refused outright, even after approval and even in auto mode —
     # the last stop against a catastrophic instruction (yours or a web page's).
     # Empty by default so "operate the whole machine" means what it says; fill
     # it on a machine you want to fence off. Matched as case-insensitive
@@ -370,10 +364,6 @@ class Settings(BaseSettings):
     @property
     def google_scope_list(self) -> list[str]:
         return [s.strip() for s in self.google_scopes.split() if s.strip()]
-
-    @property
-    def destructive_tool_set(self) -> set[str]:
-        return {t.strip() for t in self.destructive_tools.split(",") if t.strip()}
 
     @property
     def google_oauth_configured(self) -> bool:

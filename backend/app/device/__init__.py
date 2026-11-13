@@ -6,9 +6,9 @@ runs shell commands, reads and writes files, launches apps, drives the screen,
 and reports on the system.
 
 The shape is deliberate: a trusted control plane (the agent loop and its
-autonomy gate) in front of an execution surface (this package) that assumes
+permission gate) in front of an execution surface (this package) that assumes
 nothing and is governed by deterministic policy. All of it is built on AURA's
-own stack and its existing four-tier trust model, so a device action is gated
+own stack and its existing permission system, so a device action is gated
 by exactly the machinery that already gates sending an email.
 
 Two invariants hold everywhere in here:
@@ -22,8 +22,8 @@ Two invariants hold everywhere in here:
     or a `~`.
 
 Risk beyond that — whether a given command or click needs your say-so — is
-decided by the autonomy tier and the exec policy, in the agent loop, exactly
-like every other tool. See `app/agent/autonomy.py` and `app/device/policy.py`.
+decided by the permission mode, rules and the exec policy, in the agent loop, exactly
+like every other tool. See `app/permissions/` and `app/device/policy.py`.
 """
 
 from __future__ import annotations

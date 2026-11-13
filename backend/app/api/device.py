@@ -112,7 +112,7 @@ def run_command(
 
     Not from a paired phone: a lost phone shouldn't be a shell on this
     computer. From there, ask AURA in chat, where commands go through the
-    trust tier and the approval cards like everything else.
+    permission gate and the approval cards like everything else.
     """
     _require_device()
     if is_remote_session(request):

@@ -94,7 +94,7 @@ result in `build/desktop/`:
 The Windows installer wraps the app folder:
 
 ```bat
-iscc /DAppVersion=1.0.0 "/DSourceDir=%CD%\build\desktop\AURA AI" "/DOutputDir=%CD%\build\desktop" desktop\windows\aura.iss
+iscc /DAppVersion=2.0.0 "/DSourceDir=%CD%\build\desktop\AURA AI" "/DOutputDir=%CD%\build\desktop" desktop\windows\aura.iss
 ```
 
 Check a build answers before you ship it:

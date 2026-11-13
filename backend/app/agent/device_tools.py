@@ -3,13 +3,13 @@
 These are the hands AURA grows when it runs on your own machine: a shell, the
 filesystem, processes, apps, the screen, the clipboard. They register into the
 same `REGISTRY` as every other tool (importing this module is enough), so the
-coordinator dispatches them, the autonomy gate approves them, and the skill log
+coordinator dispatches them, the permission gate approves them, and the skill log
 records them with no special-casing.
 
 Every handler is wrapped so a `DeviceUnavailable` — control switched off, an
 optional package missing, a path outside the fence — comes back as a tidy
 `{"error": ...}` the agent can read and explain, instead of crashing the turn.
-Risk classification (what needs your approval) lives in `agent/autonomy.py`.
+Risk classification (what needs your approval) lives in `app/permissions/`.
 """
 
 from __future__ import annotations

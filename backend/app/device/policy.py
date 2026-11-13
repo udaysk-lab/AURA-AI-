@@ -1,6 +1,6 @@
 """Shell command policy.
 
-The autonomy tier decides whether a command needs your approval. This module
+The permission mode and rules decide whether a command needs your approval. This module
 decides two narrower things on top of that:
 
 * **Is a command flat-out refused?** `device_command_denylist` is the last stop
@@ -50,15 +50,15 @@ class Verdict:
 
 
 def classify(command: str) -> Verdict:
-    """Policy verdict for one shell command. Does not consider the autonomy
-    tier — the agent loop combines this with the tier and standing grants."""
+    """Policy verdict for one shell command. Does not consider the permission
+    mode — the agent loop combines this with the mode and standing grants."""
     cmd = (command or "").strip()
     if not cmd:
         return Verdict(allowed=False, auto=False, dangerous=False, reason="empty command")
 
     lowered = cmd.lower()
 
-    # 1. Hard denylist — refused no matter the tier, grant, or approval.
+    # 1. Hard denylist — refused no matter the mode, grant, or approval.
     for needle in settings.device_command_deny_list:
         if needle in lowered:
             return Verdict(

@@ -274,7 +274,7 @@ def ensure_core(db: Session, user_id: str) -> None:
 
     On a local install the device-control plugin joins them, so AURA can
     operate the computer from first launch without a trip to the hub. Its
-    skills still obey the trust tier, and the risky ones (shell, screen) sit
+    skills still go through the permission gate, and the risky ones (shell, screen) sit
     at a floor that asks first until you say otherwise.
     """
     from app.config import settings

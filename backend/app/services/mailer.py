@@ -24,15 +24,6 @@ from app.services import vault as vault_service
 log = logging.getLogger("aura.mailer")
 
 
-def available_routes(db: Session, user: User) -> list[str]:
-    routes = []
-    if google_service.is_connected(db, user.id):
-        routes.append("gmail")
-    if settings.smtp_configured:
-        routes.append("smtp")
-    return routes
-
-
 def _send_smtp(sender: str, to: str, subject: str, body: str) -> None:
     message = EmailMessage()
     message["From"] = formataddr(("", sender))

@@ -347,40 +347,6 @@ def on_task_due(db: Session, user: User) -> list[dict]:
     return results
 
 
-def due_schedules(rule: AutomationRule, now: datetime | None = None) -> bool:
-    """Minimal cron matcher: minute, hour, day-of-month, month, day-of-week.
-
-    Supports '*', exact values, comma lists and simple a-b ranges. Enough for
-    the schedules users actually write; swap in croniter if you need more.
-    """
-    now = now or datetime.now(timezone.utc)
-    cron = (rule.trigger_config or {}).get("cron")
-    if not cron:
-        return False
-    parts = cron.split()
-    if len(parts) != 5:
-        return False
-
-    fields = [now.minute, now.hour, now.day, now.month, (now.weekday() + 1) % 7]
-
-    def field_matches(pattern: str, value: int) -> bool:
-        if pattern == "*":
-            return True
-        for token in pattern.split(","):
-            if "-" in token:
-                lo, _, hi = token.partition("-")
-                try:
-                    if int(lo) <= value <= int(hi):
-                        return True
-                except ValueError:
-                    continue
-            elif token.isdigit() and int(token) == value:
-                return True
-        return False
-
-    return all(field_matches(p, v) for p, v in zip(parts, fields))
-
-
 def run_due_schedules(db: Session, now: datetime | None = None, should_stop=None) -> list[dict]:
     """Call once a minute from a worker/cron to fire scheduled rules.
 

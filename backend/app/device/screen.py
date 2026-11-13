@@ -29,7 +29,7 @@ def _gui():
         )
     import pyautogui  # type: ignore
 
-    # Don't let a failsafe corner throw mid-task; the autonomy gate is the real brake.
+    # Don't let a failsafe corner throw mid-task; the permission gate is the real brake.
     pyautogui.FAILSAFE = False
     return pyautogui
 
@@ -130,27 +130,6 @@ def _encode_for_model(img) -> dict | None:
         return None
 
 
-def screen_size() -> dict:
-    require_enabled()
-    gui = _gui()
-    w, h = gui.size()
-    return {"width": w, "height": h}
-
-
-def cursor_position() -> dict:
-    require_enabled()
-    gui = _gui()
-    x, y = gui.position()
-    return {"x": x, "y": y}
-
-
-def move_mouse(x: int, y: int, duration: float = 0.2) -> dict:
-    require_enabled()
-    gui = _gui()
-    gui.moveTo(int(x), int(y), duration=duration)
-    return {"x": int(x), "y": int(y)}
-
-
 def click(x: int | None = None, y: int | None = None, button: str = "left", clicks: int = 1) -> dict:
     require_enabled()
     gui = _gui()
@@ -162,10 +141,6 @@ def click(x: int | None = None, y: int | None = None, button: str = "left", clic
         gui.click(button=button, clicks=clicks)
         where = "the current position"
     return {"message": f"{button.capitalize()}-clicked {where}×{clicks}."}
-
-
-def double_click(x: int | None = None, y: int | None = None) -> dict:
-    return click(x, y, button="left", clicks=2)
 
 
 def type_text(text: str, interval: float = 0.01) -> dict:

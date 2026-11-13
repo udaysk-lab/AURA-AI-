@@ -1,7 +1,7 @@
 ; Windows installer for the AURA AI desktop app (Inno Setup 6).
 ;
 ; Built by the release workflow from the PyInstaller folder:
-;   iscc /DAppVersion=1.0.0 /DSourceDir=<...\build\desktop\AURA AI> /DOutputDir=<...> aura.iss
+;   iscc /DAppVersion=2.0.0 /DSourceDir=<...\build\desktop\AURA AI> /DOutputDir=<...> aura.iss
 ;
 ; Installs for the current user only (no administrator password), into
 ; %LOCALAPPDATA%\Programs\AURA AI, with a Start menu entry and an optional
@@ -9,7 +9,7 @@
 ; %USERPROFILE%\.aura — delete that folder yourself to remove everything.
 
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "2.0.0"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\..\build\desktop\AURA AI"

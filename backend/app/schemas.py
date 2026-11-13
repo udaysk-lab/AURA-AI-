@@ -92,7 +92,7 @@ class SettingsIn(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _no_trust_level(cls, data):
-        """The 1.0 trust level is gone: the permission mode is set only on /api/permissions/mode."""
+        """The 1.0 per-user setting is gone: the permission mode is set only on /api/permissions/mode."""
         if isinstance(data, dict) and "autonomy_level" in data:
             raise ValueError("autonomy_level was replaced by the permission mode: use /api/permissions/mode")
         return data
@@ -704,7 +704,7 @@ class AssistantPatch(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Heartbeat + trust
+# Heartbeat + permissions
 # ---------------------------------------------------------------------------
 
 
@@ -971,14 +971,6 @@ class PreflightCheckOut(BaseModel):
     detail: str
     fix: str = ""
     docs: str = ""
-
-
-class PreflightOut(BaseModel):
-    environment: str
-    ready: bool
-    failures: int
-    warnings: int
-    checks: list[PreflightCheckOut] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

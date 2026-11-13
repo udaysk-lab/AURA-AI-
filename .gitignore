@@ -42,3 +42,6 @@ _git-*.txt
 .idea/
 .DS_Store
 Thumbs.db
+
+# SQLite migration lock files (created beside a database by the migration runner)
+*.migrate-lock

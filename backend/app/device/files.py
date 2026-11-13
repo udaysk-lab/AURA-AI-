@@ -15,7 +15,6 @@ import os
 import re
 import shutil
 import sys
-from dataclasses import dataclass
 
 from app.config import settings
 from app.device.runtime import DeviceUnavailable, require_enabled
@@ -23,15 +22,6 @@ from app.device.runtime import DeviceUnavailable, require_enabled
 
 class PathNotAllowed(DeviceUnavailable):
     """A path outside the allowed roots, or inside a protected one."""
-
-
-@dataclass
-class FileEntry:
-    name: str
-    path: str
-    is_dir: bool
-    size: int
-    modified: float
 
 
 # Windows and macOS (by default) don't care about letter case in paths, so

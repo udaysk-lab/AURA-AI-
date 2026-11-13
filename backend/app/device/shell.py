@@ -12,7 +12,7 @@ Two shapes:
   doesn't survive a restart.)
 
 The denylist (policy.py) is enforced here too, as a floor: even a command that
-was approved or runs at full trust is refused if it's on the denylist. Approval
+was approved or runs in auto mode is refused if it's on the denylist. Approval
 itself happens upstream, in the agent loop.
 """
 

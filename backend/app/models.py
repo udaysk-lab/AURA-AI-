@@ -108,7 +108,8 @@ class UserSettings(Base, TimestampMixin):
     )
     briefing_time: Mapped[str] = mapped_column(String(5), default="08:00")
     briefing_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    # strict | conservative | relaxed | full — see agent/autonomy.py
+    # Legacy 1.0 column, kept for migrations and not read by the permission gate.
+    # The permission mode (app/permissions/) replaced it.
     autonomy_level: Mapped[str] = mapped_column(String(20), default="conservative")
     tone: Mapped[str] = mapped_column(String(50), default="concise-professional")
     theme: Mapped[str] = mapped_column(String(20), default="warm")
@@ -530,7 +531,7 @@ class PendingAction(Base, TimestampMixin):
 
 
 # ---------------------------------------------------------------------------
-# Identity, skills, trust
+# Identity, skills, permissions
 # ---------------------------------------------------------------------------
 
 

@@ -83,7 +83,7 @@ def latest(db: Session, user_id: str) -> HeartbeatReport | None:
 
 def _can_run(enabled: set[str], code: str) -> bool:
     """A skill the user turned on and that is meant to run in the background. Whether a given
-    call may run is the gate's decision, not a trust tier's."""
+    call may run is the gate's decision, not a permission mode's."""
     skill = skill_registry.CATALOG.get(code)
     return bool(skill and code in enabled and skill.proactive)
 

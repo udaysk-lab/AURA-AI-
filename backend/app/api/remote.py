@@ -12,7 +12,7 @@ Pairing, the whole story:
 What a paired device can't do: sign in as the owner directly, run commands
 from the console, change AURA's model or remote-access settings, or pair
 further devices. It uses AURA — chat, approvals, the screens — through the
-same trust tiers and approval cards as everything else.
+same permission gate and approval cards as everything else.
 
 All of this is off unless REMOTE_ACCESS is on, and only on a local install.
 """
