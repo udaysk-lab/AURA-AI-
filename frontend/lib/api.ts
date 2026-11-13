@@ -1468,7 +1468,17 @@ export type StreamEvent =
     }
   | { type: "error"; message: string }
   // Task-loop events (spec section 8).
-  | { type: "recall"; work_items: number; preferences: number; memories: number }
+  | {
+      type: "recall";
+      work_items: number;
+      preferences: number;
+      memories: number;
+      /** The same recall as the work item's `recall_used`, for showing what was recalled. */
+      recalled?: {
+        past_work: Array<{ id: string; title: string; outcome: string; finished_at: string | null }>;
+        preferences: Array<{ id: string; task_type: string; text: string }>;
+      };
+    }
   | {
       type: "task";
       work_item_id: string;
@@ -1597,11 +1607,17 @@ async function readEventStream(
   if (buffer.trim()) flush([buffer]);
 }
 
+/**
+ * `memoryOff` is only sent with the first message of a new chat (no conversation id yet): the
+ * server sets the new conversation's flag before the run starts, so that very first message can
+ * already opt out of memory. For an existing chat the flag is changed with setConversationMemoryOff.
+ */
 export async function streamChat(
   message: string,
   conversationId: string | null,
   onEvent: (e: StreamEvent) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  memoryOff = false
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",
@@ -1609,7 +1625,11 @@ export async function streamChat(
       "Content-Type": "application/json",
       Authorization: `Bearer ${getToken() ?? ""}`,
     },
-    body: JSON.stringify({ message, conversation_id: conversationId }),
+    body: JSON.stringify({
+      message,
+      conversation_id: conversationId,
+      ...(conversationId === null && memoryOff ? { memory_off: true } : {}),
+    }),
     signal,
   });
   if (res.status === 409) {

@@ -246,3 +246,26 @@ def test_old_event_names_are_not_read():
     aura.handle({"type": "pending_action", "id": PA, "preview": "x"}, turn)
     aura.handle({"type": "skill", "code": "EM01", "summary": "x"}, turn)
     assert turn.approvals == []
+
+
+def test_status_reads_the_mode_and_connected_folders_not_the_old_policy_fields(capsys):
+    """`aura status` shows the owner's permission mode and connected folders (per-user rows), and
+    the install's own limit; it no longer reads policy.exec_mode."""
+    device = {"enabled": True, "os": "Linux", "arch": "x86_64", "hostname": "box", "user": "me",
+              "shell": {"kind": "bash"}, "shell_control": True, "file_control": True, "packages": {},
+              "policy": {"allowed_roots": ["/home/me"], "protected_paths": [], "denylist_active": False},
+              "active_skills": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return {
+            "/api/device": httpx.Response(200, json=device),
+            "/api/permissions": httpx.Response(200, json={"mode": "ask", "mode_label": "Ask first"}),
+            "/api/device/folders": httpx.Response(200, json=[{"id": "f1", "path": "/home/me/Work"}]),
+        }.get(request.url.path, httpx.Response(404, json={"detail": "no"}))
+
+    aura = aura_cli.Aura("http://aura.test", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    aura.token = "t"
+    assert aura.status() == 0
+    out = capsys.readouterr().out
+    assert "permission mode: Ask first" in out and "connected folders: /home/me/Work" in out
+    assert "/home/me" in out and "shell approval" not in out

@@ -224,7 +224,7 @@ def check(
 
     budget = state.cap_usd
     if background is None:
-        background = trigger in ("heartbeat", "schedule", "automation", "resume")
+        background = trigger in ("heartbeat", "schedule", "automation", "inbound", "resume")
     if background:
         budget *= BACKGROUND_BUDGET_SHARE
 

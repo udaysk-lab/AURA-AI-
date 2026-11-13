@@ -406,10 +406,22 @@ class Aura:
             print(dim(f"  not installed: {', '.join(missing)}"))
             print(dim("    pip install -r requirements-device.txt"))
 
+        # What AURA asks about is the owner's permission mode, and what it may touch is the folders
+        # the owner connected (both per user, in the database). The install's own limit comes from
+        # the device policy and only caps what can be connected.
+        perms = self._request("GET", "/api/permissions")
+        if perms.status_code == 200:
+            pdata = perms.json()
+            label = pdata.get("mode_label") or pdata.get("mode") or "?"
+            print(f"  permission mode: {label}")
+        folders = self._request("GET", "/api/device/folders")
+        if folders.status_code == 200:
+            paths = [f.get("path", "") for f in (folders.json() or [])]
+            print(f"  connected folders: {', '.join(paths) if paths else 'none (connect one in Settings)'}")
         policy = data.get("policy") or {}
-        if policy:
-            print(f"  shell approval: {policy.get('exec_mode')}")
-            print(f"  folders: {', '.join(policy.get('allowed_roots') or [])}")
+        limit = policy.get("allowed_roots") or []
+        if limit:
+            print(dim(f"  this install only allows folders inside: {', '.join(limit)}"))
         if data.get("active_skills"):
             print(f"  skills on: {', '.join(data['active_skills'])}")
         return 0

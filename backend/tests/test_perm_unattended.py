@@ -371,6 +371,25 @@ def test_review_spend_counts_in_the_background_share_when_unattended(env, monkey
     usage.check(db, user.id, trigger="chat")
 
 
+@pytest.mark.parametrize("trigger,counts_as_background", [
+    ("chat", False), ("inbound", True), ("schedule", True), ("automation", True), ("heartbeat", True),
+    ("resume", True),
+])
+def test_first_segment_of_every_trigger_uses_its_own_share(env, monkeypatch, trigger, counts_as_background):
+    """A first-segment inbound run is unattended work: it counts against the background share (spec 20 s7)."""
+    db = env
+    user = user_in(db)
+    monkeypatch.setattr(settings, "spend_cap_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "daily_spend_cap_usd", 1.0, raising=False)
+    db.add(models.UsageRecord(user_id=user.id, model="m", trigger="chat", cost_usd=0.5))
+    db.commit()
+    if counts_as_background:
+        with pytest.raises(usage.SpendCapReached):
+            usage.check(db, user.id, trigger=trigger)
+    else:
+        usage.check(db, user.id, trigger=trigger)
+
+
 # ---------------------------------------------------------------------------
 # The API
 # ---------------------------------------------------------------------------

@@ -75,7 +75,6 @@ class PasswordResetIn(BaseModel):
 class SettingsOut(ORMModel):
     briefing_time: str
     briefing_enabled: bool
-    tone: str
     theme: str
     heartbeat_enabled: bool
     heartbeat_interval_minutes: int
@@ -85,7 +84,6 @@ class SettingsOut(ORMModel):
 class SettingsIn(BaseModel):
     briefing_time: str | None = None
     briefing_enabled: bool | None = None
-    tone: str | None = None
     theme: Literal["warm", "dark", "light"] | None = None
     heartbeat_enabled: bool | None = None
     heartbeat_interval_minutes: int | None = Field(default=None, ge=5, le=720)

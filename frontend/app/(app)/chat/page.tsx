@@ -170,6 +170,8 @@ export default function ChatPage() {
   const toast = useToast();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  // "Don't use memory" chosen before the first message of a new chat; it travels with that message.
+  const [draftMemoryOff, setDraftMemoryOff] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -204,7 +206,7 @@ export default function ChatPage() {
   const reloadRef = useRef<(id: string) => Promise<void>>(async () => {});
 
   const activeConvo = conversations.find((c) => c.id === activeId);
-  const memoryOff = !!activeConvo?.memory_off;
+  const memoryOff = activeConvo ? !!activeConvo.memory_off : draftMemoryOff;
   const panelVisible = !!panel.workItemId;
   const taskLive = panelVisible && isLive(panel.status);
   const canStop = streaming || taskLive;
@@ -414,6 +416,7 @@ export default function ChatPage() {
       ]);
     }
 
+    const startsWithMemoryOff = activeId === null && draftMemoryOff && content !== undefined;
     const ctx: RunCtx = { convoId: opts.convoId ?? activeId, error: "", finished: false, more: false, workItemId: opts.continueId ?? null };
     let busyWith: string | null = null;
     let notSent = false;
@@ -428,7 +431,7 @@ export default function ChatPage() {
 
     try {
       if (content !== undefined) {
-        await streamChat(content, activeId, onEvent, ctrl.signal);
+        await streamChat(content, activeId, onEvent, ctrl.signal, startsWithMemoryOff);
         if (!ctx.finished && !ctx.error && !ctrl.signal.aborted) {
           ctx.error = "The reply was cut off before it finished. Please try again.";
         }
@@ -480,6 +483,8 @@ export default function ChatPage() {
     setStopping(false);
     if (busyWith) setWatchId(busyWith);
     await Promise.all([loadConversations(), loadPending(true), refreshAssistant()]);
+    // The new chat now exists and carries the flag itself.
+    if (startsWithMemoryOff && ctx.convoId) setDraftMemoryOff(false);
   };
 
   const send = async (text?: string) => {
@@ -580,6 +585,7 @@ export default function ChatPage() {
   const newChat = () => {
     if (streamingRef.current) return;
     setActiveId(null);
+    setDraftMemoryOff(false);
     setMessages([]);
     resetLive();
     setPanel(EMPTY_PANEL);
@@ -623,7 +629,11 @@ export default function ChatPage() {
   };
 
   const toggleMemory = async () => {
-    if (!activeId) return;
+    if (!activeId) {
+      // No chat yet: remember the choice and send it with the first message.
+      setDraftMemoryOff((v) => !v);
+      return;
+    }
     const next = !memoryOff;
     setConversations((cs) => cs.map((c) => (c.id === activeId ? { ...c, memory_off: next } : c)));
     try {
@@ -869,12 +879,11 @@ export default function ChatPage() {
                 <ModePicker />
                 <div className="flex min-h-[44px] items-center gap-2">
                   <span id="memory-off-label" className="text-[12px] text-muted">
-                    {activeId ? "Don't use memory in this chat" : "Memory off (after the first message)"}
+                    Don&apos;t use memory in this chat
                   </span>
                   <Toggle
                     checked={memoryOff}
                     onChange={() => void toggleMemory()}
-                    disabled={!activeId}
                     label="Do not use memory in this chat"
                   />
                 </div>
