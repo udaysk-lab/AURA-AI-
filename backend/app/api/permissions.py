@@ -61,6 +61,7 @@ class CatalogueEntryOut(BaseModel):
     kind: str
     targets: list[str]
     always_user: bool
+    action_text: str = ""  # "create a task": completes "AURA wants to ..."
 
 
 class RuleOut(BaseModel):

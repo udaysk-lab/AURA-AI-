@@ -101,10 +101,8 @@ def remember(
 ) -> Memory:
     """Store a memory, de-duplicating against near-identical existing entries."""
     content = content.strip()
-    if kind in LEGACY_KINDS:
-        # Until the loop's own preference capture replaces the callers that still pass these
-        # kinds, keep what they save findable instead of filing it where nothing reads it.
-        kind = "fact"
+    if kind not in KINDS:
+        raise ValueError(f"Kind must be one of: {', '.join(KINDS)}")
     existing = db.scalars(
         select(Memory).where(Memory.user_id == user_id, Memory.kind == kind)
     ).all()

@@ -83,7 +83,7 @@ def test_memory_roundtrip(client, auth):
     client.post(
         "/api/memories",
         headers=auth,
-        json={"content": "Prefers espresso over filter coffee", "kind": "preference"},
+        json={"content": "Prefers espresso over filter coffee", "kind": "fact"},
     )
     hits = client.get("/api/memories/search", headers=auth, params={"q": "coffee"}).json()
     assert any("espresso" in m["content"] for m in hits)
@@ -147,22 +147,26 @@ def test_disabling_a_skill_hides_its_tools(client, auth):
     client.patch("/api/skills/TK01", headers=auth, json={"enabled": True})
 
 
-def test_teaching_a_skill_persists_as_a_preference(client, auth):
+def _seed_skill_note(email: str, text: str, task_type: str) -> None:
     from app.models import Preference, User
-
-    lesson = "Never schedule anything before 10am"
-    updated = client.post(
-        "/api/skills/CA01/teach", headers=auth, json={"note": lesson}
-    ).json()
-    assert lesson in updated["learned_notes"]
 
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.email == "test@aura.ai").one()
-        row = db.query(Preference).filter(Preference.user_id == user.id, Preference.text == lesson).one()
-        assert (row.task_type, row.origin) == ("scheduling", "skill_teach")
+        user = db.query(User).filter(User.email == email).one()
+        db.add(Preference(user_id=user.id, task_type=task_type, text=text, source="stated", origin="skill_teach",
+                          active=True))
+        db.commit()
     finally:
         db.close()
+
+
+def test_skill_view_reads_back_skill_teach_preferences_and_the_teach_routes_are_gone(client, auth):
+    lesson = "Never schedule anything before 10am"
+    _seed_skill_note("test@aura.ai", lesson, "scheduling")
+    skills = {s["code"]: s for s in client.get("/api/skills", headers=auth).json()}
+    assert lesson in skills["CA01"]["learned_notes"]
+    assert client.post("/api/skills/CA01/teach", headers=auth, json={"note": lesson}).status_code in (404, 405)
+    assert client.delete("/api/skills/CA01/notes", headers=auth).status_code in (404, 405)
 
 
 def test_agent_records_skill_runs(client, auth):
@@ -445,7 +449,7 @@ def test_installing_a_plugin_unlocks_its_skills(client, auth):
 
 def test_uninstalling_hides_skills_but_keeps_history(client, auth):
     client.post("/api/plugins/documents/install", headers=auth)
-    client.post("/api/skills/DC01/teach", headers=auth, json={"note": "Quote clauses verbatim"})
+    _seed_skill_note("test@aura.ai", "Quote clauses verbatim", "documents")
 
     client.post("/api/plugins/documents/uninstall", headers=auth)
     codes = {s["code"] for s in client.get("/api/skills", headers=auth).json()}

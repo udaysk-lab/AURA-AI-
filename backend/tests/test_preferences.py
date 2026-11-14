@@ -423,18 +423,14 @@ def test_noted_line_and_memory_off(env):
 # ---------------------------------------------------------------------------
 
 
-def test_skill_teach_creates_preference(env):
+def test_skill_notes_read_back_skill_teach_and_migrated_lines(env):
     db, user = env
-    res = prefs.teach(db, user, "EM02", "Sign off with just my first name")
-    p = res.preference
-    assert (p.task_type, p.source, p.origin) == ("email", "stated", "skill_teach")
-    assert prefs.teach(db, user, "MM01", "Remember birthdays").preference.task_type == "general"
+    prefs.add(db, user, "Sign off with just my first name", "email", "stated", "skill_teach")
+    prefs.add(db, user, "Remember birthdays", "general", "stated", "skill_teach")
     assert prefs.skill_notes(db, user.id, "EM01") == ["Sign off with just my first name"], "same type, any email skill"
     seed(db, user, [("From settings", "email", "")])
     assert prefs.skill_notes(db, user.id, "EM02") == ["Sign off with just my first name"], "settings lines are not notes"
-    assert prefs.clear_skill_notes(db, user.id, "EM02") == 1
-    assert prefs.skill_notes(db, user.id, "EM02") == []
-    assert {x.text for x in prefs.listing(db, user.id)} == {"Remember birthdays", "From settings"}
+    assert not hasattr(prefs, "teach") and not hasattr(prefs, "clear_skill_notes")
 
 
 def test_update_delete_reset(env):

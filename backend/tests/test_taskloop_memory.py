@@ -148,3 +148,71 @@ def test_draft_reply_takes_style_from_the_preference_service(env, monkeypatch):
     system = prov.seen[0][0]["content"]
     assert out["body"] == "Sure." and "Keep replies under 80 words" in system
     assert "Sign off with just my first name" not in system
+
+
+def test_typed_preference_is_recalled_when_a_later_type_also_matches(env, monkeypatch):
+    """Filed under todo; the instruction classifies as email first (`send .* to`) and todo second."""
+    db, user = env
+    mock = RecordingMock()
+    monkeypatch.setattr(coordinator, "get_provider", lambda: mock)
+    turn(db, user, convo_of(db, user),
+         "From now on, when you create tasks for invoices, always set the priority to high.")
+    pref = db.scalars(select(models.Preference)).one()
+    assert pref.task_type == "todo"
+
+    events, res = turn(db, user, convo_of(db, user), "Create a task to send the November invoice to Priya")
+    system = mock.seen[-2][0]["content"]
+    assert "always set the priority to high" in system
+    item = db.get(models.WorkItem, res.work_item_id)
+    assert item.recall_used["preference_ids"] == [pref.id]
+    recall = next(e for e in events if e["type"] == "recall")
+    assert recall["preferences"] == 1
+
+
+def test_recall_keeps_typed_lines_first_for_every_matching_type(env):
+    from app.services import preferences as prefs, workmemory
+
+    db, user = env
+    for text, kind in [("general one", "general"), ("email one", "email"), ("todo one", "todo"),
+                       ("files one", "files")]:
+        prefs.add(db, user, text, kind, "stated", "settings")
+    rec = workmemory.build_recall(db, user, "x", ["email", "todo"])
+    assert [p.text for p in rec.preferences][-1] == "general one"
+    assert {p.text for p in rec.preferences} == {"general one", "email one", "todo one"}
+    assert rec.block.index("email one") < rec.block.index("General preferences")
+
+
+def test_plan_names_a_type_whose_preferences_were_not_recalled(env, monkeypatch):
+    from app.services import preferences as prefs
+
+    db, user = env
+    pref = prefs.add(db, user, "Always set the priority to high for invoice tasks", "todo", "stated", "settings").preference
+    model = ScriptedProvider([
+        reply("", call("aura_plan", title="Handle it", task_type="todo", steps=["one"])),
+        reply("All done."),
+    ])
+    monkeypatch.setattr(coordinator, "get_provider", lambda: model)
+    _, res = turn(db, user, convo_of(db, user), "Handle the thing for me")
+    assert "priority to high" not in model.seen[0][0]["content"]  # not in the first recall block
+    tool_msg = model.tool_messages(-1)[0]["content"]
+    assert "Always set the priority to high for invoice tasks" in tool_msg
+    item = db.get(models.WorkItem, res.work_item_id)
+    assert item.recall_used["preference_ids"] == [pref.id]
+    db.refresh(pref)
+    assert pref.use_count == 1
+
+
+def test_plan_does_not_repeat_preferences_already_in_the_recall_block(env, monkeypatch):
+    from app.services import preferences as prefs
+
+    db, user = env
+    prefs.add(db, user, "Always set the priority to high", "todo", "stated", "settings")
+    model = ScriptedProvider([
+        reply("", call("aura_plan", title="Add it", task_type="todo", steps=["one"])),
+        reply("All done."),
+    ])
+    monkeypatch.setattr(coordinator, "get_provider", lambda: model)
+    _, res = turn(db, user, convo_of(db, user), "Add a task to call Priya")
+    assert "priority to high" in model.seen[0][0]["content"]
+    assert "priority to high" not in model.tool_messages(-1)[0]["content"]
+    assert len(db.get(models.WorkItem, res.work_item_id).recall_used["preference_ids"]) == 1

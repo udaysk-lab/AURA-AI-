@@ -271,6 +271,7 @@ def test_c_approval_allow_once_then_report(client, monkeypatch, sent):
     assert PENDING <= set(card)
     assert card["id"] == need["pending_action_id"] and card["tool_name"] == "send_email"
     assert card["card"] == "tool" and card["always_user"] is False and card["origin"] == "chat"
+    assert card["action_text"] == "send an email"
     assert card["status"] == "pending" and card["work_item_id"] == done["work_item_id"]
     assert card["conversation_id"] == done["conversation_id"]
     assert card["options"] == ["once", "window", "always", "reject"] and card["expires_at"]

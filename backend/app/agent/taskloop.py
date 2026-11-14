@@ -498,7 +498,8 @@ class TaskRun:
         from app import plugins
 
         systems = plugins.assigned_systems(db, user.id)
-        turn_type = tasktypes.classify(user_message)
+        matched = tasktypes.classify_all(user_message)
+        turn_type = matched[0] if matched else "other"
         state = LoopState(
             trigger=trigger, origin_ref=origin_ref or "", approval_mode=approval_mode,
             conversation_id=conversation.id, owner_message=user_message, turn_type=turn_type, segment=1,
@@ -514,7 +515,7 @@ class TaskRun:
             run.result.preferences_noted.append({"id": c.preference.id, "text": c.preference.text})
 
         run.recall = workmemory.build_recall(
-            db, user, user_message, turn_type, systems=systems, conversation=conversation,
+            db, user, user_message, matched or turn_type, systems=systems, conversation=conversation,
             noted=[c.preference.text for c in captured],
         )
         state.recall_block = run.recall.block
@@ -563,6 +564,19 @@ class TaskRun:
                         approvals.expire_if_due(db, pa)
                         db.refresh(pa)
                     e["content"] = _answer_for(pa)
+                    if pa is not None and pa.status == "approved" and isinstance(pa.result, dict):
+                        # as for a call that needed no approval: the run's result lists it too
+                        skill = skill_registry.skill_for_tool(e.get("name", ""))
+                        self.result.tool_calls.append({
+                            "name": e.get("name", ""), "skill_code": skill.code if skill else "",
+                            "arguments": e.get("arguments") or {}, "result": pa.result,
+                        })
+                        if skill:
+                            self.result.skill_runs.append({
+                                "code": skill.code, "name": skill.name, "ok": not _error_flag(pa.result),
+                                "summary": skill_registry.summarise(e.get("name", ""), pa.result),
+                                "tool": e.get("name", ""),
+                            })
                 else:  # a crash between the checkpoint and the result
                     e["content"] = {"status": "interrupted",
                                     "message": "This may or may not have run. Check before trying again."}
@@ -951,11 +965,19 @@ class TaskRun:
                 return {"ok": False, "error": "steps must be a list of one to twelve short steps"}
             plan = workmemory.set_plan(db, item, str(args.get("title") or ""), str(args.get("task_type") or "") or None,
                                        [str(s) for s in steps])
+            named = str(args.get("task_type") or "").strip()
+            detail: dict = {"steps": [p["text"] for p in plan]}
+            if named:
+                detail["task_type"] = item.task_type  # the plan named it: finalise keeps it
             workmemory.add_step(db, item, kind="plan", step_no=st.open_step["step_no"] if st.open_step else 0,
-                                summary=item.title, detail={"steps": [p["text"] for p in plan]})
+                                summary=item.title, detail=detail)
+            out: dict = {"ok": True}
+            extra = self._plan_preferences(item) if named else ""
+            if extra:
+                out["preferences"] = extra
             yield self._task_event()
             yield self._plan_event()
-            return {"ok": True}
+            return out
 
         if name == "aura_progress":
             row = workmemory.update_plan_step(db, item, args.get("index"), str(args.get("status") or ""),
@@ -984,6 +1006,32 @@ class TaskRun:
             return {"ok": True}
 
         return {"ok": False, "error": f"unknown bookkeeping tool {name}"}
+
+    def _plan_preferences(self, item: WorkItem) -> str:
+        """Preference lines for the type the plan named that the recall block did not carry.
+        They are counted as recalled (`recall_used`, `use_count`). Empty when there are none."""
+        db, user = self.db, self.user
+        if self.conversation is not None and self.conversation.memory_off:
+            return ""
+        from app import plugins
+
+        have = set((item.recall_used or {}).get("preference_ids") or [])
+        rows = [p for p in preference_service.select_rows(db, user.id, item.task_type,
+                                                         plugins.assigned_systems(db, user.id))
+                if p.task_type == item.task_type and p.id not in have]
+        if not rows:
+            return ""
+        text, kept = preference_service.format_block(rows, item.task_type)
+        if not kept:
+            return ""
+        preference_service.mark_used(db, kept)
+        used = dict(item.recall_used or {})
+        used["preference_ids"] = [*(used.get("preference_ids") or []), *[p.id for p in kept]]
+        item.recall_used = used
+        if self.recall is not None:
+            self.recall.preferences.extend(kept)
+        db.commit()
+        return text
 
     # -- leaving the segment -------------------------------------------
 

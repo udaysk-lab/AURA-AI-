@@ -425,17 +425,27 @@ def _scope_label(scope: str) -> str:
         return scope
 
 
+def type_list(task_type: "str | list[str] | tuple[str, ...] | None") -> list[str]:
+    """One type or several, as a de-duplicated list of normalised preference types."""
+    values = [task_type] if isinstance(task_type, str) or task_type is None else list(task_type)
+    out: list[str] = []
+    for v in values:
+        n = _normalise_type(v)
+        if n not in out:
+            out.append(n)
+    return out or ["other"]
+
+
 def select_rows(
     db: Session,
     user_id: str,
-    task_type: str,
+    task_type: "str | list[str] | tuple[str, ...]",
     systems: set[str] | None,
 ) -> list[Preference]:
-    """Active lines for the task type and `general`, within the assigned systems: typed first,
+    """Active lines for the task type(s) and `general`, within the assigned systems: typed first,
     then general, newest first within each. Uncapped and without side effects."""
-    task_type = _normalise_type(task_type)
     allowed_scopes = {""} | set(systems or ())
-    kinds = {task_type, tasktypes.GENERAL}
+    kinds = {*type_list(task_type), tasktypes.GENERAL}
     rows = db.scalars(
         select(Preference).where(
             Preference.user_id == user_id,
@@ -457,7 +467,7 @@ def _ts(value) -> float:
 
 def format_block(
     rows: list[Preference],
-    task_type: str,
+    task_type: "str | list[str] | tuple[str, ...]",
     noted: list[str] | None = None,
     *,
     max_lines: int = BLOCK_LINES,
@@ -474,8 +484,9 @@ def format_block(
         general = [p for p in sel if p.task_type == tasktypes.GENERAL]
         out: list[str] = []
         if typed:
-            what = tasktypes.TYPES.get(task_type, "").lower()
-            head = f"How this person wants {what} work done" if what and task_type != "other" else \
+            wanted = [t for t in type_list(task_type) if t in tasktypes.TYPES and t != "other"]
+            what = tasktypes.TYPES[wanted[0]].lower() if len(wanted) == 1 else ""
+            head = f"How this person wants {what} work done" if what else \
                 "How this person wants this kind of work done"
             out.append(head + " (follow these; newer lines win):")
             out += [_line(p) for p in typed]
@@ -594,13 +605,8 @@ def reset(db: Session, user_id: str) -> int:
     return len(rows)
 
 
-def teach(db: Session, user: User, code: str, note: str) -> Captured:
-    """`POST /api/skills/{code}/teach`: a note the owner typed against a skill."""
-    return add(db, user, note, tasktypes.from_skill_code(code), "stated", "skill_teach")
-
-
 def skill_notes(db: Session, user_id: str, code: str) -> list[str]:
-    """What `SkillOut.learned_notes` shows: active teach / migrated lines of the skill's type."""
+    """What `SkillOut.learned_notes` shows: active skill_teach / migrated lines of the skill's type."""
     task_type = tasktypes.from_skill_code(code)
     rows = db.scalars(
         select(Preference).where(
@@ -609,21 +615,6 @@ def skill_notes(db: Session, user_id: str, code: str) -> list[str]:
         ).order_by(Preference.created_at, Preference.id)
     ).all()
     return [p.text for p in rows]
-
-
-def clear_skill_notes(db: Session, user_id: str, code: str) -> int:
-    """`DELETE /api/skills/{code}/notes`: deactivate those lines."""
-    task_type = tasktypes.from_skill_code(code)
-    rows = db.scalars(
-        select(Preference).where(
-            Preference.user_id == user_id, Preference.active.is_(True), Preference.task_type == task_type,
-            Preference.origin.in_(("skill_teach", "migrated")),
-        )
-    ).all()
-    for p in rows:
-        p.active = False
-    db.commit()
-    return len(rows)
 
 
 def feedback_note(db: Session, user: User, item: WorkItem, note: str) -> Captured | None:

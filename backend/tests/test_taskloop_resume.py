@@ -423,3 +423,67 @@ def test_http_stop_and_running_409(client, auth, monkeypatch):
     assert r.status_code == 409 and r.json()["work_item_id"] == item2_id and r.json()["status"] == "running"
     r = client.post("/api/chat", headers=auth, json={"message": "hello", "conversation_id": done["conversation_id"]})
     assert r.status_code == 409
+
+
+def _ask_for_tasks(db, user):
+    from app.permissions import rules
+
+    rules.add(db, user, effect="ask", system="core-tasks", tool="create_task")
+
+
+def test_demo_model_reports_what_the_approved_action_did(env, monkeypatch):
+    from tests.scripted import RecordingMock
+
+    db, user, convo = env
+    _ask_for_tasks(db, user)
+    monkeypatch.setattr(coordinator, "get_provider", lambda: RecordingMock())
+    _, _, item = start(db, user, convo, "add a task to book the venue for the offsite")
+    assert item.status == "waiting"
+    approvals.resolve(db, user, pend(db, item)[0].id, "once")
+    events, res = drain(coordinator.iter_resume(db, user, item.id))
+    db.refresh(item)
+    said = "Added **book the venue for the offsite** to your tasks (medium)."
+    assert res.text.startswith(said) and "approved_and_run" not in res.text
+    assert item.outcome == said
+    assert next(e for e in events if e["type"] == "report")["outcome"] == said
+    # recorded exactly as for an action that needed no approval
+    assert item.tools_used == ["create_task"] and item.systems_used == ["core-tasks"]
+    assert item.task_type == "todo"  # "book" made the keyword guess scheduling
+    assert [t["name"] for t in res.tool_calls] == ["create_task"]
+    assert [r["code"] for r in res.skill_runs] and res.skill_runs[0]["tool"] == "create_task"
+
+
+def test_demo_model_says_what_failed_after_an_approved_action_errors(env, monkeypatch):
+    from tests.scripted import RecordingMock
+
+    db, user, convo = env
+    _ask_for_tasks(db, user)
+    monkeypatch.setattr(coordinator, "get_provider", lambda: RecordingMock())
+    _, _, item = start(db, user, convo, "add a task to book the venue for the offsite")
+    pa = pend(db, item)[0]
+    approvals.resolve(db, user, pa.id, "once")
+    db.refresh(pa)
+    pa.result = {"error": "The task list is full."}
+    db.commit()
+    _, res = drain(coordinator.iter_resume(db, user, item.id))
+    assert "The task list is full." in res.text and "approved_and_run" not in res.text
+
+
+def test_scripted_model_after_approval_keeps_its_words_and_records_the_action(env, monkeypatch):
+    db, user, convo = env
+    _ask_for_tasks(db, user)
+    seen = {}
+
+    def after(messages, tools):
+        seen["tool"] = [json.loads(m["content"]) for m in messages if m.get("role") == "tool"]
+        return reply("Added the task to book the venue.")
+
+    use(monkeypatch, ScriptedProvider([reply("", call("create_task", id="c1", title="Book the venue")), after]))
+    _, _, item = start(db, user, convo, "book the venue for the offsite")
+    approvals.resolve(db, user, pend(db, item)[0].id, "once")
+    _, res = drain(coordinator.iter_resume(db, user, item.id))
+    db.refresh(item)
+    assert seen["tool"][0]["status"] == "approved_and_run" and seen["tool"][0]["result"]["title"] == "Book the venue"
+    assert res.text.startswith("Added the task to book the venue.") and item.outcome == "Added the task to book the venue."
+    assert item.tools_used == ["create_task"] and item.systems_used == ["core-tasks"] and item.task_type == "todo"
+    assert [t["name"] for t in res.tool_calls] == ["create_task"]

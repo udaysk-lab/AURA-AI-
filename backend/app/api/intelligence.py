@@ -18,7 +18,6 @@ from app.schemas import (
     SkillPatch,
     SkillRunOut,
     SkillStatsOut,
-    SkillTeachIn,
 )
 from app.services import heartbeat as heartbeat_service
 from app.services import identity as identity_service
@@ -175,33 +174,6 @@ def update_skill(
             changes.record(db, user, "system_changed", f"skill {code} turned {'on' if payload.enabled else 'off'}",
                            widens=bool(payload.enabled), target=f"skill:{code}", detail={"enabled": bool(payload.enabled)})
     return _skill_view(db, user, code)
-
-
-@router.post("/skills/{code}/teach", response_model=SkillOut)
-def teach_skill(
-    code: str, payload: SkillTeachIn, user: CurrentUser, db: DbSession
-) -> SkillOut:
-    """Kept for older clients (the web app no longer calls it). A note typed against a skill is
-    stored as a preference for that skill's kind of work (origin `skill_teach`); the conflict rules
-    of preference memory apply. The skill view's `learned_notes` reads those lines back."""
-    code = code.upper()
-    _require_visible(db, user, code)
-    try:
-        preference_service.teach(db, user, code, payload.note.strip())
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    return _skill_view(db, user, code)
-
-
-@router.delete("/skills/{code}/notes")
-def clear_skill_notes(code: str, user: CurrentUser, db: DbSession) -> dict:
-    """Kept for older clients. Switches off the lines `teach` (and the 2.0 migration) stored for
-    this skill's kind of work; they stay listed, inactive, under Memory > Preferences."""
-    code = code.upper()
-    if code not in skill_registry.CATALOG:
-        raise HTTPException(status_code=404, detail="Unknown skill")
-    preference_service.clear_skill_notes(db, user.id, code)
-    return {"message": "Cleared"}
 
 
 # ---------------------------------------------------------------------------

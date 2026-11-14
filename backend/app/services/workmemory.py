@@ -301,6 +301,12 @@ def default_summary(db: Session, item: WorkItem) -> str:
     return "; ".join(parts + tool_lines[:8])
 
 
+def _plan_named_type(db: Session, item: WorkItem) -> bool:
+    """True when the model's own `aura_plan(task_type=...)` set the item's type. The plan step
+    records it in its `detail`, so no column is needed."""
+    return any(s.kind == "plan" and (s.detail or {}).get("task_type") for s in steps_of(db, item.id))
+
+
 def finalise(
     db: Session,
     item: WorkItem,
@@ -330,8 +336,11 @@ def finalise(
     item.outcome = _scrub(db, uid, outcome if outcome is not None else first_line, OUTCOME_MAX)
     item.summary = _scrub(db, uid, summary if summary else default_summary(db, item), SUMMARY_MAX)
     item.error = _scrub(db, uid, error or item.error or "", 1000)
-    if item.task_type in ("", "other"):
-        item.task_type = tasktypes.from_tools(list(item.tools_used or []))
+    if item.task_type in ("", "other") or not _plan_named_type(db, item):
+        # The type is only the keyword guess: the tools that ran know better.
+        from_ran = tasktypes.from_tools(list(item.tools_used or []))
+        if from_ran != "other" or item.task_type in ("", "other"):
+            item.task_type = from_ran
     if input_tokens is not None:
         item.input_tokens = input_tokens
     if output_tokens is not None:
@@ -483,7 +492,7 @@ def build_recall(
     db: Session,
     user: User,
     query: str,
-    task_type: str,
+    task_type: "str | list[str] | tuple[str, ...]",
     *,
     systems: set[str] | None = None,
     conversation: Conversation | None = None,
@@ -500,9 +509,11 @@ def build_recall(
     if conversation is not None and conversation.memory_off:
         return Recall()
     q_vec = memory_service.embed_text(query) if (query or "").strip() else []
+    types = preference_service.type_list(task_type)
+    task_type = types[0]  # past work is ranked by the first type; preferences use all of them
     work = recall_work(db, user.id, query, task_type, exclude_id, q_vec=q_vec)
-    pref_rows = preference_service.select_rows(db, user.id, task_type, systems)
-    pref_text, pref_kept = preference_service.format_block(pref_rows, task_type, noted)
+    pref_rows = preference_service.select_rows(db, user.id, types, systems)
+    pref_text, pref_kept = preference_service.format_block(pref_rows, types, noted)
     facts = memory_service.search(db, user.id, query, limit=FACT_LIMIT) if (query or "").strip() else []
 
     work_items = [w.item for w in work]  # best first
@@ -515,7 +526,7 @@ def build_recall(
         if work_lines:
             parts.append(PAST_HEADER + "\n" + "\n".join(work_lines))
         if prefs:
-            parts.append(preference_service.format_block(prefs, task_type, noted, max_lines=10**6, max_chars=10**9)[0])
+            parts.append(preference_service.format_block(prefs, types, noted, max_lines=10**6, max_chars=10**9)[0])
         if fact_lines:
             parts.append("What you know about this user (retrieved for this request):\n" + "\n".join(fact_lines))
         return "\n\n".join(parts)

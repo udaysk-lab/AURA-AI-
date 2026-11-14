@@ -144,32 +144,6 @@ def default_options(action: PendingAction) -> tuple[str, ...]:
 # The sentence on the card: what "always" would allow
 # ---------------------------------------------------------------------------
 
-_VERB = {
-    "send_email": "sending email",
-    "archive_email": "archiving email",
-    "create_event": "creating calendar events",
-    "delete_event": "deleting calendar events",
-    "delete_task": "deleting tasks",
-    "run_command": "running commands",
-    "run_in_background": "running commands in the background",
-    "stop_process": "stopping processes",
-    "kill_process": "ending processes",
-    "write_file": "writing files",
-    "edit_file": "editing files",
-    "make_directory": "creating folders",
-    "move_file": "moving files",
-    "open_app": "opening apps",
-    "close_app": "closing apps",
-    "set_clipboard": "changing the clipboard",
-    "mouse_click": "clicking with the mouse",
-    "scroll_screen": "scrolling the screen",
-    "type_text": "typing",
-    "press_keys": "pressing keys",
-    "fetch_url": "fetching web pages",
-    "send_process_input": "sending input to a running command",
-}
-
-
 def _path_phrase(pattern: str) -> str:
     if pattern.endswith(("/**", "\\**")):
         return f"in {pattern[:-3] or os.sep} and the folders below it"
@@ -183,7 +157,7 @@ def rule_text(draft: gate.RuleDraft | None, *, lead: str = "Always allow") -> st
     """One sentence saying exactly what the rule stored by "always" would allow."""
     if draft is None:
         return ""
-    verb = _VERB.get(draft.tool) or f"using {_words(draft.tool)}"
+    verb = catalogue.ing_phrase(draft.tool) or f"using {_words(draft.tool)}"  # the fallback is for tools outside the catalogue
     groups: dict[str, list[str]] = {}
     for kind, pattern in draft.items:
         groups.setdefault(kind, []).append(pattern)

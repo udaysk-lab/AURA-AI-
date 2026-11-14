@@ -231,9 +231,11 @@ def test_reviewer_model_is_reported_and_settable(client, owner, monkeypatch):
 
 def test_catalogue(client, owner):
     rows = client.get("/api/permissions/catalogue", headers=owner).json()
-    assert len(rows) == 60 and all(set(r) == {"tool", "system", "kind", "targets", "always_user"} for r in rows)
+    assert len(rows) == 60 and all(set(r) == {"tool", "system", "kind", "targets", "always_user", "action_text"} for r in rows)
     by = {r["tool"]: r for r in rows}
-    assert by["send_email"] == {"tool": "send_email", "system": "core-inbox", "kind": "send", "targets": ["recipient"], "always_user": False}
+    assert by["send_email"] == {"tool": "send_email", "system": "core-inbox", "kind": "send", "targets": ["recipient"], "always_user": False,
+                                "action_text": "send an email"}
+    assert by["create_task"]["action_text"] == "create a task"
     assert by["delete_file"]["always_user"] is True and by["delete_file"]["targets"] == ["path"]
     assert by["fetch_url"]["targets"] == ["domain"] and by["list_tasks"]["targets"] == []
     assert set(by) == {n for n, p in catalogue.CATALOGUE.items() if not p.loop_internal}

@@ -180,6 +180,8 @@ def test_unattended_cards_notify_and_repeats_do_not_pile_up(env):
         ("create_event", (), "", "Always allow creating calendar events"),
         ("send_email", (("recipient", "a@x.com"),), "schedule:s1", "Always allow sending email to a@x.com, only in that schedule"),
         ("delete_task", (), "automation:r9", "Always allow deleting tasks, only in that automation"),
+        ("create_task", (), "", "Always allow creating tasks"),
+        ("save_memory", (), "", "Always allow saving things to memory"),
     ],
 )
 def test_rule_text_says_what_always_allows(tool, items, applies, expected):

@@ -123,6 +123,12 @@ def classify(text: str) -> str:
     return "other"
 
 
+def classify_all(text: str) -> list[str]:
+    """Every type whose words appear in the instruction, in rule order; empty when none match."""
+    text = (text or "")[:2000]
+    return [value for value, pattern in KEYWORDS if pattern.search(text)]
+
+
 def from_tools(tool_names: list[str]) -> str:
     """The most frequent type among the tools that ran; ties go to the one used first."""
     counts: Counter[str] = Counter()

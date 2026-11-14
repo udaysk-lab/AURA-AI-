@@ -101,3 +101,12 @@ def test_skill_code_type():
     assert tasktypes.from_skill_code("dv02") == "files"
     assert tasktypes.from_skill_code("MM01") == "general"  # first tool is untyped
     assert tasktypes.from_skill_code("NOPE") == "general"
+
+
+def test_classify_all_lists_every_matching_type_in_order():
+    text = "Create a task to send the November invoice to Priya"
+    assert tasktypes.classify_all(text) == ["email", "todo"]
+    assert tasktypes.classify(text) == "email"  # unchanged: the first match
+    assert tasktypes.classify_all("Thanks, that is all") == []
+    assert tasktypes.classify_all("") == []
+    assert tasktypes.classify_all("Run the build script") == ["commands"]

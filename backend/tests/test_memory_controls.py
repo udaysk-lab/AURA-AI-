@@ -41,11 +41,12 @@ def test_memory_kinds_narrowed(env):
     assert "legacy" not in block and len(ids) == 2
 
 
-def test_remember_files_legacy_kinds_as_facts_for_now(env):
+def test_remember_refuses_the_old_kinds(env):
     db, user = env
-    m = mem.remember(db, user.id, "Likes bullet summaries", kind="preference")
-    assert m.kind == "fact"
-    assert [h.memory.id for h in mem.search(db, user.id, "bullet summaries")] == [m.id]
+    for kind in ("preference", "style", "habit", "nonsense"):
+        with pytest.raises(ValueError):
+            mem.remember(db, user.id, "Likes bullet summaries", kind=kind)
+    assert db.scalars(select(Memory)).all() == []
     assert mem.remember(db, user.id, "Priya", kind="contact").kind == "contact"
 
 
@@ -328,9 +329,8 @@ def test_preference_crud(client, ha, hb):
 
 def test_memory_edit_route(client, ha, hb):
     made = client.post("/api/memories", headers=ha, json={"content": "Priya is in London", "kind": "contact"}).json()
-    # the 1.0 kinds are still accepted from older clients and filed as facts
-    legacy = client.post("/api/memories", headers=ha, json={"content": "Likes tea", "kind": "preference"})
-    assert legacy.status_code == 200 and legacy.json()["kind"] == "fact"
+    for kind in ("preference", "style", "habit"):  # the 1.0 kinds are not accepted any more
+        assert client.post("/api/memories", headers=ha, json={"content": "Likes tea", "kind": kind}).status_code == 422
     out = client.patch(f"/api/memories/{made['id']}", headers=ha,
                        json={"content": "Priya is in Paris now", "kind": "fact", "pinned": True})
     assert out.status_code == 200
@@ -449,18 +449,37 @@ def test_reset_scopes(client, ha, hb):
     assert counts(hb) == base_b
 
 
-def test_skill_teach_and_notes_endpoints(client, ha):
-    code = "EM01"
-    taught = client.post(f"/api/skills/{code}/teach", headers=ha, json={"note": "Sign off with just my first name"})
-    assert taught.status_code == 200 and taught.json()["learned_notes"] == ["Sign off with just my first name"]
-    stored = [p for p in client.get("/api/preferences?task_type=email", headers=ha).json() if p["origin"] == "skill_teach"]
-    assert stored and stored[0]["source"] == "stated"
-    assert client.post(f"/api/skills/{code}/teach", headers=ha, json={"note": "x"}).status_code == 422
-    assert client.post("/api/skills/ZZ99/teach", headers=ha, json={"note": "hello there"}).status_code == 404
-    assert client.delete(f"/api/skills/{code}/notes", headers=ha).json() == {"message": "Cleared"}
-    skill = next(s for s in client.get("/api/skills", headers=ha).json() if s["code"] == code)
-    assert skill["learned_notes"] == []
-    inactive = [p for p in client.get("/api/preferences?include_inactive=true", headers=ha).json()
-                if p["origin"] == "skill_teach"]
-    assert inactive and not any(p["active"] for p in inactive)  # switched off, still listed
-    assert client.delete("/api/skills/ZZ99/notes", headers=ha).status_code == 404
+def test_skill_teach_routes_are_gone(client, ha):
+    assert client.post("/api/skills/EM01/teach", headers=ha, json={"note": "Sign off with my first name"}).status_code in (404, 405)
+    assert client.delete("/api/skills/EM01/notes", headers=ha).status_code in (404, 405)
+
+
+def test_old_memory_kinds_are_not_listed_searched_or_counted(client, ha, hb):
+    db = SessionLocal()
+    try:
+        uid = _uid(client, ha)
+        db.add(Memory(user_id=uid, kind="fact", content="Zebra budget is approved", source="chat"))
+        for kind in mem.LEGACY_KINDS:
+            db.add(Memory(user_id=uid, kind=kind, content=f"Zebra {kind} copied by tl02", source="chat"))
+        db.commit()
+    finally:
+        db.close()
+    listed = client.get("/api/memories", headers=ha).json()
+    assert [m["content"] for m in listed if "Zebra" in m["content"]] == ["Zebra budget is approved"]
+    assert all(m["kind"] in mem.KINDS for m in listed)
+    for kind in mem.LEGACY_KINDS:
+        assert client.get(f"/api/memories?kind={kind}", headers=ha).json() == []
+    found = client.get("/api/memories/search", headers=ha, params={"q": "Zebra"}).json()
+    assert [m["content"] for m in found] == ["Zebra budget is approved"]
+    r = client.post("/api/memory/reset", headers=ha, json={"scope": "facts", "confirm": "RESET"})
+    assert r.json()["deleted"]["memories"] == 1  # the one fact, not the three copies
+
+
+def test_no_legacy_leftovers_remain():
+    from app import schemas
+    from app.llm import MockProvider
+
+    assert "minutes" not in schemas.PendingDecisionIn.model_fields
+    assert not hasattr(schemas, "LEGACY_MEMORY_KINDS") and not hasattr(schemas, "SkillTeachIn")
+    assert not hasattr(schemas.MemoryIn, "_legacy_kind")
+    assert MockProvider._extract_args("save_memory", "Remember that my sister is Asha")["kind"] == "fact"

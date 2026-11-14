@@ -122,7 +122,41 @@ def test_spec_rows():
 def test_describe_matches_client_shape():
     rows = {r["tool"]: r for r in catalogue.describe()}
     assert set(rows) == set(tools.REGISTRY)
-    assert rows["send_email"] == {"tool": "send_email", "system": "core-inbox", "kind": "send", "targets": ["recipient"], "always_user": False}
+    assert rows["send_email"] == {"tool": "send_email", "system": "core-inbox", "kind": "send", "targets": ["recipient"], "always_user": False,
+                               "action_text": "send an email"}
     assert rows["fetch_url"]["targets"] == ["domain"]
     assert rows["run_command"]["targets"] == ["command"]  # the workdir is not a rule target
     assert not (LOOP_TOOLS & set(rows))
+
+
+def test_every_catalogue_tool_has_both_human_phrases():
+    assert set(catalogue.PHRASES) == set(CATALOGUE), "add (action, -ing) phrases for every catalogue tool"
+    for name in CATALOGUE:
+        action, ing = catalogue.action_phrase(name), catalogue.ing_phrase(name)
+        assert action and ing, name
+        assert action == action.strip() and ing == ing.strip(), name
+        assert not action.lower().startswith(("aura", "wants")), name  # "AURA wants to <action>"
+        assert ing.split()[0].endswith("ing"), name  # "Always allow <ing>"
+    assert catalogue.action_phrase("create_task") == "create a task"
+    assert catalogue.ing_phrase("create_task") == "creating tasks"
+    assert catalogue.action_phrase("format_the_disk") is None and catalogue.ing_phrase("format_the_disk") is None
+
+
+def test_rule_text_has_no_fallback_wording_for_catalogue_tools():
+    from app.permissions import approvals, gate
+
+    for name in CATALOGUE:
+        text = approvals.rule_text(gate.RuleDraft(system="x", tool=name, applies_to="", items=()))
+        assert text == f"Always allow {catalogue.ing_phrase(name)}", name
+        assert "using " not in text, name
+
+
+def test_pending_action_out_carries_the_action_phrase():
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from app.schemas import PendingActionOut
+
+    base = dict(id="a", skill_code="", arguments={}, preview="", status="pending", created_at=datetime.now(timezone.utc))
+    assert PendingActionOut.model_validate(SimpleNamespace(tool_name="create_task", **base)).action_text == "create a task"
+    assert PendingActionOut.model_validate(SimpleNamespace(tool_name="folder_access", **base)).action_text is None

@@ -297,3 +297,36 @@ def test_model_error_finishes_item_with_error(env, monkeypatch):
     item = item_of(db, res)
     assert "couldn't reach the model" in res.text and "sk-abcdefghijkl" not in item.error
     assert item.status == "partly_done"
+
+
+def test_keyword_guess_gives_way_to_the_tools_that_ran(env, monkeypatch):
+    db, user, convo = env
+    use(monkeypatch, ScriptedProvider([
+        reply("", call("create_task", title="Send the invoice")),
+        reply("Added it."),
+    ]))
+    _, res = run(db, user, convo, "Create a task to send the invoice to Priya")
+    item = item_of(db, res)
+    assert item.tools_used == ["create_task"] and item.task_type == "todo"  # not the keyword guess, email
+
+
+def test_type_named_by_the_plan_survives_the_tools(env, monkeypatch):
+    db, user, convo = env
+    use(monkeypatch, ScriptedProvider([
+        reply("", call("aura_plan", id="p", title="Invoice", task_type="email", steps=["add the task"])),
+        reply("", call("create_task", title="Send the invoice")),
+        reply("Added it."),
+    ]))
+    _, res = run(db, user, convo, "Create a task to send the invoice to Priya")
+    assert item_of(db, res).task_type == "email"
+
+
+def test_plan_without_a_type_does_not_pin_the_guess(env, monkeypatch):
+    db, user, convo = env
+    use(monkeypatch, ScriptedProvider([
+        reply("", call("aura_plan", id="p", title="Invoice", steps=["add the task"])),
+        reply("", call("create_task", title="Send the invoice")),
+        reply("Added it."),
+    ]))
+    _, res = run(db, user, convo, "Create a task to send the invoice to Priya")
+    assert item_of(db, res).task_type == "todo"

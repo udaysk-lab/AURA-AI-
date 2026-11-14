@@ -122,7 +122,9 @@ def mark_all_read(user: CurrentUser, db: DbSession) -> dict:
 def list_memories(
     user: CurrentUser, db: DbSession, kind: str = Query("")
 ) -> list[MemoryOut]:
-    stmt = select(Memory).where(Memory.user_id == user.id)
+    # Rows of the 1.0 kinds (preference / style / habit) were copied to the preference store
+    # by revision tl02; the originals stay until a later clean-up and are not facts.
+    stmt = select(Memory).where(Memory.user_id == user.id, Memory.kind.in_(memory_service.KINDS))
     if kind:
         stmt = stmt.where(Memory.kind == kind)
     rows = db.scalars(
@@ -210,10 +212,10 @@ def reset_memory(payload: MemoryResetIn, user: CurrentUser, db: DbSession) -> Me
         deleted["work_items"] = workmemory_service.reset(db, user.id)
     if payload.scope in ("facts", "all"):
         rows = db.scalars(select(Memory).where(Memory.user_id == user.id)).all()
-        for row in rows:
+        for row in rows:  # the old 1.0 copies go too, but only facts are counted
             db.delete(row)
         db.commit()
-        deleted["memories"] = len(rows)
+        deleted["memories"] = len([r for r in rows if r.kind in memory_service.KINDS])
     return MemoryResetOut(deleted=deleted)
 
 

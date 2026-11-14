@@ -190,6 +190,91 @@ _ENTRIES += [
 CATALOGUE: dict[str, ToolPolicy] = {p.name: p for p in _ENTRIES}
 assert len(CATALOGUE) == len(_ENTRIES), "duplicate catalogue entry"
 
+# --- human phrases (one place for the words) ---------------------------------
+# tool -> (action phrase with its article, for "AURA wants to <action>";
+#          -ing phrase, for "Always allow <ing>"). Every catalogue entry needs both:
+# tests/test_perm_catalogue.py fails until a new tool has them.
+
+PHRASES: dict[str, tuple[str, str]] = {
+    "summarize_inbox": ("summarize your inbox", "summarizing your inbox"),
+    "search_emails": ("search your email", "searching email"),
+    "get_email": ("read an email", "reading email"),
+    "draft_reply": ("draft a reply", "drafting replies"),
+    "send_email": ("send an email", "sending email"),
+    "archive_email": ("archive an email", "archiving email"),
+    "list_events": ("look at your calendar", "looking at your calendar"),
+    "find_free_time": ("find free time in your calendar", "finding free time"),
+    "detect_conflicts": ("check your calendar for clashes", "checking for calendar clashes"),
+    "prepare_meeting": ("prepare for a meeting", "preparing for meetings"),
+    "create_event": ("create a calendar event", "creating calendar events"),
+    "delete_event": ("delete a calendar event", "deleting calendar events"),
+    "list_tasks": ("look at your tasks", "looking at your tasks"),
+    "create_task": ("create a task", "creating tasks"),
+    "complete_task": ("mark a task as done", "marking tasks as done"),
+    "delete_task": ("delete a task", "deleting tasks"),
+    "save_memory": ("remember something about you", "saving things to memory"),
+    "search_memory": ("search what it remembers", "searching memory"),
+    "list_contacts": ("look up your contacts", "looking up contacts"),
+    "get_daily_briefing": ("put together your daily briefing", "putting together your daily briefing"),
+    "sync_google": ("sync your Google account", "syncing your Google account"),
+    "notify": ("send you a notification", "sending you notifications"),
+    "web_research": ("research something on the web", "researching on the web"),
+    "brief_subject": ("write a briefing on a subject", "writing briefings on a subject"),
+    "search_documents": ("search your documents", "searching documents"),
+    "summarize_document": ("summarize a document", "summarizing documents"),
+    "compare_documents": ("compare documents", "comparing documents"),
+    "delegate_task": ("hand a task to someone", "handing tasks to people"),
+    "chase_delegation": ("follow up on a handed-off task", "following up on handed-off tasks"),
+    "list_delegations": ("look at the tasks you handed off", "looking at handed-off tasks"),
+    "check_focus_blocks": ("check your focus time", "checking focus time"),
+    "run_command": ("run a command", "running commands"),
+    "run_in_background": ("run a command in the background", "running commands in the background"),
+    "send_process_input": ("send input to a running command", "sending input to a running command"),
+    "process_output": ("read the output of a running command", "reading the output of running commands"),
+    "list_background_commands": ("list the commands running in the background", "listing background commands"),
+    "stop_process": ("stop a process", "stopping processes"),
+    "read_file": ("read a file", "reading files"),
+    "list_directory": ("list the files in a folder", "listing the files in folders"),
+    "search_files": ("search for files", "searching for files"),
+    "write_file": ("write a file", "writing files"),
+    "edit_file": ("edit a file", "editing files"),
+    "make_directory": ("create a folder", "creating folders"),
+    "move_file": ("move a file", "moving files"),
+    "delete_file": ("delete a file", "deleting files"),
+    "open_app": ("open an app", "opening apps"),
+    "close_app": ("close an app", "closing apps"),
+    "list_applications": ("see which apps are open", "seeing which apps are open"),
+    "system_info": ("check this computer's details", "checking this computer's details"),
+    "list_processes": ("list the running processes", "listing running processes"),
+    "kill_process": ("end a process", "ending processes"),
+    "read_clipboard": ("read your clipboard", "reading the clipboard"),
+    "set_clipboard": ("change your clipboard", "changing the clipboard"),
+    "desktop_notify": ("show a notification on your computer", "showing notifications on your computer"),
+    "take_screenshot": ("take a screenshot", "taking screenshots"),
+    "mouse_click": ("click with the mouse", "clicking with the mouse"),
+    "scroll_screen": ("scroll the screen", "scrolling the screen"),
+    "type_text": ("type on your keyboard", "typing"),
+    "press_keys": ("press keys", "pressing keys"),
+    "fetch_url": ("fetch a web page", "fetching web pages"),
+    "aura_plan": ("make a plan", "making plans"),
+    "aura_progress": ("update its progress", "updating its progress"),
+    "aura_check": ("check its own work", "checking its own work"),
+    "aura_outcome": ("report how it went", "reporting how it went"),
+    "aura_note_preference": ("note a preference", "noting preferences"),
+}
+
+
+def action_phrase(tool_name: str) -> str | None:
+    """"create a task": what completes "AURA wants to ...". None for a tool outside the catalogue."""
+    p = PHRASES.get(tool_name)
+    return p[0] if p else None
+
+
+def ing_phrase(tool_name: str) -> str | None:
+    """"creating tasks": what completes "Always allow ...". None for a tool outside the catalogue."""
+    p = PHRASES.get(tool_name)
+    return p[1] if p else None
+
 
 def policy_for(tool_name: str) -> ToolPolicy | None:
     return CATALOGUE.get(tool_name)
@@ -218,7 +303,7 @@ def log_missing(tool_names: Iterable[str]) -> list[str]:
 
 
 def describe() -> list[dict]:
-    """Rows for GET /api/permissions/catalogue: {tool, system, kind, targets, always_user}."""
+    """Rows for GET /api/permissions/catalogue: {tool, system, kind, targets, always_user, action_text}."""
     return [
         {
             "tool": p.name,
@@ -226,6 +311,7 @@ def describe() -> list[dict]:
             "kind": p.kind,
             "targets": list(p.rule_target_kinds),
             "always_user": p.always_user,
+            "action_text": action_phrase(p.name) or "",
         }
         for p in CATALOGUE.values()
         if not p.loop_internal

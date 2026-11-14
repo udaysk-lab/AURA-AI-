@@ -318,20 +318,12 @@ class MemoryOut(ORMModel):
 
 
 MEMORY_KINDS = ("fact", "contact", "project", "decision")
-LEGACY_MEMORY_KINDS = ("preference", "style", "habit")
 
 
 class MemoryIn(BaseModel):
     content: str = Field(min_length=1, max_length=2000)
     kind: Literal["fact", "contact", "project", "decision"] = "fact"
     pinned: bool = False
-
-    @field_validator("kind", mode="before")
-    @classmethod
-    def _legacy_kind(cls, raw: Any) -> Any:
-        # Older clients still send the 1.0 kinds; those lines are how-to preferences now and
-        # this store holds facts, so they are filed as facts (as memory.remember does).
-        return "fact" if raw in LEGACY_MEMORY_KINDS else raw
 
 
 class MemoryPatch(BaseModel):
@@ -621,16 +613,24 @@ class PendingActionOut(ORMModel):
     card_payload: dict[str, Any] = Field(default_factory=dict)
     always_user: bool = False
     decision: str = ""
+    # What completes "AURA wants to ...", from the permission catalogue ("create a task");
+    # None for a card that is not a tool call.
+    action_text: str | None = None
+
+    @model_validator(mode="after")
+    def _fill_action_text(self) -> "PendingActionOut":
+        if self.action_text is None:
+            from app.permissions import catalogue
+
+            self.action_text = catalogue.action_phrase(self.tool_name)
+        return self
 
 
 class PendingDecisionIn(BaseModel):
     """decision: once | window | always | reject, or approve on a folder / app card.
-
-    `minutes` is accepted for old clients and ignored: "window" is always ten minutes.
-    """
+    "window" is always ten minutes."""
 
     decision: Literal["reject", "once", "always", "window", "approve"] = "once"
-    minutes: int = Field(default=10, ge=1, le=1440)
 
 
 # ---------------------------------------------------------------------------
@@ -654,10 +654,6 @@ class SkillOut(BaseModel):
 
 class SkillPatch(BaseModel):
     enabled: bool | None = None
-
-
-class SkillTeachIn(BaseModel):
-    note: str = Field(min_length=3, max_length=200)
 
 
 class SkillRunOut(ORMModel):

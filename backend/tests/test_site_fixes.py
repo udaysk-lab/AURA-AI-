@@ -121,24 +121,12 @@ def test_toggling_a_skill_answers_200_with_the_skill(client):
     assert on.json()["enabled"] is True
 
 
-def test_teaching_answers_200_and_stores_one_lesson(client):
-    auth = _demo(client, "fixes-demo@example.com")
-    resp = client.post(
-        "/api/skills/CA01/teach", headers=auth, json={"note": "Keep Fridays clear"}
-    )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["learned_notes"].count("Keep Fridays clear") == 1
-
-
 def test_a_skill_from_an_uninstalled_plugin_is_a_clean_404(client):
     auth = _demo(client, "fixes-demo@example.com")
     client.post("/api/plugins/research/uninstall", headers=auth)
-    resp = client.post("/api/skills/RS01/teach", headers=auth, json={"note": "Cite sources"})
+    resp = client.patch("/api/skills/RS01", headers=auth, json={"enabled": False})
     assert resp.status_code == 404
     assert "isn't installed" in resp.json()["detail"]
-    assert client.patch(
-        "/api/skills/RS01", headers=auth, json={"enabled": False}
-    ).status_code == 404
     assert client.patch(
         "/api/skills/NOPE1", headers=auth, json={"enabled": False}
     ).status_code == 404
@@ -174,14 +162,24 @@ def test_demo_mode_replies_read_as_sentences(client):
         assert "```" not in text and '"start_at"' not in text, (prompt, text[:300])
 
 
-def test_the_remember_chip_saves_a_memory_instead_of_listing_events(client):
+def test_the_remember_chip_saves_a_preference_instead_of_listing_events(client):
     auth = _demo(client, "fixes-demo@example.com")
     events, text = _stream(client, auth, "Remember that I prefer afternoon meetings")
     codes = [e["code"] for e in events if e["type"] == "skill"]
     assert "CA01" not in codes
+    # captured once, as a preference; the demo model does not file a memory beside it
+    prefs = [p["text"] for p in client.get("/api/preferences", headers=auth).json()]
+    assert sum("afternoon meetings" in p for p in prefs) == 1, prefs
     memories = [m["content"] for m in client.get("/api/memories", headers=auth).json()]
-    assert any("afternoon meetings" in m for m in memories), memories
+    assert not any("afternoon meetings" in m for m in memories), memories
     assert "remember" in text.lower()
+
+
+def test_the_remember_chip_still_files_a_plain_fact_as_a_fact(client):
+    auth = _demo(client, "fixes-demo@example.com")
+    _stream(client, auth, "Remember that my sister's name is Asha")
+    rows = [m for m in client.get("/api/memories", headers=auth).json() if "Asha" in m["content"]]
+    assert [r["kind"] for r in rows] == ["fact"]
 
 
 def test_free_time_honours_the_requested_length():
@@ -352,7 +350,7 @@ def test_removing_sample_data_keeps_the_users_own_lookalikes(client):
     ).json()
     memory = client.post(
         "/api/memories", headers=auth,
-        json={"content": "Wants email replies drafted short.", "kind": "preference"},
+        json={"content": "Wants email replies drafted short.", "kind": "fact"},
     ).json()
     # …and one of theirs filed under a sample task.
     sample_parent = next(

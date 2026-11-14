@@ -403,6 +403,12 @@ class MockProvider(LLMProvider):
             if tool_name in available and re.search(pattern, text):
                 args = dict(base_args)
                 args.update(self._extract_args(tool_name, last_user))
+                if tool_name == "save_memory" and self._states_a_preference(last_user):
+                    # The capture step has already filed "I prefer ..." as a preference; a
+                    # memory beside it would show twice.
+                    return LLMResponse(
+                        text=f"Noted — I'll remember that {args['content'].rstrip('.')}."
+                    )
                 return LLMResponse(
                     tool_calls=[ToolCall(id=f"mock_{tool_name}", name=tool_name, arguments=args)]
                 )
@@ -418,6 +424,12 @@ class MockProvider(LLMProvider):
                 "`OPENAI_API_KEY`) is set on the server."
             )
         )
+
+    @staticmethod
+    def _states_a_preference(text: str) -> bool:
+        from app.services import preferences
+
+        return bool(preferences.statements(text))
 
     @staticmethod
     def _extract_args(tool_name: str, text: str) -> dict:
@@ -443,7 +455,7 @@ class MockProvider(LLMProvider):
                 flags=re.IGNORECASE,
             ).rstrip(" ?")
             content = content[:1].upper() + content[1:]
-            return {"content": content[:500] or text[:500], "kind": "preference"}
+            return {"content": content[:500] or text[:500], "kind": "fact"}
         if tool_name == "create_event":
             # "Schedule a call with Priya tomorrow at 3pm" -> "Call with Priya",
             # tomorrow 15:00. The whole sentence used to become the title.
@@ -640,6 +652,12 @@ class MockProvider(LLMProvider):
             data = json.loads(raw)
         except json.JSONDecodeError:
             return str(raw)[:1500]
+
+        # A call that waited for approval comes back wrapped: say what the action itself reported.
+        if isinstance(data, dict) and data.get("status") == "approved_and_run" and "result" in data:
+            data = data["result"]
+            if not isinstance(data, (dict, list)):
+                return str(data) if data not in (None, "") else "Done."
 
         if isinstance(data, dict) and data.get("error"):
             return f"That didn't work: {data['error']}"
