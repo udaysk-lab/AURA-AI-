@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from app.permissions import match, shellparse
@@ -43,6 +45,11 @@ def test_always_is_the_exact_command(command):
 
 @pytest.mark.parametrize("command,prefix", READ_ONLY)
 def test_prefix_only_for_read_only_commands(command, prefix):
+    if os.name == "nt" and "~1" in command:
+        # On Windows "HEAD~1" cannot be told apart from an 8.3 short file name: the command cannot be read in full
+        # there, so no reusable rule is proposed for it and it asks. The stricter answer.
+        assert pats(command) == []
+        return
     assert pats(command) == [prefix]
     assert covered(command, pats(command))
 

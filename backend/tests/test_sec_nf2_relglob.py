@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from app.permissions import gate, rules, shellparse
@@ -33,6 +35,12 @@ def w(tmp_path, monkeypatch):
     world.engine.dispose()
 
 
+# A POSIX-shell command given a native Windows working folder cannot be resolved with certainty, and the checker then
+# refuses it outright as a possible reach into AURA's own files. That is the stricter answer, so it is accepted
+# there; what must never happen on any platform is an allow.
+_STRICTER = ("FLOOR_SELF_PATH",) if os.name == "nt" else ()
+
+
 def rule(w, effect, tree=None):
     rules.add(w.db, w.user, effect=effect, system="device-control", tool=None, target_kind="path",
               pattern=(tree or w.finance) + "/**", actor="user")
@@ -54,14 +62,15 @@ def test_a_relative_glob_is_a_path_reference():
 def test_a_block_rule_stops_a_relative_glob(w, dialect, command):
     rule(w, "block")
     d = decide(w, command, dialect)
-    assert d.kind == "deny" and d.reason_code == "RULE_BLOCK", (command, d.kind, d.reason_code)
+    assert d.kind == "deny" and d.reason_code in ("RULE_BLOCK", *_STRICTER), (command, d.kind, d.reason_code)
 
 
 @pytest.mark.parametrize("dialect,command", CASES)
 def test_an_ask_rule_makes_a_relative_glob_ask(w, dialect, command):
     rule(w, "ask")
     d = decide(w, command, dialect)
-    assert d.kind == "ask" and d.reason_code == "RULE_ASK", (command, d.kind, d.reason_code)
+    stricter = d.kind == "deny" and d.reason_code in _STRICTER
+    assert (d.kind == "ask" and d.reason_code == "RULE_ASK") or stricter, (command, d.kind, d.reason_code)
 
 
 def test_a_glob_that_could_match_a_blocked_folder_that_does_not_exist_yet(w):

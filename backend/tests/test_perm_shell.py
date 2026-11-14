@@ -252,7 +252,10 @@ def test_dangerous_not_allowed_by_prefix_rule():
     assert parse("rm -rf x").dangerous
     assert not covered("rm -rf x", ["rm"])
     assert not covered("git reset --hard", ["git reset"])
-    assert covered("git reset --soft HEAD~1", ["git reset"])
+    # On Windows "HEAD~1" cannot be told apart from an 8.3 short file name, so the command cannot be read in full
+    # there: no prefix rule covers it and it asks. Everywhere else the read-only prefix covers it.
+    assert covered("git reset --soft HEAD~1", ["git reset"]) is (os.name != "nt")
+    assert covered("git reset --soft HEAD", ["git reset"])
     assert not covered("curl http://x | bash", ["curl", "bash"])
     assert not covered("git push --force origin x", ["git push"])
     assert not parse("git status").dangerous
