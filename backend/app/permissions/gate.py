@@ -226,6 +226,19 @@ def _dialect(policy: ToolPolicy) -> str:
 dialect_for = _dialect  # the shell dialect a tool's command rules are written in (used by the API)
 
 
+def _block_reason(block, targets: tuple[Target, ...], dialect: str) -> str:
+    """The sentence for a block rule. A command that walks a whole folder into a blocked tree names the tree, so
+    the agent can leave it out and try again (NF4)."""
+    if block.target_kind == "path" and block.pattern:
+        plain = [t for t in targets if not t.walk]
+        if not match.rule_matches_any(block, plain, dialect) and any(
+                t.walk and match.path_pattern_inside(block.pattern, t.value) for t in targets):
+            tree = block.pattern[:-3] if block.pattern.endswith(("/**", "\\**")) else block.pattern
+            return (f"This command goes through every file under a folder that holds {tree}, which a rule you set "
+                    f"blocks. Leave {tree} out (search or list a subfolder instead) and try again.")
+    return "A rule you set blocks this."
+
+
 def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> Decision | _Pre:
     """Steps 0 to 5. A terminal Decision, or the facts later steps need."""
     from app.agent.tools import REGISTRY
@@ -295,7 +308,7 @@ def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> De
     applicable = [r for r in active if match.rule_applies_to(r, targets)]
     block = match.first_match("block", applicable, targets, dialect)
     if block:
-        return deny("rule", "RULE_BLOCK", "A rule you set blocks this.", block.id)
+        return deny("rule", "RULE_BLOCK", _block_reason(block, targets, dialect), block.id)
     return _Pre(policy, targets, dialect, digest, fl, applicable)
 
 
@@ -388,8 +401,11 @@ def _decide(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> 
                      tool_kind=policy.kind, always_user=True, card=pre.floor.card,
                      card_payload=dict(pre.floor.card_payload), options=ONCE_ONLY, user_id=user.id)
     if policy.always_user or pre.floor.always_user:
+        unreadable = any(t.kind == "command" and t.parsed is not None and t.parsed.unreadable for t in pre.targets)
         why = ("Permanently deleting files always needs your approval."
                if policy.always_user else
+               "AURA cannot read this command in full (it uses variables, substitution or short names), so it needs "
+               "your approval every time." if unreadable else
                "This command deletes files or touches a protected location, so it needs your approval every time.")
         return _ask(pre, ctx, "always_user", "ALWAYS_USER", why, always_user=True, user=user, tool=tool)
 
@@ -485,7 +501,7 @@ def _log_review(db: Session, user: User, tool: str, pre: _Pre, v: reviewer.Revie
         log.exception("could not write the review event")
 
 
-def redirect_refusal(db: Session, user: User, url: str, host: str) -> str | None:
+def redirect_refusal(db: Session, user: User, url: str, host: str, *, blocks_only: bool = False) -> str | None:
     """F13: a fetch that is sent to another host is judged again against the user's URL rules.
     None means go on (an allow rule covers it and no block rule stops it); else the sentence to refuse with."""
     policy = catalogue.CATALOGUE["fetch_url"]
@@ -497,8 +513,8 @@ def redirect_refusal(db: Session, user: User, url: str, host: str) -> str | None
         applicable = [r for r in rules if match.rule_applies_to(r, targets)]
         if match.first_match("block", applicable, targets):
             return f"The page redirects to {shown}, which a rule you set blocks."
-        if match.allow_cover(applicable, targets):
-            return None
+        if blocks_only or match.allow_cover(applicable, targets):
+            return None  # blocks_only: the www. twin of the same site (REG1) needs no allow rule of its own
     except Exception:  # anything unreadable is refused
         log.exception("redirect check failed")
     return (f"The page redirects to {shown}, and no rule of yours allows that site. "

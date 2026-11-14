@@ -17,6 +17,7 @@ from __future__ import annotations
 import fnmatch
 import ipaddress
 import os
+import re
 import sys
 from dataclasses import dataclass
 from email.utils import getaddresses
@@ -81,12 +82,34 @@ def fold(path: str, ops: PathOps | None = None, *, always: bool = False) -> str:
     return path
 
 
+def _windows_form(text: str, base: str | None, ops: PathOps) -> str:
+    """Windows spellings that name something else than they seem to (second review): UNC administrative shares
+    on this computer and `\\\\?\\` forms become drive paths; a drive-relative path on another drive and a
+    short name that cannot be resolved here are refused (BadArgs: the call is denied, never allowed)."""
+    from app.permissions import pathglob
+
+    local = pathglob.local_unc_to_drive(text)
+    if local is not None:
+        text = local
+    pm = ops.pm
+    drive = pm.splitdrive(text)[0]
+    if drive and not drive.startswith("\\\\") and not pm.isabs(text):
+        bdrive = pm.splitdrive(base or pm.expanduser("~"))[0]
+        if drive.casefold() != bdrive.casefold():
+            raise BadArgs("a drive-relative path on another drive cannot be read")
+    if os.name != "nt" and any(pathglob._SHORT_NAME.search(c) for c in pm.normpath(text).replace("\\", "/").split("/")):
+        raise BadArgs("a short (8.3) file name cannot be read")
+    return text
+
+
 def normalize_path(raw: str, base: str | None = None, ops: PathOps | None = None) -> str:
     """Absolute, symlink-resolved, `..`-free path. A non-existent tail is kept lexically."""
     ops = ops or PathOps()
     if not isinstance(raw, str) or not raw.strip() or "\x00" in raw:
         raise BadArgs("path is empty or invalid")
     text = expand(raw.strip(), ops)
+    if getattr(ops.pm, "__name__", "") == "ntpath":
+        text = _windows_form(text, base, ops)
     if not ops.pm.isabs(text):
         text = ops.pm.join(base or ops.pm.expanduser("~"), text)
     return ops.pm.realpath(text)
@@ -346,6 +369,10 @@ class Target:
     matchable: bool = True  # False: not what an allow rule must cover (workdir, pid, paths named in a command)
     tree: bool = False  # stands for everything beneath it (a search root): an ask rule anywhere inside it applies
     named: bool = False  # a path a shell command names or runs in: block and ask rules see it, allow rules do not need it
+    glob: str = ""  # a pattern word this target stands for (value is its literal folder): it could match more than exists now
+    base: str = ""  # where a relative `glob` is read from
+    opened: bool = False  # a path a tool opens (open_app): the floors check it like a file argument
+    walk: bool = False  # a command walks the whole tree under this folder (grep -r, find, ls -R, tar ...)
 
 
 def extract(
@@ -417,6 +444,12 @@ def extract(
                 scheme, host = parse_url(value.strip())
                 out.append(Target("url", host, "", value.strip(), scheme=scheme))
                 continue
+            if policy.name == "open_app":
+                opened = _opened_path(value.strip(), base, ops)
+                if opened is not None:
+                    # NF3: a file or folder given to open_app is a path the floors and path rules must see.
+                    out.append(Target("path", opened, "read", value, matchable=False, named=True, opened=True))
+                    continue
             app_id = appnames.canonical(value)
             if not app_id:
                 raise BadArgs("not an application name")
@@ -430,6 +463,133 @@ def extract(
             if app_id:
                 out.append(Target("app", appnames.canonical(app_id), "pid", app_id))
     return tuple(out)
+
+
+def _opened_path(value: str, base: str, ops: PathOps) -> str | None:
+    """The real path open_app would open, when its argument is, or resolves to, a file or folder."""
+    pm = ops.pm
+    shaped = "/" in value or "\\" in value or value.startswith("~") or bool(pm.splitdrive(value)[0]) \
+        or value.startswith("$") or value.startswith("%")
+    if not shaped:
+        # a bare name that exists where AURA runs is opened as that file (device/apps.py)
+        try:
+            if not os.path.exists(pm.expanduser(value)):
+                return None
+        except (OSError, ValueError):
+            return None
+        return normalize_path(value, os.getcwd(), ops)
+    try:
+        return normalize_path(value, base, ops)
+    except BadArgs:
+        raise
+
+
+def _literal_head(word: str) -> str:
+    """The leading components of a path word that hold no wildcard (`fin*/x` -> `.`, `~/work/f*/x` -> `~/work`)."""
+    from app.permissions import pathglob
+
+    text = word.replace("\\", "/")
+    comps: list[str] = []
+    for comp in text.split("/"):
+        if pathglob.has_glob(comp):
+            break
+        comps.append(comp)
+    head = "/".join(comps)
+    if not head:
+        return "/" if text.startswith("/") else "."
+    return head
+
+
+def _anchor_of(pattern: str, ops: PathOps) -> str:
+    kind, head, _glob = _split_pattern(pattern, ops)
+    if kind in ("tree", "exact"):
+        return head
+    if kind == "glob":
+        return head
+    return pattern
+
+
+
+# ---------------------------------------------------------------------------
+# Commands that walk a whole tree (NF4)
+# ---------------------------------------------------------------------------
+
+_WALK_ALWAYS = {"find", "rg", "ag", "ack", "fd", "fdfind", "tree", "du", "locate", "plocate", "tar", "bsdtar",
+                "robocopy", "7z", "7za", "7zr", "compress-archive"}
+_WALK_GREPS = {"grep", "egrep", "fgrep", "zgrep", "rgrep"}
+_WALK_LISTERS = {"get-childitem", "gci", "ls", "dir", "select-string", "sls", "copy-item", "cpi", "get-item"}
+_WALK_COPIERS = {"cp", "rsync", "scp", "zip", "diff", "xcopy", "mv", "chmod", "chown", "chgrp"}
+_RECURSE_SHORT = re.compile(r"^-[A-Za-z]*[rRa][A-Za-z]*$")
+_RECURSE_UPPER = re.compile(r"^-[A-Za-z]*[rR][A-Za-z]*$")
+
+
+def _prog_name(program: str) -> str:
+    name = re.split(r"[\\/]", program)[-1].casefold()
+    return re.sub(r"\.(exe|cmd|bat|ps1)$", "", name)
+
+
+def _walks(prog: str, tokens: Sequence[str]) -> bool:
+    low = [t.casefold() for t in tokens]
+    if prog in _WALK_ALWAYS:
+        return True
+    if prog in _WALK_GREPS:
+        return any(_RECURSE_UPPER.match(t) or t in ("--recursive", "--dereference-recursive") for t in tokens) \
+            or any(t.startswith("--directories=recurse") for t in low)
+    if prog in _WALK_LISTERS:
+        return any(t.startswith("-rec") or t == "-r" or t == "/s" or t == "--recursive"
+                   or (prog == "ls" and _RECURSE_UPPER.match(tokens[i]) and "R" in tokens[i])
+                   for i, t in enumerate(low))
+    if prog in _WALK_COPIERS:
+        if prog == "xcopy":
+            return any(t in ("/s", "/e") for t in low)
+        if prog == "zip":
+            return any(_RECURSE_UPPER.match(t) for t in tokens)
+        if prog in ("mv", "chmod", "chown", "chgrp"):
+            return any(t == "-R" or t == "--recursive" for t in tokens)
+        return any(_RECURSE_SHORT.match(t) or t == "--recursive" for t in tokens)
+    return False
+
+
+def walk_roots(parsed: shellparse.Parsed, base_dir: str, ops: PathOps | None = None) -> list[str]:
+    """The folders a command walks through whole (grep -r, find, ls -R, rg, tree, tar, zip -r, cp -r, Get-ChildItem
+    -Recurse, dir /s, robocopy, xcopy /s ...): its folder arguments, or the working directory when it names none."""
+    from app.permissions import pathglob
+
+    ops = ops or PathOps()
+    windows = ops.pm is not os.path or os.name == "nt" or parsed.dialect != shellparse.POSIX
+    out: list[str] = []
+    for seg in parsed.segments:
+        prog = _prog_name(seg.program)
+        args = list(seg.tokens[1:])
+        if not _walks(prog, args):
+            continue
+        dirs: list[str] = []
+        from_globs: list[str] = []
+        files_named = False
+        for tok in args:
+            if prog in ("find", "fd", "fdfind") and tok.startswith(("-", "(", "!")) and prog == "find":
+                break  # find: the folders come first, then the tests (`-name '*.txt'` is not a folder)
+            if tok.startswith("-") or (windows and tok.startswith("/") and len(tok) <= 3 and tok[1:2].isalpha()):
+                continue
+            word = tok
+            glob = pathglob.has_glob(word)
+            if glob:
+                word = _literal_head(word)
+            try:
+                real = normalize_path(word, base_dir, ops)
+            except BadArgs:
+                continue
+            if os.path.isdir(real):
+                (from_globs if glob else dirs).append(real)
+            elif os.path.exists(real) and not glob:
+                files_named = True
+        if dirs:
+            out.extend(dirs)
+        elif from_globs:
+            out.extend(from_globs)
+        elif not files_named:
+            out.append(base_dir)
+    return list(dict.fromkeys(out))
 
 
 def named_paths(parsed: shellparse.Parsed, base_dir: str, home: str, ops: PathOps | None = None) -> list[Target]:
@@ -458,14 +618,34 @@ def named_paths(parsed: shellparse.Parsed, base_dir: str, home: str, ops: PathOp
         raw = ref.raw
         if "\x00" in raw or not raw.strip():
             continue
+        if parsed.dialect != shellparse.POSIX and os.name != "nt" and ops.pm is os.path:
+            raw = raw.replace("\\", "/")  # PowerShell and cmd paths use both separators; this OS only knows one
+        if windows:
+            # Windows ignores trailing dots and spaces in a name (`finance.` is `finance`)
+            raw = re.sub(r"[^\\/]+", lambda m: pathglob._clean(m.group(0), True), raw)
         if pathglob.has_glob(raw):
             for found in pathglob.existing_matches(raw, base_dir, home, ci=ci, windows=windows, dot_ok=dot_ok, limit=100):
                 add(raw, found, ref.role)
+            # ... and what it could expand to: the literal folder before the first wildcard stands for the word
+            try:
+                head = _literal_head(raw)
+                folder = normalize_path(head, base_dir, ops)
+            except BadArgs:
+                continue
+            key = (fold(folder, ops, always=True) + "\x00" + raw, ref.role)
+            if key not in seen and len(out) < 200:
+                seen.add(key)
+                out.append(Target("path", folder, ref.role, raw, matchable=False, named=True, glob=raw, base=base_dir))
             continue
         try:
             add(raw, normalize_path(raw, base_dir, ops), ref.role)
         except BadArgs:
             continue
+    for root in walk_roots(parsed, base_dir, ops):
+        key = (fold(root, ops, always=True) + "\x00walk", "read")
+        if key not in seen and len(out) < 260:
+            seen.add(key)
+            out.append(Target("path", root, "read", root, matchable=False, named=True, tree=False, walk=True))
     return out
 
 
@@ -522,6 +702,22 @@ def path_pattern_inside(pattern: str, folder: str, ops: PathOps | None = None) -
         return False
 
 
+def _glob_could_name(pattern: str, t: Target, ops: PathOps | None) -> bool:
+    """Could the wildcard word behind `t` expand to the tree (or file) a path rule names?"""
+    from app.permissions import pathglob
+
+    ops = ops or PathOps()
+    anchor = _anchor_of(pattern, ops)
+    if not anchor:
+        return False
+    windows = ops.pm is not os.path or os.name == "nt"
+    try:
+        return pathglob.could_match(t.glob, anchor, t.base or t.value, ops.pm.expanduser("~"),
+                                    ci=ops.ci or windows, windows=windows, dot_ok=True)
+    except Exception:
+        return True
+
+
 def rule_matches_any(rule: Any, targets: Sequence[Target], dialect: str = shellparse.POSIX, ops: PathOps | None = None,
                      descend: bool = False) -> bool:
     """For block and ask rules: does the rule match any target? A tool-wide rule always does.
@@ -545,6 +741,10 @@ def rule_matches_any(rule: Any, targets: Sequence[Target], dialect: str = shellp
                    for s in p.segments):
                 return True
         elif pattern_covers(rule.target_kind, rule.pattern, t, dialect, ops):
+            return True
+        elif t.glob and rule.target_kind == "path" and _glob_could_name(rule.pattern, t, ops):
+            return True
+        elif t.walk and rule.target_kind == "path" and path_pattern_inside(rule.pattern, t.value, ops):
             return True
         elif descend and t.tree and rule.target_kind == "path" and path_pattern_inside(rule.pattern, t.value, ops):
             return True

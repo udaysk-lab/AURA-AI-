@@ -90,8 +90,16 @@ action. A command that chains several commands needs each one covered. A
 command that sets environment variables first, or hides what it runs, cannot be
 covered by an allow rule.
 
-Block and Ask rules on paths also apply to the paths a command names. A file
-search or folder listing leaves out the folders a block rule covers and says so.
+Block and Ask rules on paths also apply to the paths a command names, including
+names written with wildcards (`cat */salary.txt`). A file search or folder
+listing leaves out the folders a block rule covers and says so. A command that
+walks through every file under a folder (`grep -r`, `find`, `ls -R`, `tar`,
+`zip -r`, `cp -r`, `dir /s`, `Get-ChildItem -Recurse` and the like) respects
+them too: if a folder with a block rule is inside the folder it walks, the
+command is refused and the message names that folder, so it can be run again
+without it; if the folder has an Ask rule, the command asks. The home variables
+`$HOME`, `~`, `$PWD`, `%USERPROFILE%` and `$env:USERPROFILE` are replaced by
+their value first and then judged like any other path.
 
 You can see, edit and revoke every rule in Settings, Permissions. Revoking keeps
 the record for the log. Rules the upgrade made from your 1.0 settings are
@@ -105,6 +113,14 @@ These ask every time, in every mode, and no rule can turn the card off:
 - Permanently deleting a file (`delete_file`).
 - A command that deletes files, or that names a protected location. The card
   says so.
+- A command AURA cannot read in full: one that uses variables, command
+  substitution, `$'...'` quoting, `eval`, `xargs`, PowerShell's `&` on a
+  variable or `iex`, cmd's `%VAR%`, `!VAR!` or `for` variables, or Windows short
+  names (`PROGRA~1`), drive-relative paths and network paths. What such a command
+  touches is not visible in its text, so it asks every time, even in Skip
+  approvals and Auto; the card offers "once" and "Don't" only. The same text
+  using only the home variables listed above is read normally. Commands that
+  reach `/proc/<anything>/cwd`, `root`, `environ` or `fd` are refused.
 - Writing to a tool's own configuration file (for example a git, npm, pip or
   cargo settings file).
 - Connecting a folder, allowing an app, and allowing deletes in a folder.
@@ -128,7 +144,11 @@ does not lift them.
   link-local and similar addresses, checks every redirect, and connects only to
   the address it checked. A redirect to a different site is also judged against
   your address rules: without an allow rule for that site it is refused, and the
-  message names the site. A web link given to `open_app` is treated the same way
+  message names the site. The one exception is the same site with or without
+  `www.` (for example `example.com` and `www.example.com`, in either direction,
+  or the same name in another case), when the new address is https: that is
+  followed without a new rule, though a block rule of yours still stops it and
+  the network checks still apply. A web link given to `open_app` is treated the same way
   as `fetch_url`: same limits, same rules, same checks.
 - **AURA's own process** and AURA's own window under screen control.
 - **Blocked apps** (the default list covers banking, trading, crypto wallets and

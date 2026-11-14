@@ -274,6 +274,21 @@ def _host_key(url: str) -> str:
         return ""
 
 
+def same_site_redirect(old_url: str, new_url: str) -> bool:
+    """REG1: an ordinary redirect between a site and its `www.` twin needs no new rule: the hosts are equal
+    ignoring case and a trailing dot, or one is exactly `www.` + the other, and the new address is https
+    (the scheme stays https or goes up from http). Everything else is a different site. Network floors
+    still check every hop."""
+    try:
+        old, new = urlsplit(old_url), urlsplit(new_url)
+    except ValueError:
+        return False
+    a, b = _host_key(old_url), _host_key(new_url)
+    if not a or not b or new.scheme.lower() != "https" or old.scheme.lower() not in ("http", "https"):
+        return False
+    return a == b or b == "www." + a or a == "www." + b
+
+
 def _pinned_url(checked: Checked, original: str) -> str:
     parts = urlsplit(original)
     ip = f"[{checked.ip}]" if ":" in checked.ip else checked.ip
@@ -307,7 +322,11 @@ def safe_get(url: str, *, transport=None, on_redirect_host=None) -> dict:
                     if on_redirect_host is not None:
                         old_host, new_host = _host_key(current), _host_key(target)
                         if new_host != old_host:
-                            refusal = on_redirect_host(target, new_host)
+                            ask = on_redirect_host
+                            if same_site_redirect(current, target):
+                                # the www. twin: no new allow rule is needed, but a block rule still stops it
+                                ask = getattr(on_redirect_host, "blocks_only", None)
+                            refusal = ask(target, new_host) if ask is not None else None
                             if refusal:
                                 raise FetchDenied(refusal, "FLOOR_REDIRECT_HOST")
                     current = target

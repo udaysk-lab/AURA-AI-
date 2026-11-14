@@ -20,8 +20,11 @@ Pure string work except `existing_matches`, which lists directories (a bounded a
 from __future__ import annotations
 
 import fnmatch
+import ipaddress
 import os
+import platform
 import re
+import socket
 from typing import Iterable
 
 POSIX, PWSH, CMD = "posix", "pwsh", "cmd"
@@ -111,6 +114,115 @@ def expand_braces(word: str) -> list[str] | None:
     return out if len(out) <= MAX_VARIANTS else None
 
 
+
+# ---------------------------------------------------------------------------
+# Windows path forms: UNC paths to this computer, drive-relative paths, 8.3 short names
+# ---------------------------------------------------------------------------
+
+_SHORT_NAME = re.compile(r"~\d")
+_ADMIN_SHARE = re.compile(r"[A-Za-z]\$", re.IGNORECASE)
+
+
+def _local_names() -> set[str]:
+    names = {"localhost", "localhost.localdomain", ".", "::1", "0.0.0.0"}
+    for fn in (socket.gethostname, platform.node, socket.getfqdn):
+        try:
+            n = (fn() or "").strip().lower().rstrip(".")
+        except Exception:
+            continue
+        if n:
+            names.add(n)
+            names.add(n.split(".", 1)[0])
+    return names
+
+
+def _is_this_computer(server: str) -> bool:
+    s = server.strip("[]").strip().lower().rstrip(".")
+    if not s:
+        return False
+    if s in _local_names():
+        return True
+    if s.endswith(".ipv6-literal.net"):
+        s = s[: -len(".ipv6-literal.net")].replace("-", ":").replace("s", "%")
+    try:
+        ip = ipaddress.ip_address(s.split("%", 1)[0])
+    except ValueError:
+        return False
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return ip.is_loopback or bool(mapped and mapped.is_loopback)
+
+
+def _unc_parts(path: str) -> tuple[str, str, str] | None:
+    """(server, share, rest) of a UNC path in forward-slash form, `\\\\?\\UNC\\` included; None if it is not one."""
+    p = path.replace("\\", "/")
+    if p[:4] in ("//?/", "//./"):
+        p = p[4:]
+        if p[:4].upper() == "UNC/":
+            p = "//" + p[4:]
+        else:
+            return None
+    if not p.startswith("//") or p.startswith("///"):
+        return None
+    parts = p[2:].split("/", 2)
+    if not parts[0]:
+        return None
+    return parts[0], parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else ""
+
+
+def local_unc_to_drive(path: str) -> str | None:
+    """`\\\\127.0.0.1\\c$\\x`, `\\\\localhost\\c$\\x`, `\\\\<this host>\\c$\\x`, `\\\\?\\UNC\\...` and `\\\\?\\C:\\x`
+    as `C:/x`; None for anything else (including a share on another computer)."""
+    p = path.replace("\\", "/")
+    if p[:4] in ("//?/", "//./") and re.match(r"[A-Za-z]:", p[4:6]):
+        return p[4:]
+    unc = _unc_parts(path)
+    if unc and _ADMIN_SHARE.fullmatch(unc[1]) and _is_this_computer(unc[0]):
+        return unc[1][0].upper() + ":/" + unc[2]
+    return None
+
+
+def opaque_form(word: str, base: str, home: str, windows: bool) -> tuple[str, str] | None:
+    """(why, literal prefix) when a Windows path cannot be read from its text, else None.
+
+    * `short name`: a component such as `AURA~1` stands for a longer name nobody can see;
+    * `network path`: a UNC path to another computer (or to a share that is not an administrative drive share);
+    * `drive-relative path`: `D:name` on a drive other than the working directory's.
+    The prefix is the literal part before the opaque part; any own or protected path under it could be named."""
+    if not windows or not word or "\x00" in word:
+        return None
+    text = _home_forms(word, home).replace("\\", "/")
+    drive = local_unc_to_drive(text)
+    if drive is not None:
+        text = drive
+    elif _unc_parts(text) is not None:
+        unc = _unc_parts(text)
+        return "network path", "//" + unc[0]
+    m = re.match(r"^([A-Za-z]):(?![/\\])", text)
+    if m:
+        bdrive = base.replace("\\", "/")[:2].casefold()
+        if bdrive != (m.group(1) + ":").casefold():
+            return "drive-relative path", m.group(1) + ":/"
+    comps = absolute_components(text, base, home, True)
+    for i, c in enumerate(comps):
+        if i > 0 and _SHORT_NAME.search(c):
+            head = comps[:i]
+            prefix = "/" + "/".join(head[1:]) if head and head[0] == "/" else "/".join(head)
+            return "short name", prefix
+    return None
+
+
+def opaque_prefix(word: str, base: str, home: str, windows: bool) -> str | None:
+    found = opaque_form(word, base, home, windows)
+    return found[1] if found else None
+
+
+def prefix_overlaps(prefix: str, target: str, ci: bool = True) -> bool:
+    """Does `target` lie under `prefix`, or `prefix` under `target`? (component-wise, Windows rules)"""
+    a, b = components(prefix, True), components(target, True)
+    if not a or not b:
+        return False
+    return all(_fold(x, ci) == _fold(y, ci) for x, y in zip(a, b))
+
 # ---------------------------------------------------------------------------
 # Components
 # ---------------------------------------------------------------------------
@@ -148,6 +260,10 @@ def _strip_groups(comp: str) -> str:
 
 def components(path: str, windows: bool = False) -> list[str]:
     path = path.replace("\\", "/")
+    if windows:
+        local = local_unc_to_drive(path)
+        if local is not None:
+            path = local
     if windows and path.startswith("//?/"):
         path = path[4:]
         if path[:4].upper() == "UNC/":
@@ -189,10 +305,18 @@ def _home_forms(word: str, home: str) -> str:
 def absolute_components(word: str, base: str, home: str, windows: bool = False) -> list[str]:
     """The components of `word` as an absolute path (relative words start at `base`)."""
     text = _home_forms(word, home).replace("\\", "/")
+    if windows:
+        local = local_unc_to_drive(text)
+        if local is not None:
+            text = local
     is_abs = text.startswith("/") or bool(re.match(r"^[A-Za-z]:/", text)) or text.startswith("//")
     if not is_abs and re.match(r"^[A-Za-z]:", text) and windows:
-        is_abs = True  # `C:name` is relative to a drive's directory; treat as the drive root
-        text = text[:2] + "/" + text[2:]
+        is_abs = True
+        if base.replace("\\", "/")[:2].casefold() == text[:2].casefold() and re.match(r"^[A-Za-z]:[/]", base.replace("\\", "/")):
+            # `C:name` is relative to the drive's current directory: the working directory when it is on that drive
+            text = base.replace("\\", "/").rstrip("/") + "/" + text[2:]
+        else:
+            text = text[:2] + "/" + text[2:]  # another drive: unknown directory, read from the drive root (and opaque)
     if not is_abs:
         text = base.replace("\\", "/").rstrip("/") + "/" + text
     return components(text, windows)
@@ -206,10 +330,12 @@ def absolute_components(word: str, base: str, home: str, windows: bool = False) 
 def _comp_could_match(pat: str, name: str, ci: bool, dot_ok: bool) -> bool:
     if pat == "**":
         return True
+    if _SHORT_NAME.search(pat) and ci:
+        return True  # an 8.3 short name (AURA~1) can stand for any longer name, a leading dot included
     p = _strip_groups(pat)
     if not any(c in p for c in GLOB_CHARS):
         return _fold(p, ci) == _fold(name, ci)
-    if name.startswith(".") and not p.startswith(".") and not dot_ok:
+    if name.startswith(".") and not p.startswith((".", "?", "[")) and not dot_ok:  # `?` and `[.]` too, to be safe
         return False
     return fnmatch.fnmatchcase(_fold(name, ci), _fold(p, ci))
 

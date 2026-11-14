@@ -213,6 +213,19 @@ A command runs as your user, with your user's authority. See
   part of it. A command that chains, pipes, redirects, substitutes, sets
   environment variables first or hides what it runs is never covered by a
   broad allow rule.
+- **A command AURA cannot read in full** always asks, in every mode, Skip
+  approvals and Auto included. That means a command with variables, command
+  substitution, `$'...'` quoting, `eval`, `xargs`, PowerShell `&` on a
+  variable or `iex`, cmd `%VAR%` or `for` variables, or a Windows short name
+  such as `PROGRA~1`. AURA cannot tell what it will touch, so you decide each
+  time. `$HOME`, `~`, `$PWD`, `%USERPROFILE%` and `$env:USERPROFILE` at the start
+  of a path are not in this group: AURA replaces them with their value and
+  judges the result like any path.
+- **Searches and recursive commands respect block rules.** A command that walks
+  a whole folder (`grep -r`, `find`, `ls -R`, `tree`, `tar`, `zip -r`,
+  `cp -r`, `dir /s`, `Get-ChildItem -Recurse`, `robocopy`, `xcopy /s`) is refused
+  when a folder you blocked lies inside it, and asks when a folder with an Ask
+  rule does. Run it on a subfolder, or leave the blocked folder out.
 - **A command that deletes files, or names a protected location,** asks every
   time, in every mode. So does a command that writes a tool's own configuration
   file.
@@ -265,7 +278,8 @@ No mode, rule or approval lifts these:
   `DEVICE_EXTRA_PROTECTED_PATHS`.
 - **AURA's own API** and the loopback of this computer, from a command.
 - **Fetching** an address on this computer or a private network, including by
-  redirect.
+  redirect. A redirect to another site needs a rule for that site, except to the
+  same site with or without `www.` over https.
 - **AURA's own window and process.**
 - **Blocked apps.**
 - **Anything on the install's command denylist.**

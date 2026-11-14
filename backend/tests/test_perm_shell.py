@@ -108,9 +108,10 @@ def test_paths_collected_for_floors(tmp_path):
     (tmp_path / "sub" / "x").write_text("x")
     p = parse("cat ~/.ssh/id_rsa /etc/passwd sub/x $HOME/a --out=/tmp/o relative", POSIX, str(tmp_path))
     raws = {x.raw for x in p.paths}
-    assert {"~/.ssh/id_rsa", "/etc/passwd", "$HOME/a", "/tmp/o", "sub/x"} == raws
+    # $HOME is resolved when the command is read (NF1) and judged like the literal path
+    assert {"~/.ssh/id_rsa", "/etc/passwd", os.path.expanduser("~") + "/a", "/tmp/o", "sub/x"} == raws
     assert parse("type %USERPROFILE%\\x C:\\Windows\\a", CMD).paths
-    assert {x.raw for x in parse("gc $env:USERPROFILE\\x", PWSH).paths} == {"$env:USERPROFILE\\x"}
+    assert {x.raw for x in parse("gc $env:USERPROFILE\\x", PWSH).paths} == {os.path.expanduser("~") + "\\x"}
 
 
 def test_bash_c_recursed():
@@ -221,7 +222,7 @@ def test_cmd_ampersand_and_percent():
     assert covered("git status & git diff", ["git status", "git diff"], CMD)
     assert texts("echo a ^& b", CMD) == ["echo a & b"]  # ^ escapes
     assert texts('echo "a & b"', CMD) == ["echo a & b"]
-    for bad in ("echo %PATH%", "echo %USERPROFILE%\\x", "echo !VAR!", "%COMSPEC% /c dir", "(dir)", "set PATH=C:\\x & dir"):
+    for bad in ("echo %PATH%", "echo %APPDATA%\\x", "echo !VAR!", "%COMSPEC% /c dir", "(dir)", "set PATH=C:\\x & dir"):
         assert parse(bad, CMD).opaque, bad
     assert not parse("echo 100%", CMD).opaque
     assert texts("cmd /c git status", CMD)[1:] == ["git status"]

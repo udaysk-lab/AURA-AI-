@@ -30,6 +30,15 @@ from app.permissions import pathglob as _pathglob
 POSIX, PWSH, CMD = "posix", "pwsh", "cmd"
 DIALECTS = (POSIX, PWSH, CMD)
 
+# Reasons that mean "what this command touches cannot be read from its text" (NF1). A command with one
+# of them always needs the user, in every mode; the other opaque reasons only keep allow rules away.
+UNREADABLE = frozenset({
+    "variable", "variable expansion", "substitution", "quoted escape", "parameter expansion",
+    "process substitution", "call of a variable", "program is a variable", "runs text", "loop variable",
+    "short name", "network path", "drive-relative path",
+})
+_HOME_VARS = {"home", "userprofile"}
+
 MAX_DEPTH = 4  # nested `bash -c "bash -c ..."`; deeper than this is opaque
 
 
@@ -88,6 +97,11 @@ class Parsed:
     reasons: tuple[str, ...] = field(default=(), compare=False)
 
     @property
+    def unreadable(self) -> bool:
+        """AURA cannot read the command in full (variables, substitution, short names ...): it always needs the user."""
+        return any(r in UNREADABLE for r in self.reasons)
+
+    @property
     def offers_durations(self) -> bool:
         """False when an approval card may only offer once / reject."""
         return not (self.opaque or self.dangerous)
@@ -124,14 +138,21 @@ _OPS = {
     CMD: ("&&", "||", "&", "|", "\n"),
 }
 
-_CMD_VAR = re.compile(r"%[^%\s\"]+%|![^!\s\"]+!")
+_CMD_PCT = re.compile(r"%([^%\s\"]+)%")
+_CMD_BANG = re.compile(r"![^!\s\"]+!")
+_PCT_ARG = re.compile(r"%[0-9*~]")
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_PS_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?::[A-Za-z_][A-Za-z0-9_]*)?")
+_URL_LIKE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
+_SEPS_AFTER = " \t\r\n/\\;|&<>()"
 _FD = re.compile(r"^\d+$")
 
 
 class _Scan:
-    def __init__(self, text: str, dialect: str):
+    def __init__(self, text: str, dialect: str, workdir: str | None = None):
         self.text = text
         self.d = dialect
+        self.workdir = workdir
         self.items: list = []
         self.opaque = False
         self.reasons: list[str] = []
@@ -142,6 +163,116 @@ class _Scan:
             self.reasons.append(why)
 
     # -- helpers -----------------------------------------------------------
+
+    # -- variables (NF1) ---------------------------------------------------
+
+    def _home_value(self, name: str) -> str | None:
+        low = name.lower()
+        if low == "pwd":
+            return self.workdir
+        if low in _HOME_VARS or low == "home":
+            return os.path.expanduser("~")
+        return None
+
+    def _prefix_ok(self, buf: list, end: int, in_dq: bool) -> bool:
+        """The variable is the whole start of a path word: nothing before it (but `--opt=`), and a
+        separator or the end right after it."""
+        if buf and buf[-1] != "=":
+            return False
+        t = self.text
+        nxt = t[end : end + 1]
+        if in_dq and nxt == '"':
+            after = t[end + 1 : end + 2]
+            return after == "" or after in _SEPS_AFTER
+        return nxt == "" or nxt in _SEPS_AFTER
+
+    def _resolve(self, name: str, buf: list, end: int, in_dq: bool, allowed: set) -> str | None:
+        if name.lower() not in allowed or not self._prefix_ok(buf, end, in_dq):
+            return None
+        value = self._home_value(name)
+        if value is None:
+            return None
+        if not in_dq and (any(c.isspace() for c in value) or any(c in value for c in "*?[{")):
+            return None  # the shell would split or expand the value: not the same word
+        return value
+
+    def dollar(self, i: int, buf: list, in_dq: bool) -> int | None:
+        """Handle a `$` at text[i] (bash or PowerShell). Returns the index after what was consumed, or
+        None when the `$` is a plain character. Resolves the allowlisted home variables; flags the rest."""
+        t, d = self.text, self.d
+        nxt = t[i + 1 : i + 2]
+        if d == POSIX:
+            if nxt == "{":
+                close = t.find("}", i + 2)
+                body = t[i + 2 : close] if close > 0 else ""
+                if close > 0 and _NAME.fullmatch(body):
+                    val = self._resolve(body, buf, close + 1, in_dq, {"home", "pwd"})
+                    if val is not None and body in ("HOME", "PWD"):
+                        buf.append(val)
+                        return close + 1
+                self.flag("parameter expansion")
+                return None
+            m = _NAME.match(t, i + 1)
+            if m:
+                name = m.group(0)
+                val = self._resolve(name, buf, m.end(), in_dq, {"home", "pwd"}) if name in ("HOME", "PWD") else None
+                if val is not None:
+                    buf.append(val)
+                    return m.end()
+                self.flag("variable")
+                return None
+            if nxt and nxt in "@*#?!$-0123456789":
+                self.flag("variable")
+            return None
+        # PowerShell
+        if nxt in ("(", "{") and nxt == "{":
+            close = t.find("}", i + 2)
+            body = t[i + 2 : close] if close > 0 else ""
+            if close > 0 and body.lower().startswith("env:") and body[4:].lower() in _HOME_VARS:
+                val = self._resolve(body[4:], buf, close + 1, in_dq, _HOME_VARS)
+                if val is not None:
+                    buf.append(val)
+                    return close + 1
+            self.flag("variable")
+            return None
+        m = _PS_NAME.match(t, i + 1)
+        if m:
+            name = m.group(0)
+            low = name.lower()
+            if low in ("true", "false", "null"):
+                return None
+            if low.startswith("env:") and low[4:] in _HOME_VARS:
+                val = self._resolve(low[4:], buf, m.end(), in_dq, _HOME_VARS)
+            elif low in ("home", "pwd"):
+                val = self._resolve(low, buf, m.end(), in_dq, {"home", "pwd"})
+            else:
+                val = None
+            if val is not None:
+                buf.append(val)
+                return m.end()
+            if re.match(r"\s*[-+*/%.]?=(?!=)", t[m.end():]) and not in_dq and not buf:
+                return None  # an assignment target: later uses are what carry the value
+            self.flag("variable")
+            return None
+        if nxt and nxt in "?$^_":
+            self.flag("variable")
+        return None
+
+    def percent(self, i: int, buf: list, in_dq: bool) -> int | None:
+        """A `%` at text[i] in cmd: `%USERPROFILE%` as a path start is resolved; other `%X%` is flagged."""
+        t = self.text
+        m = _CMD_PCT.match(t, i)
+        if m:
+            name = m.group(1)
+            val = self._resolve(name, buf, m.end(), in_dq, _HOME_VARS) if name.lower() in _HOME_VARS else None
+            if val is not None:
+                buf.append(val)
+                return m.end()
+            self.flag("variable expansion")
+            return None
+        if _PCT_ARG.match(t, i):
+            self.flag("variable expansion")
+        return None
 
     def run(self) -> None:
         t, d = self.text, self.d
@@ -165,7 +296,7 @@ class _Scan:
                 in_word = True
                 start = at
 
-        if d == CMD and _CMD_VAR.search(t):
+        if d == CMD and _CMD_BANG.search(t):
             self.flag("variable expansion")
 
         while i < n:
@@ -246,8 +377,18 @@ class _Scan:
                         buf.append(t[i + 1])
                         i += 2
                         continue
-                    if d in (POSIX, PWSH) and (ch == "`" or (ch == "$" and t[i + 1 : i + 2] in ("(", "{"))):
+                    if d in (POSIX, PWSH) and (ch == "`" or (ch == "$" and t[i + 1 : i + 2] == "(")):
                         self.flag("substitution")
+                    elif d in (POSIX, PWSH) and ch == "$":
+                        j = self.dollar(i, buf, True)
+                        if j is not None:
+                            i = j
+                            continue
+                    elif d == CMD and ch == "%":
+                        j = self.percent(i, buf, True)
+                        if j is not None:
+                            i = j
+                            continue
                     buf.append(ch)
                     i += 1
                 if not closed:
@@ -267,8 +408,28 @@ class _Scan:
                 buf.append(c)
                 i += 1
                 continue
-            if d == POSIX and c == "$" and nxt == "{":
-                self.flag("parameter expansion")
+            if d in (POSIX, PWSH) and c == "$" and nxt not in ("(", "'", '"'):
+                begin(i)
+                j = self.dollar(i, buf, False)
+                if j is not None:
+                    i = j
+                    continue
+                if not buf and not quoted:
+                    var_start = True
+                buf.append(c)
+                i += 1
+                continue
+            if d == CMD and c == "%":
+                begin(i)
+                j = self.percent(i, buf, False)
+                if j is not None:
+                    i = j
+                    continue
+                if not buf and not quoted:
+                    var_start = True
+                buf.append(c)
+                i += 1
+                continue
             if d == POSIX and c in "<>" and nxt == "(":
                 self.flag("process substitution")
             if d == PWSH and c == "{":
@@ -337,6 +498,8 @@ class _Scan:
                 # the call operator: `& $x args` runs whatever $x holds
                 flush(i)
                 self.flag("call operator")
+                if re.match(r"\s*[$({]", t[i + 1 :]):
+                    self.flag("call of a variable")
                 self.items.append(_Word("&", i, i + 1, False, False))
                 i += 1
                 continue
@@ -493,6 +656,8 @@ def _glob_in_path_position(tok: str) -> bool:
 
 
 def _collect_paths(words: list[str], ctx: _Ctx) -> None:
+    windows_like = ctx.dialect != POSIX or os.name == "nt"
+    home = os.path.expanduser("~")
     for tok in words:
         cand = [tok]
         if tok.startswith("-") and "=" in tok:
@@ -500,13 +665,21 @@ def _collect_paths(words: list[str], ctx: _Ctx) -> None:
         elif _ASSIGN.match(tok):
             cand.append(tok.split("=", 1)[1])
         for c in cand:
+            if windows_like:
+                form = _pathglob.opaque_form(c, ctx.workdir or home, home, True)
+                if form is not None:
+                    ctx.flag(form[0])
             if _is_path_like(c):
+                ctx.paths.append(PathRef(c, "read"))
+            elif _pathglob.has_glob(c) and not c.startswith("-") and not _URL_LIKE.match(c) and len(c) < 400:
+                # a relative pattern is a path reference too (NF2): it is read from the working directory
                 ctx.paths.append(PathRef(c, "read"))
             elif ctx.workdir and c and c not in (".", "..") and not c.startswith("-") and len(c) < 400:
                 # a relative name that exists where the command runs (with or without a separator):
                 # the rules that block or ask about a path need to see it (F7)
                 try:
-                    if os.path.exists(os.path.join(ctx.workdir, c)):
+                    probe = c.replace("\\", "/") if ctx.dialect != POSIX and os.name != "nt" else c
+                    if os.path.exists(os.path.join(ctx.workdir, probe)):
                         ctx.paths.append(PathRef(c, "read"))
                 except (OSError, ValueError):
                     pass
@@ -626,6 +799,8 @@ def _analyse(tokens: list[str], words: list[_Word], raw: str, ctx: _Ctx, depth: 
         opaque = True
     if cur and d == CMD and _base(cur[0]) in ("if", "for", "else", "goto", "call"):
         opaque = True
+        if _base(cur[0]) == "for":
+            ctx.flag("loop variable")
     if cur and d == PWSH and _base(cur[0]) in ("if", "foreach", "for", "while", "do", "switch", "function", "filter", "try", "trap", "param", "begin", "process", "end"):
         opaque = True
 
@@ -752,6 +927,8 @@ def _analyse(tokens: list[str], words: list[_Word], raw: str, ctx: _Ctx, depth: 
             opaque = True
     elif base in _CODE_LAUNCHERS:
         opaque = True
+        if base in ("eval", "xargs", "parallel"):
+            ctx.flag("runs text")  # the command it runs is built from text that is not here
     elif base == "find" and any(t in ("-exec", "-execdir", "-ok", "-okdir") for t in cur[1:]):
         opaque = True
 
@@ -761,9 +938,10 @@ def _analyse(tokens: list[str], words: list[_Word], raw: str, ctx: _Ctx, depth: 
             low = t.lower()
             if low in ("iex", "invoke-expression") or low in ("-encodedcommand", "-enc", "-ec", "-e", "-encodedcomman"):
                 opaque = True
+                ctx.flag("runs text")
                 dangerous = dangerous or low in ("iex", "invoke-expression")
     elif any(t.lower() in ("iex", "invoke-expression") for t in cur):
-        pass
+        ctx.flag("runs text")
 
     # f. normalised text
     norm_tokens = [_norm_program(cur[0], d)] + cur[1:]
@@ -831,7 +1009,7 @@ def _recurse_text(text: str, dialect: str, ctx: _Ctx, depth: int) -> None:
 
 
 def _scan_into(text: str, dialect: str, ctx: _Ctx, depth: int) -> None:
-    scan = _Scan(text, dialect)
+    scan = _Scan(text, dialect, ctx.workdir)
     scan.run()
     if scan.opaque:
         ctx.opaque = True

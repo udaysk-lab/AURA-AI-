@@ -601,6 +601,8 @@ def _fetch_url(ctx: ToolContext, args: dict) -> dict:
         def redirect_host(target: str, host: str) -> str | None:
             return gate.redirect_refusal(ctx.db, ctx.user, target, host)
 
+        redirect_host.blocks_only = lambda target, host: gate.redirect_refusal(  # type: ignore[attr-defined]
+            ctx.db, ctx.user, target, host, blocks_only=True)
         return net.safe_get(url, on_redirect_host=redirect_host)
     except net.FetchDenied as exc:
         return {"error": f"Refused: {exc.reason}"}
