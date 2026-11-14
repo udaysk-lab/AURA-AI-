@@ -9,7 +9,7 @@ import { AssistantProvider } from "@/lib/assistant";
 export const metadata: Metadata = {
   title: { default: "Your personal employee · AURA", template: "%s · AURA" },
   description:
-    "An assistant that learns how you work, handles your email, calendar and commitments, and keeps going when you're away.",
+    "Your personal employee. Give it a task and it plans, acts, checks and reports back, asking before anything that matters.",
 };
 
 // Applies the saved theme before first paint so there is no flash of the wrong

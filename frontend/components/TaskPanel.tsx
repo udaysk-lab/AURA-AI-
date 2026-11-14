@@ -4,7 +4,8 @@ import { useState } from "react";
 import { Check, ChevronDown, Circle, Minus, Square, X } from "lucide-react";
 import type { PendingAction, PlanStep, WorkStatus } from "@/lib/api";
 import { humanTool } from "@/lib/permissions";
-import { Badge, Spinner } from "./ui";
+import { useSystemNames } from "@/lib/systems";
+import { Badge, Markdown, Spinner } from "./ui";
 
 /** What the panel shows about the task in view. Built by the chat page from events or the detail endpoint. */
 export interface TaskPanelState {
@@ -84,6 +85,7 @@ export interface TaskPanelProps {
  */
 export default function TaskPanel({ state, waiting, canStop, stopping, onStop }: TaskPanelProps) {
   const [open, setOpen] = useState(false);
+  const systemName = useSystemNames();
   const done = state.plan.filter((p) => p.status === "done" || p.status === "skipped").length;
   const recall = state.recall;
   const recalled =
@@ -140,7 +142,9 @@ export default function TaskPanel({ state, waiting, canStop, stopping, onStop }:
             </button>
           )}
           {state.outcome && !active && (
-            <p className="text-[12.5px] leading-relaxed text-muted">{state.outcome}</p>
+            <div className="text-[12.5px] leading-relaxed text-muted [&_.prose-chat]:text-[12.5px] [&_.prose-chat]:text-muted">
+              <Markdown text={state.outcome} />
+            </div>
           )}
           {state.verification && state.verification !== "none" && !active && (
             <p className="text-[12px] text-muted">Check: {state.verification.replace(/_/g, " ")}</p>
@@ -182,7 +186,7 @@ export default function TaskPanel({ state, waiting, canStop, stopping, onStop }:
                     }}
                     className="min-h-[44px] w-full rounded-xl border border-amber/35 bg-amber/10 px-3 py-2 text-left text-[12.5px] text-ink transition hover:border-amber/60"
                   >
-                    Allow AURA to {humanTool(w.tool_name).toLowerCase()}?
+                    Allow AURA to {w.action_text || humanTool(w.tool_name).toLowerCase()}?
                     <span className="block text-[11.5px] text-muted">Answer in the conversation</span>
                   </button>
                 </li>
@@ -197,7 +201,7 @@ export default function TaskPanel({ state, waiting, canStop, stopping, onStop }:
           ) : (
             <div className="flex flex-wrap gap-1.5">
               {state.systems.map((s) => (
-                <Badge key={s}>{s}</Badge>
+                <Badge key={s}>{systemName(s)}</Badge>
               ))}
             </div>
           )}

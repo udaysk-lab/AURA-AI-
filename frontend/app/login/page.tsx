@@ -307,7 +307,7 @@ export default function LoginPage() {
           <p className="mt-2 text-[13px] leading-relaxed text-muted">
             {config?.remote_client
               ? "Use the AURA running on your computer from here."
-              : "Your email, calendar, tasks and memory — in one assistant that remembers."}
+              : "Give AURA a task. It plans, acts, checks and reports back."}
           </p>
         </div>
 

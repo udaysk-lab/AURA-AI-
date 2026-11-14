@@ -82,7 +82,7 @@ export default function ApprovalCard({
   const payload = action.card_payload ?? {};
   const expiry = expiryText(action.expires_at);
   const expired = expiry?.expired ?? false;
-  const toolName = humanTool(action.tool_name).toLowerCase();
+  const toolName = action.action_text || humanTool(action.tool_name).toLowerCase();
   const origin = action.origin ? ORIGIN_LABEL[action.origin] : undefined;
 
   const options = OPTION_ORDER.filter((o) => action.options?.includes(o));

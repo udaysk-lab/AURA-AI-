@@ -1,6 +1,7 @@
 "use client";
 
 import { ReactNode, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 // ---------------------------------------------------------------------------
 // Formatting
@@ -326,26 +327,75 @@ export function Modal({
   const titleId = useId();
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
-  // Escape closes, as every dialog should; this one used to ignore it.
+  // Escape closes; Tab stays inside the dialog; focus returns to where it was.
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeRef.current();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const before = document.activeElement as HTMLElement | null;
+    const focusable = () =>
+      Array.from(
+        panelRef.current?.querySelectorAll<HTMLElement>(
+          'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      );
+    // Give the content a moment to focus its own control; otherwise take the first one.
+    const t = window.setTimeout(() => {
+      if (panelRef.current && !panelRef.current.contains(document.activeElement)) {
+        (focusable()[1] ?? focusable()[0] ?? panelRef.current).focus();
+      }
+    }, 0);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        closeRef.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const items = focusable();
+      if (!items.length) {
+        e.preventDefault();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      if (!panelRef.current?.contains(active)) {
+        e.preventDefault();
+        first.focus();
+      } else if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.clearTimeout(t);
+      window.removeEventListener("keydown", onKey, true);
+      if (before && document.contains(before)) before.focus();
+    };
   }, [open]);
 
-  if (!open) return null;
-  return (
+  if (!open || !mounted) return null;
+  // Portalled to <body>: inside the message box (backdrop-filter) a fixed
+  // overlay is positioned against that box, not the page, and got clipped.
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-canvas/75 p-4 pt-[9vh] backdrop-blur-md"
+      className="fixed inset-0 z-50 flex overflow-y-auto bg-canvas/75 p-4 backdrop-blur-md"
       onClick={onClose}
     >
       <div
+        ref={panelRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`glass w-full ${width} mb-8 animate-pop-in p-5 shadow-lift`}
+        className={`glass m-auto w-full ${width} animate-pop-in p-5 shadow-lift outline-none`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between gap-3">
@@ -362,7 +412,8 @@ export function Modal({
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

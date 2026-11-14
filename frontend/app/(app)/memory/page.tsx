@@ -12,10 +12,12 @@ import {
   api,
 } from "@/lib/api";
 import { useToast } from "@/components/Toast";
+import { useSystemNames } from "@/lib/systems";
 import {
   Badge,
   Card,
   EmptyState,
+  Markdown,
   Modal,
   PageHeader,
   Skeleton,
@@ -529,6 +531,7 @@ function PreferencesTab() {
 
 function PastWorkTab() {
   const toast = useToast();
+  const systemName = useSystemNames();
   const [items, setItems] = useState<WorkItemOut[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
@@ -619,16 +622,14 @@ function PastWorkTab() {
         <ul className="space-y-2">
           {items.map((w) => (
             <li key={w.id} className="panel flex items-start gap-2 p-2 pl-4">
+              <div className="min-w-0 flex-1">
               <button
                 type="button"
                 onClick={() => void show(w.id)}
-                className="min-h-[44px] min-w-0 flex-1 py-2 text-left"
+                className="min-h-[44px] w-full py-2 text-left"
                 aria-label={`Open ${w.title}`}
               >
                 <span className="block break-words text-[13.5px] font-medium">{w.title}</span>
-                {w.outcome && (
-                  <span className="mt-0.5 block break-words text-[12.5px] leading-relaxed text-muted">{w.outcome}</span>
-                )}
                 <span className="mt-1.5 flex flex-wrap items-center gap-2">
                   <Badge tone={w.status === "failed" ? "urgent" : w.status === "done" ? "success" : "normal"}>
                     {STATUS_LABEL[w.status] ?? w.status}
@@ -639,6 +640,12 @@ function PastWorkTab() {
                   {opening === w.id && <Spinner />}
                 </span>
               </button>
+              {w.outcome && (
+                <div className="break-words pb-1.5 text-[12.5px] leading-relaxed text-muted [&_.prose-chat]:text-[12.5px] [&_.prose-chat]:text-muted">
+                  <Markdown text={w.outcome} />
+                </div>
+              )}
+              </div>
               <button
                 type="button"
                 className={iconBtn}
@@ -696,14 +703,16 @@ function PastWorkTab() {
                 <p className="text-muted">No steps were recorded.</p>
               )}
               {open.systems_used?.length > 0 && (
-                <p className="mt-2 text-muted">Systems: {open.systems_used.join(", ")}</p>
+                <p className="mt-2 text-muted">Systems: {open.systems_used.map(systemName).join(", ")}</p>
               )}
             </section>
             <section>
               <h3 className="label mb-1">Result</h3>
-              <p className="whitespace-pre-wrap break-words leading-relaxed">
-                {open.report || open.outcome || "No result was recorded."}
-              </p>
+              {open.report || open.outcome ? (
+                <Markdown text={open.report || open.outcome} />
+              ) : (
+                <p className="text-muted">No result was recorded.</p>
+              )}
             </section>
             <button
               type="button"

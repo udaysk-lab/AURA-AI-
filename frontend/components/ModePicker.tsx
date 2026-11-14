@@ -110,9 +110,10 @@ export default function ModePicker({
     <Modal open={confirmSkip} onClose={() => setConfirmSkip(false)} title="Switch to Skip approvals?">
       <div className="space-y-3">
         <p className="text-[13px] leading-relaxed text-muted">
-          AURA will stop asking before it changes or sends things, in every chat, schedule
-          and automation set to follow this mode. It will still ask for the things that
-          always need you, and for anything your Ask or Block rules cover.
+          AURA will stop asking before it changes or sends things in your chats. It will
+          still ask for the things that always need you, and for anything your Ask or Block
+          rules cover. Schedules and automations keep their own approval setting and never
+          skip approvals.
         </p>
         <p className="text-[13px] leading-relaxed text-muted">
           You can switch back at any time from the box where you write to AURA.
@@ -200,8 +201,8 @@ export default function ModePicker({
   }
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-      <span id={`${groupId}-label`} className="text-[12px] text-muted">
+    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+      <span id={`${groupId}-label`} className="whitespace-nowrap text-[12px] text-muted">
         Permission mode
       </span>
       <div
@@ -226,7 +227,7 @@ export default function ModePicker({
               tabIndex={selected ? 0 : -1}
               onClick={() => choose(m.key)}
               title={disabled ? AUTO_UNAVAILABLE_REASON : m.line}
-              className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium transition ${
+              className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-full px-3 text-[12.5px] sm:min-h-[30px] font-medium transition ${
                 selected
                   ? "bg-accent-dim text-accent-soft shadow-glow-sm"
                   : disabled
@@ -241,12 +242,12 @@ export default function ModePicker({
         })}
       </div>
       {autoOff && (
-        <span id={`${groupId}-auto-why`} className="text-[12px] text-muted">
+        <span id={`${groupId}-auto-why`} className="sr-only">
           Auto is off: {AUTO_UNAVAILABLE_REASON}
         </span>
       )}
       {actingAs && (
-        <span className="text-[12px] text-amber">Auto can&apos;t run now; acting as Ask first.</span>
+        <span className="text-[12px] text-amber" role="status">Auto can&apos;t run now; acting as Ask first.</span>
       )}
       {confirm}
     </div>

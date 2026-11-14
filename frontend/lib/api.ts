@@ -361,6 +361,8 @@ export type ApprovalOption = "once" | "window" | "always" | "reject" | "approve"
 export interface PendingAction {
   id: string;
   tool_name: string;
+  /** What the action is, in words that fit "AURA wants to ...", for example "create a task". */
+  action_text?: string | null;
   skill_code: string;
   arguments: Record<string, any>;
   preview: string;

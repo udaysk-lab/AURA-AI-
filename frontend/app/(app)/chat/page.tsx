@@ -376,6 +376,18 @@ export default function ChatPage() {
           outcome: e.outcome,
           verification: e.verification,
         }));
+        // The finished record is the truth for the kind of task and the systems it used: an action that ran
+        // after an approval sends no step events of its own.
+        if (e.work_item_id) {
+          api
+            .workItem(e.work_item_id)
+            .then((d) =>
+              setPanel((p) =>
+                p.workItemId === d.id ? { ...p, taskType: d.task_type, systems: d.systems_used ?? p.systems } : p
+              )
+            )
+            .catch(() => {});
+        }
         break;
       case "delta":
         setDraft((d) => d + e.value);
@@ -836,56 +848,60 @@ export default function ChatPage() {
               </div>
             )}
             <div className="panel p-2 transition-colors focus-within:border-accent/40">
-              <div className="flex items-end gap-2">
-                <textarea
-                  ref={textareaRef}
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    // isComposing: Enter that confirms an IME candidate (Hindi,
-                    // Japanese…) must not send a half-typed message.
-                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                      e.preventDefault();
-                      void send();
-                    }
-                  }}
-                  rows={1}
-                  placeholder={`Ask ${assistant?.name ?? "Aura"} anything…`}
-                  aria-label={`Message ${assistant?.name ?? "Aura"}`}
-                  className="max-h-40 min-h-[44px] flex-1 resize-none bg-transparent px-3 py-2.5 text-[13.5px] placeholder:text-faint outline-none"
-                />
-                {canStop && (
-                  <button
-                    type="button"
-                    onClick={() => void stop()}
-                    disabled={stopping}
-                    aria-label="Stop the task"
-                    title="Stop the task"
-                    className="btn-ghost h-11 w-11 shrink-0 rounded-full p-0"
-                  >
-                    <Square size={14} aria-hidden />
-                  </button>
-                )}
-                <button
-                  onClick={() => send()}
-                  disabled={!input.trim() || streaming}
-                  aria-label="Send"
-                  className="btn-primary h-11 w-11 shrink-0 rounded-full p-0"
-                >
-                  {streaming ? <Spinner /> : <ArrowUp size={16} />}
-                </button>
-              </div>
-              <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 border-t border-line px-1 pt-1.5">
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  // isComposing: Enter that confirms an IME candidate (Hindi,
+                  // Japanese…) must not send a half-typed message.
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    void send();
+                  }
+                }}
+                rows={1}
+                placeholder={`Ask ${assistant?.name ?? "Aura"} anything…`}
+                aria-label={`Message ${assistant?.name ?? "Aura"}`}
+                className="block max-h-40 min-h-[44px] w-full resize-none bg-transparent px-3 py-2.5 text-[13.5px] placeholder:text-faint outline-none"
+              />
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-0 border-t border-line px-1 pt-1">
                 <ModePicker />
-                <div className="flex min-h-[44px] items-center gap-2">
-                  <span id="memory-off-label" className="text-[12px] text-muted">
-                    Don&apos;t use memory in this chat
-                  </span>
+                <div className="flex min-h-[44px] items-center gap-1.5 sm:min-h-[36px]">
                   <Toggle
                     checked={memoryOff}
                     onChange={() => void toggleMemory()}
                     label="Do not use memory in this chat"
                   />
+                  <span
+                    id="memory-off-label"
+                    title="Don't use memory in this chat"
+                    className="text-[12px] text-muted"
+                  >
+                    No memory
+                  </span>
+                </div>
+                <div className="ml-auto flex items-center gap-2">
+                  {canStop && (
+                    <button
+                      type="button"
+                      onClick={() => void stop()}
+                      disabled={stopping}
+                      aria-label="Stop the task"
+                      title="Stop the task"
+                      className="btn-ghost h-11 w-11 shrink-0 rounded-full p-0 sm:h-9 sm:w-9"
+                    >
+                      <Square size={14} aria-hidden />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => send()}
+                    disabled={!input.trim() || streaming}
+                    aria-label="Send"
+                    className="btn-primary h-11 w-11 shrink-0 rounded-full p-0 sm:h-9 sm:w-9"
+                  >
+                    {streaming ? <Spinner /> : <ArrowUp size={16} />}
+                  </button>
                 </div>
               </div>
             </div>

@@ -13,6 +13,7 @@ import {
   LayoutDashboard,
   LogOut,
   Mail,
+  Menu,
   Pin,
   Plus,
   Puzzle,
@@ -285,11 +286,11 @@ export default function Sidebar({
         {recent.slice(0, RECENT_LIMIT).map((c) => (
           <div
             key={c.id}
-            className="group flex items-center gap-1.5 rounded-xl border border-transparent px-2.5 py-[7px] text-[12.5px] text-muted transition hover:bg-raised/60 hover:text-ink"
+            className="group relative flex items-center gap-1.5 rounded-xl border border-transparent px-2.5 py-[7px] text-[12.5px] lg:py-[3px] text-muted transition hover:bg-raised/60 hover:text-ink"
           >
             <button
               onClick={() => openConversation(c.id)}
-              className="min-h-[44px] min-w-0 flex-1 truncate text-left"
+              className="min-h-[44px] min-w-0 flex-1 truncate text-left lg:min-h-0 lg:py-1"
               title={c.title}
             >
               {c.pinned && <Pin size={10} className="mr-1 inline text-accent-soft" />}
@@ -308,7 +309,7 @@ export default function Sidebar({
               onClick={() => removeConversation(c)}
               aria-label={`Delete conversation ${c.title}`}
               title="Delete conversation"
-              className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded opacity-0 transition focus-visible:opacity-100 group-hover:opacity-100"
+              className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded opacity-0 transition focus-visible:opacity-100 group-hover:opacity-100 lg:absolute lg:right-1 lg:top-1/2 lg:mr-0 lg:h-6 lg:w-6 lg:-translate-y-1/2 lg:bg-panel/90"
             >
               <Trash2 size={12} className="text-faint hover:text-rose" />
             </button>
@@ -383,16 +384,20 @@ export function MobileTopBar({
   const { assistant } = useAssistant();
   return (
     <div className="sticky top-0 z-30 flex items-center gap-3 border-b border-line bg-canvas/70 px-4 py-2.5 backdrop-blur-2xl lg:hidden">
-      <button onClick={onOpenNav} className="btn-quiet px-2 py-1.5" aria-label="Open navigation">
-        <Mascot
-          colourway={assistant?.avatar ?? "teal"}
-          size={28}
-        />
+      <button
+        type="button"
+        onClick={onOpenNav}
+        className="btn-quiet flex h-11 w-11 items-center justify-center p-0"
+        aria-label="Open menu"
+        aria-haspopup="dialog"
+      >
+        <Menu size={20} aria-hidden />
       </button>
+      <Mascot colourway={assistant?.avatar ?? "teal"} size={28} />
       <div className="min-w-0 flex-1 truncate text-[14px] font-semibold">
         {assistant?.name ?? "Aura"}
       </div>
-      <button onClick={onOpenPalette} className="btn-quiet px-2 py-1.5" aria-label="Search">
+      <button onClick={onOpenPalette} className="btn-quiet flex h-11 w-11 items-center justify-center p-0" aria-label="Search">
         <Search size={16} />
       </button>
     </div>
