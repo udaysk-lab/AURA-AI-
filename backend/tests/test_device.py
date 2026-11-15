@@ -497,6 +497,7 @@ def test_driving_the_keyboard_and_mouse_asks_like_the_shell_does():
         assert kind in catalogue.REVIEWED_KINDS, name
 
 
+@pytest.mark.usefixtures("wall_on")
 def test_allowlist_mode_lets_listed_commands_skip_the_card(sandbox, monkeypatch):
     monkeypatch.setattr(settings, "device_exec_mode", "allowlist", raising=False)
     monkeypatch.setattr(settings, "device_exec_allowlist", "echo", raising=False)
@@ -590,6 +591,7 @@ def _shell_decision(db, user, command="echo hi"):
     return gate.decide(db, user, "run_command", {"command": command}, gate.build_context(db, user, "chat"))
 
 
+@pytest.mark.usefixtures("wall_on")
 def test_shell_needs_approval_below_full_trust(sandbox, client, auth):
     db = SessionLocal()
     try:
@@ -609,6 +611,7 @@ def test_shell_needs_approval_below_full_trust(sandbox, client, auth):
         db.close()
 
 
+@pytest.mark.usefixtures("wall_on")
 def test_a_standing_rule_lets_a_shell_command_through(sandbox, client, auth):
     from app.permissions import rules as rules_store
 
@@ -868,6 +871,7 @@ def _run_turn(monkeypatch, tool, arguments, tier, message="do the thing"):
         db.close()
 
 
+@pytest.mark.usefixtures("wall_on")
 def test_the_agent_can_run_a_command_at_full_trust(sandbox, monkeypatch):
     result, _, _ = _run_turn(
         monkeypatch, "run_command", {"command": "echo agent-ran-this"}, "full"

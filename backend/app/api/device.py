@@ -35,7 +35,7 @@ from app.deps import CurrentUser, DbSession, GuardedUser, PresentUser, is_remote
 from app.device import appnames, windows
 from app.middleware import is_loopback
 from app.models import ActivityLog, DeviceAppBlock, DeviceAppGrant, DeviceFolder, User, utcnow
-from app.permissions import access, changes, floors, match
+from app.permissions import access, changes, floors, match, wall
 from app.schemas import (
     DeviceAppBlockOut,
     DeviceAppGrantOut,
@@ -98,6 +98,8 @@ def device_status(request: Request, user: CurrentUser, db: DbSession) -> DeviceS
         presence_accepted=local_session,
         present=bool(settings.device_control_enabled and access.is_present(user.id)),
         screen_control_user=access.screen_control_user(db, user) if settings.device_control_enabled else True,
+        computer_protection_active=wall.active(),
+        computer_protection_line="" if wall.active() else wall.STATUS_LINE,
     )
 
 

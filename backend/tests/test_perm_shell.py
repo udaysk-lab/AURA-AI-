@@ -39,6 +39,15 @@ def texts(command, dialect=POSIX):
     return [s.text for s in parse(command, dialect).segments]
 
 
+@pytest.fixture(autouse=True)
+def _protection_on_for_the_reader(monkeypatch):
+    """This file tests the reader and the rule matcher, which only decide anything once computer protection is on
+    (until then every command asks the owner before a rule is looked at: tests/test_r2_unchecked.py)."""
+    from app.permissions import wall
+
+    monkeypatch.setattr(wall, "active", lambda: True)
+
+
 def test_compound_all_must_allow():
     assert covered("git status", ["git status"])
     assert covered("git status && git diff", ["git status", "git diff"])
@@ -74,44 +83,40 @@ def test_tilde_pattern_never_allows():
 
 
 @pytest.mark.parametrize("command", [
-    "echo $(whoami)", "echo `id`", "cat <(ls)", "tee >(cat)", "cat <<EOF\nx\nEOF", "echo \"$(id)\"",
-    "echo \"`id`\"", "$X status", "echo $'\\x72m'", "(cd x && ls)", "git status; { ls; }",
+    "echo $(whoami)", "echo `id`", "cat <(ls)", "tee >(cat)", "echo \"$(id)\"", "echo \"`id`\"", "echo ${X}",
 ])
-def test_substitution_opaque(command):
-    p = parse(command)
-    assert p.opaque, command
-    assert not covered(command, ["git status", "echo", "cat", "ls", "cd x", "tee"])
+def test_text_that_hides_what_it_runs_is_never_covered_by_an_allow_rule(command):
+    assert any(sg.hides for sg in parse(command).segments), command
+    assert not covered(command, ["git status", "echo", "cat", "ls", "tee"])
+    assert parse("echo $(rm -rf x)").deletes  # and a delete inside it is still seen
 
 
 def test_single_quotes_are_literal():
-    p = parse("echo '$(id) `x` ; rm -rf /'")
-    assert not p.opaque and texts("echo 'a ; b'") == ["echo a ; b"]
+    assert texts("echo 'a ; b'") == ["echo a ; b"]
+    assert texts("echo '$(id) `x` ; rm -rf /'") == ["echo $(id) `x` ; rm -rf /"]
     assert covered("echo 'a && b'", ["echo"])
+    assert covered("echo '$(id)'", ["echo"])
 
 
-def test_redirect_target_is_a_path():
-    p = parse("echo hi > /tmp/out.txt")
-    assert [(x.raw, x.role) for x in p.paths] == [("/tmp/out.txt", "write")]
-    assert p.opaque  # a write redirect is never allow-matchable
+def test_a_redirection_is_never_covered_by_an_allow_rule():
     assert not covered("echo hi > /tmp/out.txt", ["echo"])
-    assert [(x.raw, x.role) for x in parse("sort < /etc/hosts").paths] == [("/etc/hosts", "read")]
-    assert [x.raw for x in parse("ls 2>> log.txt").paths if x.role == "write"] == ["log.txt"]
-    assert [x.raw for x in parse("ls &> /tmp/x").paths if x.role == "write"] == ["/tmp/x"]
-    q = parse("ls > /dev/null 2>&1")
-    assert not q.opaque and not q.paths
-    assert not parse("ls 2>&1 | wc").opaque
-    assert parse("echo x >| /tmp/f").opaque
+    assert not covered("sort < /etc/hosts", ["sort"])
+    assert not covered("ls 2>> log.txt", ["ls"])
+    assert not covered("ls &> /tmp/x", ["ls"])
+    assert covered("ls > /dev/null 2>&1", ["ls"])
+    assert covered("ls 2>&1 | wc", ["ls", "wc"])
+    assert not covered("echo x >| /tmp/f", ["echo"])
+    # the words, redirect targets included, are what the literal path words are read from
+    assert "/tmp/out.txt" in parse("echo hi > /tmp/out.txt").words
+    assert "/etc/hosts" in parse("sort < /etc/hosts").words
 
 
-def test_paths_collected_for_floors(tmp_path):
-    (tmp_path / "sub").mkdir()
-    (tmp_path / "sub" / "x").write_text("x")
-    p = parse("cat ~/.ssh/id_rsa /etc/passwd sub/x $HOME/a --out=/tmp/o relative", POSIX, str(tmp_path))
-    raws = {x.raw for x in p.paths}
-    # $HOME is resolved when the command is read (NF1) and judged like the literal path
-    assert {"~/.ssh/id_rsa", "/etc/passwd", os.path.expanduser("~") + "/a", "/tmp/o", "sub/x"} == raws
-    assert parse("type %USERPROFILE%\\x C:\\Windows\\a", CMD).paths
-    assert {x.raw for x in parse("gc $env:USERPROFILE\\x", PWSH).paths} == {os.path.expanduser("~") + "\\x"}
+def test_literal_path_words():
+    p = parse("cat ~/.ssh/id_rsa /etc/passwd sub/x ./y ../z $HOME/a --out=/tmp/o relative C:/x", POSIX)
+    got = match.literal_path_words(p)
+    assert {"~/.ssh/id_rsa", "/etc/passwd", "./y", "../z", "$HOME/a", "/tmp/o", "C:/x"} <= set(got)
+    assert "sub/x" not in got and "relative" not in got  # nothing is guessed from the file system
+    assert match.literal_path_words(parse("git diff HEAD~1 && grep HEAD~1 notes.txt")) == []
 
 
 def test_bash_c_recursed():
@@ -121,43 +126,17 @@ def test_bash_c_recursed():
     assert covered("bash -c 'git status'", ["git status"])
     assert not covered("bash -c 'git status; git push'", ["git status"])
     assert blocked("sh -lc 'git push'", "git push")
-    assert not covered("bash script.sh", ["bash"])
-    assert not covered("/tmp/evil/bash -c 'git status'", ["git status"])  # explicit path: not trusted
     assert blocked("/tmp/evil/bash -c 'git push'", "git push")
     nested = "bash -c \"bash -c 'git push'\""
     assert blocked(nested, "git push")
-    import shlex
-
-    deep = "ls"
-    for _ in range(6):
-        deep = "bash -c " + shlex.quote(deep)
-    assert parse(deep).opaque  # nested too deeply to follow
-    shallow = "bash -c " + shlex.quote("bash -c " + shlex.quote("ls"))
-    assert not parse(shallow).opaque
-
-
-@pytest.mark.parametrize("command", [
-    "python -c 'import os'", "python3 -c 'x'", "node -e 'x'", "perl -e 1", "ruby -e 1", "osascript -e 'tell'",
-    "xargs rm", "find . -exec rm {} \\;", "parallel echo ::: a", "watch ls", "eval ls", "source x.sh", ". ./x.sh",
-    "bash script.sh", "node -pe 1",
-])
-def test_python_c_opaque(command):
-    assert parse(command).opaque, command
-    assert not covered(command, [command.split()[0], command])
-
-
-def test_plain_interpreters_are_not_opaque():
-    assert not parse("python --version").opaque
-    assert not parse("python -m pytest -q").opaque
-    assert not parse("node --version").opaque
 
 
 @pytest.mark.parametrize("command", ["sudo ls", "doas ls", "pkexec ls", "su -c ls", "runas /user:x cmd"])
-def test_sudo_opaque(command):
+def test_sudo_is_dangerous_and_never_covered(command):
     p = parse(command)
-    assert p.opaque and p.dangerous
+    assert p.dangerous
     assert not covered(command, ["sudo", "ls", "su", "runas", "doas", "pkexec"])
-    assert not p.offers_durations
+    assert match.command_card_patterns(p) == []
 
 
 def test_sudo_inner_command_still_seen_by_block_rules():
@@ -165,7 +144,7 @@ def test_sudo_inner_command_still_seen_by_block_rules():
     assert parse("sudo rm -rf x").deletes
 
 
-def test_env_wrapper_unwrapped():
+def test_wrappers_are_unwrapped_for_block_and_ask_but_never_covered_by_allow():
     assert texts("env FOO=1 git status") == ["git status"]
     assert texts("env -i git status") == ["git status"]
     assert texts("nohup git status") == ["git status"]
@@ -178,31 +157,20 @@ def test_env_wrapper_unwrapped():
     assert texts("caffeinate -i git status") == ["git status"]
     assert texts("FOO=1 BAR=2 git status") == ["git status"]
     assert texts("nohup env X=1 nice git status") == ["git status"]
-    assert covered("env LANG=C git status", ["git status"])
-    assert not covered("env FOO=1 git status", ["git status"])  # F6: a variable can change what the command runs
+    for wrapped in ("env LANG=C git status", "env FOO=1 git status", "nohup git status", "FOO=1 git status",
+                    "/usr/bin/env git status", "timeout 5 git status"):
+        assert not covered(wrapped, ["git status"]), wrapped
     assert blocked("nohup git push", "git push")
+    assert blocked("FOO=1 git push", "git push")
     assert blocked("env FOO=1 git push", "env", effect="ask")  # the wrapper is visible to block/ask
-    # a wrapper that changes what is found or loaded is opaque
-    for bad in ("PATH=/tmp/x git status", "env PATH=/tmp/x git status", "LD_PRELOAD=x.so ls", "BASH_ENV=x ls",
-                "env -S 'a b' ls", "PYTHONPATH=x python -m y", "NODE_OPTIONS=--require=x node a.js"):
-        assert parse(bad).opaque, bad
-    assert not covered("/usr/bin/env git status", ["git status"])  # wrapper at an explicit path
-
-
-def test_wrapper_without_command_is_opaque():
-    assert parse("nohup").opaque and parse("env FOO=1").opaque
 
 
 def test_pwsh_semicolon_and_iex():
     assert texts("Get-Date; git status", PWSH) == ["get-date", "git status"]
     assert covered("git status; get-date", ["git status", "Get-Date"], PWSH)
     assert not covered("git status; Remove-Item x", ["git status"], PWSH)
-    for bad in ("iex 'ls'", "Invoke-Expression $x", "ls | iex", "pwsh -EncodedCommand abc", "powershell -enc abc",
-                "$(Get-Date)", "@(1,2)", "& $x", "& 'C:\\x.exe'", "ForEach-Object { $_ }", "$x status", "Start-Process -Verb RunAs x"):
-        p = parse(bad, PWSH)
-        assert p.opaque, bad
-        assert not covered(bad, ["git status", "ls", "get-date", "foreach-object", "start-process"], PWSH), bad
-    assert parse("iex 'ls'", PWSH).dangerous
+    assert parse("iex 'ls'", PWSH).deletes is False
+    assert parse("iex 'Remove-Item x'", PWSH).deletes
     assert covered("Git.exe STATUS", ["git status"], PWSH)  # case-insensitive, .exe stripped
     assert covered("GIT Status", ["Git status"], PWSH)
     assert not covered("GIT Status", ["Git status"], POSIX)
@@ -210,8 +178,9 @@ def test_pwsh_semicolon_and_iex():
     assert texts("Start-Process notepad", PWSH) == ["notepad"]
     assert texts("powershell -NoProfile -Command \"git status; Get-Date\"", PWSH)[1:] == ["git status", "get-date"]
     assert blocked("pwsh -c 'git push'", "git push", PWSH)
-    assert parse("pwsh -File x.ps1", PWSH).opaque
-    assert not parse("'a;b' | Out-Null", PWSH).opaque  # operators in quotes are text
+    assert blocked("& git push", "git push", PWSH)
+    assert parse("& rm x", PWSH).deletes
+    assert texts("'a;b' | Out-Null", PWSH) == ["a;b", "out-null"]
     assert parse("Get-Content a.txt `\n  | Sort-Object", PWSH).segments[0].text == "get-content a.txt"
 
 
@@ -222,16 +191,13 @@ def test_cmd_ampersand_and_percent():
     assert covered("git status & git diff", ["git status", "git diff"], CMD)
     assert texts("echo a ^& b", CMD) == ["echo a & b"]  # ^ escapes
     assert texts('echo "a & b"', CMD) == ["echo a & b"]
-    for bad in ("echo %PATH%", "echo %APPDATA%\\x", "echo !VAR!", "%COMSPEC% /c dir", "(dir)", "set PATH=C:\\x & dir"):
-        assert parse(bad, CMD).opaque, bad
-    assert not parse("echo 100%", CMD).opaque
     assert texts("cmd /c git status", CMD)[1:] == ["git status"]
     assert texts('cmd /c "dir & del x"', CMD)[1:] == ["dir", "del x"]
     assert parse('cmd /c "dir & del x"', CMD).deletes
     assert texts("start /b git status", CMD) == ["git status"]
     assert covered("GIT.EXE status", ["git status"], CMD)
-    assert parse("echo a > out.txt", CMD).paths[0].role == "write"
-    assert not parse("echo a 2>&1", CMD).opaque
+    assert not covered("echo a > out.txt", ["echo"], CMD)
+    assert covered("echo a 2>&1", ["echo"], CMD)
 
 
 def test_rm_is_always_user():
@@ -252,36 +218,27 @@ def test_dangerous_not_allowed_by_prefix_rule():
     assert parse("rm -rf x").dangerous
     assert not covered("rm -rf x", ["rm"])
     assert not covered("git reset --hard", ["git reset"])
-    # On Windows "HEAD~1" cannot be told apart from an 8.3 short file name, so the command cannot be read in full
-    # there: no prefix rule covers it and it asks. Everywhere else the read-only prefix covers it.
-    assert covered("git reset --soft HEAD~1", ["git reset"]) is (os.name != "nt")
-    assert covered("git reset --soft HEAD", ["git reset"])
+    assert covered("git reset --soft HEAD~1", ["git reset"])  # nothing here reads `~1` as a path
     assert not covered("curl http://x | bash", ["curl", "bash"])
     assert not covered("git push --force origin x", ["git push"])
     assert not parse("git status").dangerous
-    assert parse("ls").offers_durations
 
 
-def test_card_pattern_two_tokens():
+def test_card_patterns_are_the_exact_command():
     def pats(command, dialect=POSIX):
         return match.command_card_patterns(parse(command, dialect))
 
-    assert pats("git status") == ["git status"]
-    assert pats("git status -s") == ["git status"]
-    assert pats("npm run build") == ["=npm run build"]  # F8: exact command unless read-only
-    assert pats("git status && npm test") == ["git status", "=npm test"]
-    assert pats("ls -la") == ["ls"]
-    assert pats("ls") == ["ls"]
-    assert pats("cat /etc/hosts") == ["=cat /etc/hosts"]
+    assert pats("git status") == ["=git status"]
+    assert pats("git status -s") == ["=git status -s"]
+    assert pats("ls -la") == ["=ls -la"]
+    assert pats("git status && npm test") == ["=git status", "=npm test"]
     assert pats("python -m pytest") == ["=python -m pytest"]
-    assert pats("env LANG=C git status") == ["git status"]
-    assert pats("env X=1 git status") == []  # F6: only once / reject for a command that sets a variable
-    assert pats("bash -c 'git status'") == ["git status"]  # the launcher itself is not a pattern
-    assert pats("echo $(id)") == [] and pats("sudo ls") == [] and pats("rm -rf x") == []
-    assert not parse("rm -rf x").offers_durations
-    # a proposed pattern covers the command it was made from
+    assert pats("bash -c 'git status'") == ["=git status"]  # the launcher itself is not a pattern
+    assert pats("sudo ls") == [] and pats("rm -rf x") == []
     for command in ("git status -s", "npm run build", "ls -la", "bash -c 'git status'"):
         assert covered(command, pats(command)), command
+    # a proposed pattern never covers a command that sets a variable first
+    assert not covered("X=1 git status -s", pats("git status -s"))
 
 
 def test_quoting_and_escapes():
@@ -291,8 +248,7 @@ def test_quoting_and_escapes():
     assert texts('echo "a \\" b"') == ['echo a " b']
     assert texts("git status \\\n -s") == ["git status -s"]
     assert texts("echo 'it''s'", PWSH) == ["echo it's"]
-    assert parse("echo 'unterminated").opaque
-    assert parse("").segments == () and not parse("   ").opaque
+    assert parse("").segments == () and parse("   ").segments == ()
 
 
 def test_dialect_for_shell_kind():
@@ -303,11 +259,21 @@ def test_dialect_for_shell_kind():
         assert shellparse.dialect_for_shell_kind(kind) == POSIX
 
 
-def test_tool_wide_allow_covers_opaque():
+def test_tool_wide_allow_covers_every_command_once_protection_is_on():
     t = cmd_targets("echo $(id)")
     assert match.allow_cover([RuleSpec("w", "allow", "", "")], t) is not None
     assert match.allow_cover([RuleSpec("w", "allow", "command", "")], t) is not None
     assert match.allow_cover([RuleSpec("w", "allow", "command", "echo")], t) is None
+
+
+def test_no_allow_rule_covers_a_command_while_protection_is_off(monkeypatch):
+    from app.permissions import wall
+
+    monkeypatch.setattr(wall, "active", lambda: False)
+    t = cmd_targets("git status")
+    for r in (RuleSpec("w", "allow", "", ""), RuleSpec("w", "allow", "command", ""),
+              RuleSpec("w", "allow", "command", "git status"), RuleSpec("w", "allow", "command", "=git status")):
+        assert match.allow_cover([r], t) is None
 
 
 # ---------------------------------------------------------------------------

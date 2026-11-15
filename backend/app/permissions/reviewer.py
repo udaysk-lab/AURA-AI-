@@ -170,8 +170,8 @@ def pre_block(db, user, policy, args, targets, ctx) -> tuple[str, str] | None:
     for t in targets:
         if t.kind == "command" and t.parsed is not None:
             p = t.parsed
-            if p.opaque or p.dangerous or any(s.opaque or s.dangerous for s in p.segments):
-                return PRE_SHELL, "This command is too hard to check safely (it hides what it runs, or it is dangerous)."
+            if p.dangerous or any(s.dangerous for s in p.segments):
+                return PRE_SHELL, "This command looks dangerous, so it needs the user."
     if policy.name in ("send_email", "create_event"):
         recipients = [t.value for t in targets if t.kind == "recipient"]
         if recipients:

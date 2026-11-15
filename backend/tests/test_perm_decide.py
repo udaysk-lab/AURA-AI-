@@ -135,6 +135,7 @@ def test_ask_rule_prompts_in_auto_no_review(env, monkeypatch):
     assert not called, "an ask rule is answered by the user, never by the reviewer"
 
 
+@pytest.mark.usefixtures("wall_on")
 def test_always_user_ignores_allow_and_skip(device):
     tmp = device
     engine, db = make_session(tmp)
@@ -317,6 +318,7 @@ def test_allow_needs_every_recipient_and_block_needs_any(env):
     assert ("recipient", "bob@example.com") in d.proposed_rule.items and ("recipient", "eve@evil.org") in d.proposed_rule.items
 
 
+@pytest.mark.usefixtures("wall_on")
 def test_proposed_rules_and_option_sets(device):
     engine, db = make_session(device)
     try:
@@ -327,9 +329,11 @@ def test_proposed_rules_and_option_sets(device):
         assert d.proposed_rule.items == (("path", os.path.join(os.path.realpath(str(tmp / "work")), "**")),)
         d = decide(db, user, "run_command", {"command": "git status && npm test"})
         assert d.options == ("once", "window", "always", "reject")
-        assert d.proposed_rule.items == (("command", "git status"), ("command", "=npm test"))  # F8: only read-only commands get a prefix
-        d = decide(db, user, "run_command", {"command": "echo $(whoami)"})
-        assert d.kind == "ask" and d.options == ("once", "reject") and d.proposed_rule is None
+        assert d.proposed_rule.items == (("command", "=git status"), ("command", "=npm test"))  # exact commands only
+        d = decide(db, user, "run_command", {"command": "git status && npm test"})
+        assert d.proposed_rule.items == (("command", "=git status"), ("command", "=npm test"))  # exact commands only
+        d = decide(db, user, "run_command", {"command": "sudo rm -rf /tmp/x"})
+        assert d.kind == "ask" and d.options == ("once", "reject") and d.proposed_rule is None  # dangerous: no rule
         d = decide(db, user, "send_process_input", {"session_id": "x", "text": "y"})
         assert d.kind == "ask" and d.options == ("once", "reject")
         d = decide(db, user, "fetch_url", {"url": "https://docs.example.com/a"})
@@ -429,6 +433,7 @@ def test_a_user_who_is_not_mapped_gets_no_old_behaviour(env):
     assert codes(decide(db, plain, "create_event", ev)) == ("ask", "MODE_ASK")
 
 
+@pytest.mark.usefixtures("wall_on")
 def test_legacy_exec_allowlist(device, monkeypatch):
     engine, db = make_session(device)
     try:

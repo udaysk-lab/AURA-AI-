@@ -1,5 +1,5 @@
-"""NF1: a command AURA cannot read in full always needs the user, in every mode; the home variables are
-resolved and judged like literals; /proc/<anything>/cwd|root|environ|fd is AURA's own."""
+"""NF1: whatever a command hides behind variables, substitution or quoting, it never runs without the owner while
+computer protection is off; /proc/<anything>/cwd|root|environ|fd is AURA's own and is refused."""
 
 from __future__ import annotations
 
@@ -111,31 +111,32 @@ def test_proc_cwd_root_environ_fd_are_refused_whatever_the_pid(w, command):
     assert d.kind == "deny" and d.reason_code == "FLOOR_SELF_PATH", (command, d.kind, d.reason_code)
 
 
-def test_the_unreadable_reasons_are_reported_by_the_parser():
-    assert shellparse.parse("cat ~/a$x", BASH).unreadable
-    assert shellparse.parse("cat $(ls)", BASH).unreadable
-    assert shellparse.parse("cat $'a'", BASH).unreadable
-    assert not shellparse.parse("cat ~/work/*.txt", BASH, "/tmp").unreadable
-    assert not shellparse.parse("git status", BASH).unreadable
-    assert not shellparse.parse("echo 'a $x'", BASH).unreadable
-    assert shellparse.parse("iex $x", PWSH).unreadable
-    assert shellparse.parse("type %X%", CMD).unreadable
+def test_text_that_hides_what_it_runs_is_marked_by_the_reader():
+    assert any(sg.hides for sg in shellparse.parse("cat $(ls)", BASH).segments)
+    assert any(sg.hides for sg in shellparse.parse("cat `ls`", BASH).segments)
+    assert any(sg.hides for sg in shellparse.parse("cat ${x}", BASH).segments)
+    assert not any(sg.hides for sg in shellparse.parse("git status", BASH).segments)
+    assert not any(sg.hides for sg in shellparse.parse("echo '$(a)'", BASH).segments)
 
 
 @pytest.mark.parametrize("dialect,command", EVERYDAY)
-def test_everyday_commands_are_still_allowed_in_skip_approvals(tmp_path, monkeypatch, dialect, command):
+def test_even_everyday_commands_ask_every_time_in_every_mode(w, dialect, command):
+    d = decide(w, command, dialect)
+    assert d.kind == "ask" and d.reason_code == "UNCHECKED_COMMAND", (command, d.kind, d.reason_code)
+    assert tuple(d.options) == ("once", "reject") and d.proposed_rule is None
+
+
+@pytest.mark.parametrize("dialect,command", EVERYDAY)
+def test_everyday_commands_follow_the_mode_once_protection_is_on(tmp_path, monkeypatch, wall_on, dialect, command):
     world = build(tmp_path, monkeypatch, mode="skip")
-    (tmp_path / "home" / "work" / "script.py").write_text("print(1)\n")
-    (tmp_path / "home" / "work" / "a.txt").write_text("a")
     try:
-        d = decide(world, command, dialect)
-        assert d.kind == "allow", (command, d.kind, d.reason_code)
+        assert decide(world, command, dialect).kind == "allow", command
     finally:
         world.db.close()
         world.engine.dispose()
 
 
-def test_a_resolved_home_variable_is_judged_like_the_literal(tmp_path, monkeypatch):
+def test_a_home_variable_at_the_start_of_a_path_word_is_still_read_by_the_checks(tmp_path, monkeypatch):
     world = build(tmp_path, monkeypatch, mode="skip")
     try:
         d = decide(world, "cat $HOME/.aura/aura.env", BASH)
@@ -151,7 +152,7 @@ def test_a_resolved_home_variable_is_judged_like_the_literal(tmp_path, monkeypat
         d = decide(world, "cat $HOME/work/finance/s.txt", BASH)
         assert d.kind == "deny" and d.reason_code == "RULE_BLOCK"
         d = decide(world, "cd $PWD/finance && cat s.txt", BASH)
-        assert d.kind == "deny" and d.reason_code == "RULE_BLOCK"
+        assert d.kind == "ask" and d.reason_code == "UNCHECKED_COMMAND"  # not read from the text: the owner decides
     finally:
         world.db.close()
         world.engine.dispose()

@@ -170,6 +170,7 @@ def test_delete_in_an_unconnected_folder_connects_and_allows_deleting_after_one_
     assert row.can_delete and row.source == "request" and not victim.exists()
 
 
+@pytest.mark.usefixtures("wall_on")
 def test_shell_needs_a_folder(env):
     tmp, db = env
     user = user_with(db, "skip")

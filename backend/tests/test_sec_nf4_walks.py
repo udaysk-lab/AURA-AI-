@@ -59,32 +59,31 @@ def decide(w, command, dialect, rel=None):
                        gate.build_context(w.db, w.user, "chat"))
 
 
+@pytest.mark.parametrize("effect", ["block", "ask"])
 @pytest.mark.parametrize("dialect,command", WALKS)
-def test_a_walk_over_a_blocked_tree_is_refused_naming_the_tree(w, dialect, command):
-    rule(w, "block")
+def test_a_walk_from_the_parent_of_a_ruled_tree_is_never_allowed(w, dialect, command, effect):
+    """Which files a program walks is not read from the command's text. While computer protection is off the
+    command asks the owner (once / reject only), whatever block or ask rules say."""
+    rule(w, effect)
     d = decide(w, command, dialect)
-    assert d.kind == "deny" and d.reason_code == "RULE_BLOCK", (command, d.kind, d.reason_code)
-    assert "finance" in d.reason, d.reason
-
-
-@pytest.mark.parametrize("dialect,command", WALKS)
-def test_a_walk_over_an_ask_tree_asks(w, dialect, command):
-    rule(w, "ask")
-    d = decide(w, command, dialect)
-    # (a walk from home also passes AURA's own folder: it asks for that reason in any case)
-    assert d.kind == "ask" and d.reason_code in ("RULE_ASK", "ALWAYS_USER"), (command, d.kind, d.reason_code)
+    assert d.kind == "ask" and d.reason_code == "UNCHECKED_COMMAND" and d.options == ("once", "reject"), (
+        command, d.kind, d.reason_code)
 
 
 @pytest.mark.parametrize("effect", ["block", "ask"])
 @pytest.mark.parametrize("dialect,command,rel", CONTROLS)
-def test_commands_that_stay_out_of_the_tree_are_unchanged(w, effect, dialect, command, rel):
+def test_every_other_command_asks_too(w, effect, dialect, command, rel):
     rule(w, effect)
     d = decide(w, command, dialect, rel)
-    assert d.kind == "allow", (command, d.kind, d.reason_code)
+    assert d.kind == "ask" and d.reason_code == "UNCHECKED_COMMAND", (command, d.kind, d.reason_code)
 
 
-def test_without_rules_a_walk_is_unchanged(w):
-    for dialect, command in WALKS[:6]:
-        if "tar" in command or "cp" in command:
-            continue
-        assert decide(w, command, dialect).kind == "allow", command
+def test_a_walk_that_names_the_ruled_tree_is_stopped_by_its_path_word(w, wall_on):
+    rule(w, "block")
+    d = decide(w, "grep -r salary ~/work/finance", POSIX)
+    assert d.kind == "deny" and d.reason_code == "RULE_BLOCK"
+    d = decide(w, "ls -R", POSIX, "finance")  # run inside the tree: the working folder is a path
+    assert d.kind == "deny" and d.reason_code == "RULE_BLOCK"
+    rule(w, "ask")
+    d = decide(w, "grep -r salary ~/work/finance/", POSIX)
+    assert d.kind == "deny"  # the block rule comes first

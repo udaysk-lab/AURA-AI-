@@ -1,8 +1,7 @@
-"""F8: "always" on a command proposes the exact command; a prefix only for a curated read-only list."""
+"""F8: "always" on a command proposes the exact command, never a prefix. (Nothing is proposed at all while computer
+protection is off: see test_r2_unchecked.py.)"""
 
 from __future__ import annotations
-
-import os
 
 import pytest
 
@@ -10,6 +9,13 @@ from app.permissions import match, shellparse
 from app.permissions.match import RuleSpec
 
 POSIX, PWSH, CMD = "posix", "pwsh", "cmd"
+
+
+@pytest.fixture(autouse=True)
+def _protection_on(monkeypatch):
+    from app.permissions import wall
+
+    monkeypatch.setattr(wall, "active", lambda: True)
 
 
 def pats(command, dialect=POSIX):
@@ -27,11 +33,8 @@ BROAD = [
     "git config user.name x", "git config --global core.editor vim", "pip install requests", "docker run alpine",
     "ssh host", "ssh host ls", "npm install left-pad", "npm run build", "git push origin main", "git commit -m x",
     "python -m pytest", "python script.py", "cargo build", "curl https://example.com", "cat /etc/hosts",
-]
-READ_ONLY = [
-    ("git status", "git status"), ("git status -s", "git status"), ("git log --oneline -5", "git log"),
-    ("git diff HEAD~1", "git diff"), ("ls", "ls"), ("ls -la src", "ls"), ("pwd", "pwd"), ("whoami", "whoami"),
-    ("python --version", "python --version"),
+    "git status", "git status -s", "git log --oneline -5", "git diff HEAD~1", "ls", "ls -la src", "pwd", "whoami",
+    "python --version",
 ]
 
 
@@ -43,19 +46,8 @@ def test_always_is_the_exact_command(command):
     assert not covered(command + " --extra-flag-xyz", pats(command))
 
 
-@pytest.mark.parametrize("command,prefix", READ_ONLY)
-def test_prefix_only_for_read_only_commands(command, prefix):
-    if os.name == "nt" and "~1" in command:
-        # On Windows "HEAD~1" cannot be told apart from an 8.3 short file name: the command cannot be read in full
-        # there, so no reusable rule is proposed for it and it asks. The stricter answer.
-        assert pats(command) == []
-        return
-    assert pats(command) == [prefix]
-    assert covered(command, pats(command))
-
-
-def test_dir_is_a_prefix_on_windows_and_writing_flags_are_exact():
-    assert pats("dir /b", CMD) == ["dir"]
+def test_dir_and_writing_flags_are_exact_too():
+    assert pats("dir /b", CMD) == ["=dir /b"]
     assert pats("git diff --output=out.txt") == ["=git diff --output=out.txt"]
     assert not covered("git config user.name x", pats("git status"))
     assert not covered("pip install x", pats("pip --version"))

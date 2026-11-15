@@ -86,20 +86,20 @@ that matches:
 
 Being more specific does not change the order: a broad block beats a narrow
 allow. An allow rule with a target only counts if it covers every target of the
-action. A command that chains several commands needs each one covered. A
-command that sets environment variables first, or hides what it runs, cannot be
-covered by an allow rule.
+action. A command that chains several commands needs each one covered.
 
-Block and Ask rules on paths also apply to the paths a command names, including
-names written with wildcards (`cat */salary.txt`). A file search or folder
-listing leaves out the folders a block rule covers and says so. A command that
-walks through every file under a folder (`grep -r`, `find`, `ls -R`, `tar`,
-`zip -r`, `cp -r`, `dir /s`, `Get-ChildItem -Recurse` and the like) respects
-them too: if a folder with a block rule is inside the folder it walks, the
-command is refused and the message names that folder, so it can be run again
-without it; if the folder has an Ask rule, the command asks. The home variables
-`$HOME`, `~`, `$PWD`, `%USERPROFILE%` and `$env:USERPROFILE` are replaced by
-their value first and then judged like any other path.
+**Commands (for now).** While computer protection is off, which is the case in
+this version, every shell command asks you, every time, in every mode, and no
+allow rule of any kind (exact, prefix, or "any command"), no 10-minute allowance
+and no Auto reviewer can cover it. A command you have already stored an allow
+rule for is kept in Settings, Permissions and marked "Asks every time until
+computer protection is on". Block and Ask rules on commands still work. Block
+rules on paths also apply to the plain path words written in a command (words
+that start with `/`, `\`, `~/`, `./`, `../` or a drive letter), and the checks
+that refuse AURA's own files, its own API and the install's denylist still
+refuse first. This is the same for background commands and for typing into one.
+For listing, reading, searching, writing and moving files, AURA uses its file
+tools, which follow your mode and rules as before.
 
 You can see, edit and revoke every rule in Settings, Permissions. Revoking keeps
 the record for the log. Rules the upgrade made from your 1.0 settings are
@@ -113,14 +113,10 @@ These ask every time, in every mode, and no rule can turn the card off:
 - Permanently deleting a file (`delete_file`).
 - A command that deletes files, or that names a protected location. The card
   says so.
-- A command AURA cannot read in full: one that uses variables, command
-  substitution, `$'...'` quoting, `eval`, `xargs`, PowerShell's `&` on a
-  variable or `iex`, cmd's `%VAR%`, `!VAR!` or `for` variables, or Windows short
-  names (`PROGRA~1`), drive-relative paths and network paths. What such a command
-  touches is not visible in its text, so it asks every time, even in Skip
-  approvals and Auto; the card offers "once" and "Don't" only. The same text
-  using only the home variables listed above is read normally. Commands that
-  reach `/proc/<anything>/cwd`, `root`, `environ` or `fd` are refused.
+- Any shell command, while computer protection is off (this version). The card
+  says AURA cannot check what the command does, and offers "Allow once" and
+  "Don't allow" only. Commands that reach `/proc/<anything>/cwd`, `root`,
+  `environ` or `fd` are refused.
 - Writing to a tool's own configuration file (for example a git, npm, pip or
   cargo settings file).
 - Connecting a folder, allowing an app, and allowing deletes in a folder.
@@ -176,8 +172,9 @@ do: the actual command, path, recipient or address. Your choices:
 | **Don't** | Does not run it. AURA is told you said no. |
 
 The card says in words what "for 10 minutes" and "always" would allow. For a
-command, "always" proposes the exact command; a prefix is offered only for a
-short list of read-only commands. Some cards offer only "once" and "Don't":
+command, "always" proposes the exact command, and only once computer protection
+is on; until then a command card offers only "once" and "Don't allow". Some
+cards offer only "once" and "Don't":
 the always-needs-you actions, and a few actions for which no safe rule can be
 written (such as typing into a running program).
 
@@ -274,8 +271,7 @@ tool results, email bodies or file contents, so text AURA read cannot talk it
 into anything.
 
 It fails closed. An unusable answer, an error or a reached spend cap is a
-block. Some actions are blocked without asking a model: commands too hard to
-check or dangerous, an email or invite to someone you did not name (by full
+block. Some actions are blocked without asking a model: dangerous commands, an email or invite to someone you did not name (by full
 address) and who is not a contact, a fetch or link whose address carries a long
 or encoded payload anywhere in it, an action whose arguments are too long for the
 reviewer to read in full, and writing a script. A block sends the action to you
@@ -322,6 +318,26 @@ signing in as you, signing in needs a key:
 - A session opened without the key cannot change permissions.
 
 Do not share the key or the link.
+
+## What AURA cannot check
+
+Reading the text of a command can never prove what it will do, so AURA does not
+try to approve commands from their text.
+
+- What a program does once it runs: scripts, interpreters, build tools, package
+  managers, git and its hooks and settings, and any file AURA wrote earlier and
+  then runs. These ask every time until computer protection is on.
+- Once you allow such a command it runs with your account. It can read AURA's
+  settings and database, your keys, your browser's data and every file you can
+  open, and it can send them over the network.
+- A file swapped for a link by another running program in the instant between
+  the check and the start.
+- Hard links into folders you blocked, made outside AURA.
+- Deletes and changes hidden inside a program. AURA recognises plain `rm`, `del`
+  and `Remove-Item`, not every way to delete.
+- Once computer protection is on, it guards AURA's own files, protected
+  locations and blocked folders. Folders under an Ask rule and ordinary files are
+  not walled, so commands then follow your mode for them.
 
 ## What this does not protect against
 

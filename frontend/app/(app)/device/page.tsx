@@ -262,6 +262,9 @@ export default function DevicePage() {
             <Row icon={<FolderOpen size={13} />} label="Home" value={status.home} mono />
             <Row icon={<Cpu size={13} />} label="Signed in as" value={status.user} />
           </dl>
+          {status.computer_protection_line && (
+            <p className="mt-3 text-[12.5px] text-muted">{status.computer_protection_line}</p>
+          )}
 
           {snapshot && (
             <div className="mt-4 grid grid-cols-3 gap-2 border-t border-line pt-4">

@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from app.permissions import gate, match, pathglob, rules
+from app.permissions import canon, gate, match, rules
 from tests.sec_world import build
 
 BASH, PWSH, CMD = "posix", "pwsh", "cmd"
@@ -119,21 +119,8 @@ def commands_for(comps: list[str], dialect: str, home: str, rel_from: str | None
 
 
 
-def _known_gap(request, w, dialect):
-    """The current checker reads a POSIX-shell line with Windows paths wrongly and can allow it in Skip approvals.
-
-    Found by this test on the Windows runner. A POSIX shell is never the shell AURA runs on Windows, and the command
-    check is being replaced so that no shell command is allowed without the owner while computer protection is off.
-    Until then the failure is expected there, strictly: when it stops failing this marker must go.
-    """
-    mode = request.node.callspec.params.get("w")
-    if os.name == "nt" and dialect == BASH and mode == "skip":
-        request.applymarker(pytest.mark.xfail(strict=True, reason="POSIX dialect on Windows, Skip approvals: known gap"))
-
-
 @pytest.mark.parametrize("dialect", [BASH, PWSH, CMD])
-def test_no_spelling_of_aura_s_own_file_is_ever_allowed(request, w, dialect):
-    _known_gap(request, w, dialect)
+def test_no_spelling_of_aura_s_own_file_is_ever_allowed(w, dialect):
     cases = commands_for([".aura", "aura.env"], dialect, w.home, "home", [".aura", "aura.env"])
     cases += commands_for(["code", "aura", "backend", ".env"], dialect, w.home, "proj", [".env"])
     assert len(cases) > 150
@@ -147,8 +134,7 @@ def test_no_spelling_of_aura_s_own_file_is_ever_allowed(request, w, dialect):
 
 
 @pytest.mark.parametrize("dialect", [BASH, PWSH, CMD])
-def test_no_spelling_of_a_block_ruled_file_is_ever_allowed(request, w, dialect):
-    _known_gap(request, w, dialect)
+def test_no_spelling_of_a_block_ruled_file_is_ever_allowed(w, dialect):
     cases = commands_for(["work", "finance", "salary.txt"], dialect, w.home, "work", ["finance", "salary.txt"])
     assert len(cases) > 80
     allowed = []
@@ -184,16 +170,9 @@ def test_windows_spellings_name_the_same_file(spelling):
     got = match.normalize_path(spelling.replace("%USERPROFILE%", WIN_HOME).replace("$env:USERPROFILE", WIN_HOME)
                                .replace("~", WIN_HOME) if spelling[:1] in "%$~" else spelling, WIN_HOME, ops)
     assert match.fold(got, ops) == match.fold(r"C:\Users\u\.aura\aura.env", ops)
-    assert pathglob.could_match(spelling, r"C:\Users\u\.aura", WIN_HOME, WIN_HOME, ci=True, windows=True) or \
-        spelling[:1] in "%$"
 
 
-def test_a_short_name_form_of_the_file_is_refused_or_opaque():
+def test_a_short_name_form_of_the_file_is_refused_natively_or_cannot_be_resolved():
     spelling = r"C:\Users\u\AURA~1\aura.env"
-    assert pathglob.could_match(spelling, r"C:\Users\u\.aura", WIN_HOME, WIN_HOME, ci=True, windows=True)
-    assert pathglob.opaque_prefix(spelling, WIN_HOME, WIN_HOME, True) == "C:/Users/u"
-    with pytest.raises(match.BadArgs):
-        if os.name != "nt":
-            match.normalize_path(spelling, WIN_HOME, match.PathOps(ntpath, True))
-        else:
-            raise match.BadArgs("resolved natively")
+    comps = canon.components(spelling, windows=True)
+    assert any("~1" in c for c in comps)  # the reader sees a short name; no check pretends to know what it stands for

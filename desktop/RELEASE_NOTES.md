@@ -24,7 +24,7 @@ AURA is now a personal employee. It works from the first message: you give it an
 - Your **existing settings are carried over** as a mode and rules, so AURA keeps behaving the way you chose. Nobody is moved to Auto. Strict, conservative and relaxed become Ask first with matching rules; full access becomes Skip approvals. "Always" approvals become allow rules, and your old command settings become command rules.
 - The **folders you had allowed** become connected folders.
 - **Channels need their owner confirmed** in Channels before messages on them start tasks. Until you do, they are kept as notifications.
-- **Commands that delete files always ask,** whatever your mode or rules.
+- **Every command asks, every time, for now,** whatever your mode or rules, until computer protection is available. That includes background commands and typing into one. Allow rules you had for commands are kept, marked "Asks every time until computer protection is on", and cover nothing yet. AURA lists, reads, searches, writes and moves files with its file tools, which follow your mode and rules as before. Your own console is unchanged.
 - Preferences you had taught AURA are moved into the new preference memory.
 - Approvals still waiting from 1.x are given an expiry.
 
@@ -53,7 +53,7 @@ Without one, AURA runs a limited offline demo, and Auto mode is unavailable. In 
 
 ### Good to know
 
-- Commands AURA runs are **not sandboxed**: they run as you. What stands in front of them is the permission gate, your rules, the blocks on AURA's own files and protected locations, and the change log. Read `DEVICE.md` before turning on Skip approvals.
+- Commands AURA runs are **not sandboxed**: they run as you, and what a command does cannot be worked out from its text. So for now every command asks you, in every mode, Skip approvals included. Block rules and the blocks on AURA's own files still refuse first. Read `DEVICE.md`.
 - Auto is a second model's judgement and can be wrong.
 - Remote access from a phone is plain HTTP; use a network you trust or Tailscale. A phone can answer an approval "once" or "No" but cannot give longer allowances or change permissions.
 - Your data stays in `~/.aura`: chats, memory, tasks, settings, backups and logs.

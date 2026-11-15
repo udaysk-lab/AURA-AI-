@@ -85,10 +85,10 @@ def fold(path: str, ops: PathOps | None = None, *, always: bool = False) -> str:
 def _windows_form(text: str, base: str | None, ops: PathOps) -> str:
     """Windows spellings that name something else than they seem to (second review): UNC administrative shares
     on this computer and `\\\\?\\` forms become drive paths; a drive-relative path on another drive and a
-    short name that cannot be resolved here are refused (BadArgs: the call is denied, never allowed)."""
-    from app.permissions import pathglob
+    drive-relative path on another drive is refused (BadArgs: the call is denied, never allowed)."""
+    from app.permissions import canon
 
-    local = pathglob.local_unc_to_drive(text)
+    local = canon.local_unc_to_drive(text)
     if local is not None:
         text = local
     pm = ops.pm
@@ -97,8 +97,6 @@ def _windows_form(text: str, base: str | None, ops: PathOps) -> str:
         bdrive = pm.splitdrive(base or pm.expanduser("~"))[0]
         if drive.casefold() != bdrive.casefold():
             raise BadArgs("a drive-relative path on another drive cannot be read")
-    if os.name != "nt" and any(pathglob._SHORT_NAME.search(c) for c in pm.normpath(text).replace("\\", "/").split("/")):
-        raise BadArgs("a short (8.3) file name cannot be read")
     return text
 
 
@@ -369,10 +367,7 @@ class Target:
     matchable: bool = True  # False: not what an allow rule must cover (workdir, pid, paths named in a command)
     tree: bool = False  # stands for everything beneath it (a search root): an ask rule anywhere inside it applies
     named: bool = False  # a path a shell command names or runs in: block and ask rules see it, allow rules do not need it
-    glob: str = ""  # a pattern word this target stands for (value is its literal folder): it could match more than exists now
-    base: str = ""  # where a relative `glob` is read from
     opened: bool = False  # a path a tool opens (open_app): the floors check it like a file argument
-    walk: bool = False  # a command walks the whole tree under this folder (grep -r, find, ls -R, tar ...)
 
 
 def extract(
@@ -417,12 +412,12 @@ def extract(
             wd_real = None
             if isinstance(wd, str) and wd.strip():
                 try:
-                    wd_real = normalize_path(wd, base, ops)
+                    wd_real = normalize_path(wd, base, ops)  # the working folder, made canonical first
                 except BadArgs:
                     wd_real = None
-            parsed = shellparse.parse(value, dialect, wd_real)
+            parsed = shellparse.parse(value, dialect)
             out.append(Target("command", value, "", value, parsed=parsed))
-            out.extend(named_paths(parsed, wd_real or base, base, ops))
+            out.extend(literal_path_targets(parsed, wd_real or base, ops))
         elif spec.kind == "recipient":
             addrs = parse_recipients(value)
             if not addrs and policy.name == "send_email":
@@ -484,168 +479,43 @@ def _opened_path(value: str, base: str, ops: PathOps) -> str | None:
         raise
 
 
-def _literal_head(word: str) -> str:
-    """The leading components of a path word that hold no wildcard (`fin*/x` -> `.`, `~/work/f*/x` -> `~/work`)."""
-    from app.permissions import pathglob
-
-    text = word.replace("\\", "/")
-    comps: list[str] = []
-    for comp in text.split("/"):
-        if pathglob.has_glob(comp):
-            break
-        comps.append(comp)
-    head = "/".join(comps)
-    if not head:
-        return "/" if text.startswith("/") else "."
-    return head
-
-
-def _anchor_of(pattern: str, ops: PathOps) -> str:
-    kind, head, _glob = _split_pattern(pattern, ops)
-    if kind in ("tree", "exact"):
-        return head
-    if kind == "glob":
-        return head
-    return pattern
-
-
-
 # ---------------------------------------------------------------------------
-# Commands that walk a whole tree (NF4)
+# The literal path words of a command (deny-only checks and path rules)
 # ---------------------------------------------------------------------------
 
-_WALK_ALWAYS = {"find", "rg", "ag", "ack", "fd", "fdfind", "tree", "du", "locate", "plocate", "tar", "bsdtar",
-                "robocopy", "7z", "7za", "7zr", "compress-archive"}
-_WALK_GREPS = {"grep", "egrep", "fgrep", "zgrep", "rgrep"}
-_WALK_LISTERS = {"get-childitem", "gci", "ls", "dir", "select-string", "sls", "copy-item", "cpi", "get-item"}
-_WALK_COPIERS = {"cp", "rsync", "scp", "zip", "diff", "xcopy", "mv", "chmod", "chown", "chgrp"}
-_RECURSE_SHORT = re.compile(r"^-[A-Za-z]*[rRa][A-Za-z]*$")
-_RECURSE_UPPER = re.compile(r"^-[A-Za-z]*[rR][A-Za-z]*$")
+_PATH_START = re.compile(r"^(?:/|\\|~(?:[/\\]|$)|\.{1,2}[/\\]|[A-Za-z]:|\$\{?home\}?(?:[/\\]|$)|%userprofile%|"
+                         r"\$env:(?:userprofile|home))", re.IGNORECASE)
 
 
-def _prog_name(program: str) -> str:
-    name = re.split(r"[\\/]", program)[-1].casefold()
-    return re.sub(r"\.(exe|cmd|bat|ps1)$", "", name)
-
-
-def _walks(prog: str, tokens: Sequence[str]) -> bool:
-    low = [t.casefold() for t in tokens]
-    if prog in _WALK_ALWAYS:
-        return True
-    if prog in _WALK_GREPS:
-        return any(_RECURSE_UPPER.match(t) or t in ("--recursive", "--dereference-recursive") for t in tokens) \
-            or any(t.startswith("--directories=recurse") for t in low)
-    if prog in _WALK_LISTERS:
-        return any(t.startswith("-rec") or t == "-r" or t == "/s" or t == "--recursive"
-                   or (prog == "ls" and _RECURSE_UPPER.match(tokens[i]) and "R" in tokens[i])
-                   for i, t in enumerate(low))
-    if prog in _WALK_COPIERS:
-        if prog == "xcopy":
-            return any(t in ("/s", "/e") for t in low)
-        if prog == "zip":
-            return any(_RECURSE_UPPER.match(t) for t in tokens)
-        if prog in ("mv", "chmod", "chown", "chgrp"):
-            return any(t == "-R" or t == "--recursive" for t in tokens)
-        return any(_RECURSE_SHORT.match(t) or t == "--recursive" for t in tokens)
-    return False
-
-
-def walk_roots(parsed: shellparse.Parsed, base_dir: str, ops: PathOps | None = None) -> list[str]:
-    """The folders a command walks through whole (grep -r, find, ls -R, rg, tree, tar, zip -r, cp -r, Get-ChildItem
-    -Recurse, dir /s, robocopy, xcopy /s ...): its folder arguments, or the working directory when it names none."""
-    from app.permissions import pathglob
-
-    ops = ops or PathOps()
-    windows = ops.pm is not os.path or os.name == "nt" or parsed.dialect != shellparse.POSIX
+def literal_path_words(parsed: shellparse.Parsed) -> list[str]:
+    """Words of a command that start like a path: `/`, `\\`, `~/`, `~\\`, `X:`, `./`, `../` (and the home
+    variables), also after `--option=`. Plain text, nothing expanded. They can only deny or ask: nothing derived
+    from the text of a command is ever the reason it runs."""
     out: list[str] = []
-    for seg in parsed.segments:
-        prog = _prog_name(seg.program)
-        args = list(seg.tokens[1:])
-        if not _walks(prog, args):
+    for word in parsed.words:
+        if "\x00" in word or not word.strip() or len(word) > 1024:
             continue
-        dirs: list[str] = []
-        from_globs: list[str] = []
-        files_named = False
-        for tok in args:
-            if prog in ("find", "fd", "fdfind") and tok.startswith(("-", "(", "!")) and prog == "find":
-                break  # find: the folders come first, then the tests (`-name '*.txt'` is not a folder)
-            if tok.startswith("-") or (windows and tok.startswith("/") and len(tok) <= 3 and tok[1:2].isalpha()):
-                continue
-            word = tok
-            glob = pathglob.has_glob(word)
-            if glob:
-                word = _literal_head(word)
-            try:
-                real = normalize_path(word, base_dir, ops)
-            except BadArgs:
-                continue
-            if os.path.isdir(real):
-                (from_globs if glob else dirs).append(real)
-            elif os.path.exists(real) and not glob:
-                files_named = True
-        if dirs:
-            out.extend(dirs)
-        elif from_globs:
-            out.extend(from_globs)
-        elif not files_named:
-            out.append(base_dir)
-    return list(dict.fromkeys(out))
+        for cand in (word, word.split("=", 1)[1] if word.startswith("-") and "=" in word else ""):
+            if cand and _PATH_START.match(cand) and cand not in out:
+                out.append(cand)
+    return out
 
 
-def named_paths(parsed: shellparse.Parsed, base_dir: str, home: str, ops: PathOps | None = None) -> list[Target]:
-    """The paths a shell command names, as targets for path block and ask rules (F7).
-
-    Every path the parser found, with wildcard and brace words replaced by what they expand to now,
-    each resolved the way a path argument is (relative paths from the working directory). They
-    are never something an allow rule has to cover: only a rule that blocks or asks can match them.
-    """
-    from app.permissions import pathglob
-
+def literal_path_targets(parsed: shellparse.Parsed, base_dir: str, ops: PathOps | None = None) -> list[Target]:
+    """The literal path words as targets for path block and ask rules, resolved lexically against the working
+    folder. Never something an allow rule has to cover."""
     ops = ops or PathOps()
-    windows = ops.pm is not os.path or os.name == "nt" or parsed.dialect != shellparse.POSIX
-    ci = ops.ci or windows
-    dot_ok = windows or pathglob.dotglob_on(parsed.raw)
     out: list[Target] = []
-    seen: set[tuple[str, str]] = set()
-
-    def add(raw: str, value: str, role: str) -> None:
-        key = (fold(value, ops, always=True), role)
-        if key not in seen and len(out) < 200:
-            seen.add(key)
-            out.append(Target("path", value, role, raw, matchable=False, named=True))
-
-    for ref in parsed.paths:
-        raw = ref.raw
-        if "\x00" in raw or not raw.strip():
-            continue
-        if parsed.dialect != shellparse.POSIX and os.name != "nt" and ops.pm is os.path:
-            raw = raw.replace("\\", "/")  # PowerShell and cmd paths use both separators; this OS only knows one
-        if windows:
-            # Windows ignores trailing dots and spaces in a name (`finance.` is `finance`)
-            raw = re.sub(r"[^\\/]+", lambda m: pathglob._clean(m.group(0), True), raw)
-        if pathglob.has_glob(raw):
-            for found in pathglob.existing_matches(raw, base_dir, home, ci=ci, windows=windows, dot_ok=dot_ok, limit=100):
-                add(raw, found, ref.role)
-            # ... and what it could expand to: the literal folder before the first wildcard stands for the word
-            try:
-                head = _literal_head(raw)
-                folder = normalize_path(head, base_dir, ops)
-            except BadArgs:
-                continue
-            key = (fold(folder, ops, always=True) + "\x00" + raw, ref.role)
-            if key not in seen and len(out) < 200:
-                seen.add(key)
-                out.append(Target("path", folder, ref.role, raw, matchable=False, named=True, glob=raw, base=base_dir))
-            continue
+    seen: set[str] = set()
+    for word in literal_path_words(parsed):
         try:
-            add(raw, normalize_path(raw, base_dir, ops), ref.role)
+            real = normalize_path(word, base_dir, ops)
         except BadArgs:
             continue
-    for root in walk_roots(parsed, base_dir, ops):
-        key = (fold(root, ops, always=True) + "\x00walk", "read")
-        if key not in seen and len(out) < 260:
+        key = fold(real, ops, always=True)
+        if key not in seen and len(out) < 200:
             seen.add(key)
-            out.append(Target("path", root, "read", root, matchable=False, named=True, tree=False, walk=True))
+            out.append(Target("path", real, "read", word, matchable=False, named=True))
     return out
 
 
@@ -702,22 +572,6 @@ def path_pattern_inside(pattern: str, folder: str, ops: PathOps | None = None) -
         return False
 
 
-def _glob_could_name(pattern: str, t: Target, ops: PathOps | None) -> bool:
-    """Could the wildcard word behind `t` expand to the tree (or file) a path rule names?"""
-    from app.permissions import pathglob
-
-    ops = ops or PathOps()
-    anchor = _anchor_of(pattern, ops)
-    if not anchor:
-        return False
-    windows = ops.pm is not os.path or os.name == "nt"
-    try:
-        return pathglob.could_match(t.glob, anchor, t.base or t.value, ops.pm.expanduser("~"),
-                                    ci=ops.ci or windows, windows=windows, dot_ok=True)
-    except Exception:
-        return True
-
-
 def rule_matches_any(rule: Any, targets: Sequence[Target], dialect: str = shellparse.POSIX, ops: PathOps | None = None,
                      descend: bool = False) -> bool:
     """For block and ask rules: does the rule match any target? A tool-wide rule always does.
@@ -742,10 +596,6 @@ def rule_matches_any(rule: Any, targets: Sequence[Target], dialect: str = shellp
                 return True
         elif pattern_covers(rule.target_kind, rule.pattern, t, dialect, ops):
             return True
-        elif t.glob and rule.target_kind == "path" and _glob_could_name(rule.pattern, t, ops):
-            return True
-        elif t.walk and rule.target_kind == "path" and path_pattern_inside(rule.pattern, t.value, ops):
-            return True
         elif descend and t.tree and rule.target_kind == "path" and path_pattern_inside(rule.pattern, t.value, ops):
             return True
     return False
@@ -763,15 +613,16 @@ def first_match(
 
 
 def _command_covered(parsed: shellparse.Parsed, rules: Sequence[Any], dialect: str) -> list[Any] | None:
-    """Allow semantics for a command: every segment covered, nothing opaque or dangerous."""
+    """Allow semantics for a command (only with computer protection on): every segment covered by a rule, none
+    dangerous or deleting, none with a wrapper or a variable assignment in front of it."""
     for r in rules:
         if not r.pattern:  # "any command" rule, as tool-wide
             return [r]
-    if parsed.opaque or parsed.dangerous or not parsed.segments:
+    if parsed.dangerous or not parsed.segments:
         return None
     used: list[Any] = []
     for seg in parsed.matchable_segments:
-        if seg.opaque or seg.dangerous or seg.deletes:
+        if seg.dangerous or seg.deletes or seg.wrappers or seg.assigns or seg.redirects or seg.hides:
             return None
         hit = next((r for r in rules if not r.pattern.startswith("~") and segment_matches(r.pattern, seg.text, dialect)), None)
         if hit is None:
@@ -791,6 +642,10 @@ def allow_cover(
     must be covered: all recipients, both paths of a move, every command segment.
     Working directories and pids are not rule targets; the floors check them.
     """
+    from app.permissions import wall
+
+    if not wall.active() and any(t.kind == "command" for t in targets):
+        return None  # computer protection is off: no allow rule of any shape covers a command
     allow = [r for r in rules if r.effect == "allow"]
     for r in allow:
         if not r.target_kind and not r.pattern:
@@ -857,9 +712,11 @@ def normalise_pattern(target_kind: str, pattern: str, effect: str, dialect: str 
 
 def command_card_patterns(parsed: shellparse.Parsed) -> list[str]:
     """One proposed pattern per uncovered segment; empty when only once/reject may be offered."""
-    if not parsed.offers_durations:
+    if parsed.dangerous:
         return []
     out: list[str] = []
+    if any(s.assigns or s.wrappers or s.redirects or s.hides for s in parsed.matchable_segments):
+        return []  # no stored rule would cover it: only once / reject
     for seg in parsed.matchable_segments:
         pat = shellparse.card_pattern(seg)
         if pat not in out:

@@ -119,10 +119,10 @@ def _screen_call(ctx: ToolContext, fn, point_args: dict | None = None):
 
 @tool(
     "run_command",
-    "Run a shell command on this computer and return its output. Use for anything the "
-    "machine can do from a terminal: git, package managers, scripts, file wrangling. "
-    "Runs in the user's shell; prefer this over guessing. Long-running services go to "
-    "run_in_background instead.",
+    "Run a shell command on this computer and return its output. Use for what only a "
+    "terminal can do: git, builds, tests. Runs in the user's shell. Long-running services "
+    "go to run_in_background instead."
+    " On this computer every command needs the owner's approval for now, each time; for listing, reading, searching, writing and moving files use the file tools instead.",
     {
         "type": "object",
         "properties": {
@@ -148,7 +148,8 @@ def _run_command(ctx: ToolContext, args: dict) -> dict:
 @tool(
     "run_in_background",
     "Start a long-running command (a dev server, a build, a watch) and get a handle back "
-    "immediately. Poll it with process_output, stop it with stop_process.",
+    "immediately. Poll it with process_output, stop it with stop_process."
+    " On this computer every command needs the owner's approval for now, each time; for listing, reading, searching, writing and moving files use the file tools instead.",
     {
         "type": "object",
         "properties": {
@@ -187,7 +188,8 @@ def _process_output(ctx: ToolContext, args: dict) -> dict:
 
 @tool(
     "send_process_input",
-    "Type a line into a running background command's input (answer a prompt, send 'y').",
+    "Type a line into a running background command's input (answer a prompt, send 'y'). "
+    "On this computer every command, and every line typed into one, needs the owner's approval for now, each time.",
     {
         "type": "object",
         "properties": {"session_id": {"type": "string"}, "data": {"type": "string"}},
@@ -601,8 +603,8 @@ def _fetch_url(ctx: ToolContext, args: dict) -> dict:
         def redirect_host(target: str, host: str) -> str | None:
             return gate.redirect_refusal(ctx.db, ctx.user, target, host)
 
-        redirect_host.blocks_only = lambda target, host: gate.redirect_refusal(  # type: ignore[attr-defined]
-            ctx.db, ctx.user, target, host, blocks_only=True)
+        redirect_host.twin = lambda target, host: gate.redirect_refusal(  # type: ignore[attr-defined]
+            ctx.db, ctx.user, target, host, twin=True)
         return net.safe_get(url, on_redirect_host=redirect_host)
     except net.FetchDenied as exc:
         return {"error": f"Refused: {exc.reason}"}

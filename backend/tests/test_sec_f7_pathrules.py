@@ -45,60 +45,78 @@ def decide(w, tool, args, dialect=POSIX):
     return gate.decide(w.db, w.user, tool, args, gate.build_context(w.db, w.user, "chat"))
 
 
-SHELL_CASES = [
+# The literal path words of a command (start with `/`, `~/`, `./`, `../`, a drive; see match.literal_path_words) and the
+# working folder are matched against path block and ask rules. Spellings that need the shell to expand them are
+# not read from the text: while computer protection is off they ask the owner like every command.
+LITERAL_CASES = [
     # (dialect, command, workdir relative to home/work)
     (POSIX, "cat ~/work/finance/salary.txt", ""),                       # poc4
     (POSIX, "cat salary.txt", "finance"),                               # poc4: the working directory
     (POSIX, "ls", "finance"),
-    (POSIX, "cat finance/salary.txt", ""),
     (POSIX, "cat ../finance/salary.txt", "other"),
     (POSIX, "cat ./finance/../finance/salary.txt", ""),
-    (POSIX, "cat ~/work/fin*/sal*", ""),
-    (POSIX, "cat ~/work/{finance,nothing}/salary.txt", ""),
     (POSIX, "echo x > ~/work/finance/new.txt", ""),
     (POSIX, "cat < ~/work/finance/salary.txt", ""),
     (POSIX, "cp ~/work/finance/salary.txt ~/work/copy.txt", ""),
     (POSIX, "grep salary ~/work/finance/sub/deep.txt", ""),
     (POSIX, "cat $HOME/work/finance/salary.txt", ""),
-    (POSIX, "cd ~/work/finance && cat salary.txt", ""),
+    (POSIX, "cat --file=~/work/finance/salary.txt", ""),
     (POSIX, "bash -c 'cat ~/work/finance/salary.txt'", ""),
     (PWSH, "Get-Content ~/work/finance/salary.txt", ""),
     (PWSH, "gc salary.txt", "finance"),
-    (PWSH, "Get-Content -Path ~/work/fin*/salary.txt", ""),
     (PWSH, "echo x > ~/work/finance/new.txt", ""),
     (CMD, "type ~/work/finance/salary.txt", ""),
     (CMD, "type salary.txt", "finance"),
-    (CMD, "type ~/work/fin*/salary.txt", ""),
 ]
+UNREAD_CASES = [
+    (POSIX, "cat finance/salary.txt", ""), (POSIX, "cat ~/work/fin*/sal*", ""),
+    (POSIX, "cat ~/work/{finance,nothing}/salary.txt", ""), (POSIX, "cat */salary.txt", ""),
+    (POSIX, "cd ~/work && cat finance/salary.txt", ""), (POSIX, "grep -r salary .", ""),
+    (PWSH, "Get-Content -Path fin*/salary.txt", ""), (CMD, "type fin*\\salary.txt", ""),
+]
+SHELL_CASES = LITERAL_CASES + UNREAD_CASES
 
 
-@pytest.mark.parametrize("dialect,command,rel", SHELL_CASES)
-def test_a_block_rule_stops_a_command_that_names_the_path(w, dialect, command, rel):
+@pytest.mark.parametrize("dialect,command,rel", LITERAL_CASES)
+def test_a_block_rule_stops_a_command_that_names_the_path(w, wall_on, dialect, command, rel):
     block(w)
     workdir = os.path.join(w.work, rel) if rel else w.work
     d = decide(w, "run_command", {"command": command, "workdir": workdir}, dialect)
     assert d.kind == "deny" and d.reason_code == "RULE_BLOCK", (command, rel, d.kind, d.reason_code)
 
 
-@pytest.mark.parametrize("dialect,command,rel", SHELL_CASES)
-def test_an_ask_rule_makes_the_same_commands_ask(w, dialect, command, rel):
+@pytest.mark.parametrize("dialect,command,rel", LITERAL_CASES)
+def test_an_ask_rule_makes_the_same_commands_ask(w, wall_on, dialect, command, rel):
     block(w, effect="ask")
     workdir = os.path.join(w.work, rel) if rel else w.work
     d = decide(w, "run_command", {"command": command, "workdir": workdir}, dialect)
     assert d.kind == "ask" and d.reason_code == "RULE_ASK", (command, rel, d.kind, d.reason_code)
 
 
+@pytest.mark.parametrize("effect", ["block", "ask"])
+@pytest.mark.parametrize("dialect,command,rel", SHELL_CASES)
+def test_while_protection_is_off_no_spelling_is_ever_allowed(w, dialect, command, rel, effect):
+    block(w, effect=effect)
+    workdir = os.path.join(w.work, rel) if rel else w.work
+    d = decide(w, "run_command", {"command": command, "workdir": workdir}, dialect)
+    assert d.kind in ("deny", "ask"), (command, rel)
+    if d.kind == "deny":
+        assert d.reason_code == "RULE_BLOCK"
+    else:
+        assert d.reason_code in ("UNCHECKED_COMMAND",) and d.options == ("once", "reject")
+
+
 @pytest.mark.parametrize("dialect,command", [
     (POSIX, "cat ~/work/notes.txt"), (POSIX, "ls ~/work/other"), (POSIX, "cat ~/work/finance-old/x.txt"),
     (POSIX, "echo hello"), (PWSH, "Get-Content ~/work/notes.txt"), (CMD, "type ~/work/notes.txt"),
 ])
-def test_other_paths_are_not_affected(w, dialect, command):
+def test_other_paths_are_not_affected(w, wall_on, dialect, command):
     block(w)
     d = decide(w, "run_command", {"command": command, "workdir": w.work}, dialect)
     assert d.kind == "allow", (command, d.reason_code)
 
 
-def test_a_rule_for_one_tool_still_applies_to_that_tool_only(w):
+def test_a_rule_for_one_tool_still_applies_to_that_tool_only(w, wall_on):
     block(w, tool="read_file")
     d = decide(w, "run_command", {"command": "cat ~/work/finance/salary.txt", "workdir": w.work})
     assert d.kind == "allow"
@@ -106,7 +124,7 @@ def test_a_rule_for_one_tool_still_applies_to_that_tool_only(w):
     assert d.kind == "deny" and d.reason_code == "RULE_BLOCK"
 
 
-def test_a_path_rule_does_not_make_a_command_allowed_by_a_path_allow(w):
+def test_a_path_rule_does_not_make_a_command_allowed_by_a_path_allow(w, wall_on):
     """Allow rules need the command itself covered; a path in it is not enough (unchanged)."""
     rules.add(w.db, w.user, effect="allow", system="device-control", tool=None, target_kind="path",
               pattern=w.work + "/**", actor="user")

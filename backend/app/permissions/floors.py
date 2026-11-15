@@ -20,7 +20,7 @@ A "card" is not a deny: it is a question only the user can answer. The gate turn
 always-user ask after the trigger limits and block rules have had their say. `refuse_code` is what
 the call is denied with if it still needs the card when the user approved something else.
 
-Residual risk, stated plainly (spec 8.6): a shell command runs unsandboxed as the
+Residual risk, stated plainly: a shell command runs unsandboxed as the
 user. The text checks below catch direct references only.
 """
 
@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from app.config import settings
 from app.device import appnames
 from app.permissions import access as access_mod
-from app.permissions import match, pathglob
+from app.permissions import canon, match
 from app.permissions.catalogue import ToolPolicy
 
 # Sentinel ports/hosts the shell floor looks for next to a network client.
@@ -240,8 +240,8 @@ def refers_to_proc_self(text: str) -> bool:
     flat = re.sub(r"/+", "/", re.sub(r"['\"`\\]", lambda m: "/" if m.group(0) == "\\" else "", text))
     for m in _PROC_REF.finditer(flat):
         comp = m.group(1).casefold()
-        for variant in pathglob.expand_braces(comp) or ["*"]:
-            if variant in _PROC_NAMES or (pathglob.has_glob(variant)
+        for variant in canon.expand_braces(comp) or ["*"]:
+            if variant in _PROC_NAMES or (canon.has_glob(variant)
                                           and any(fnmatch.fnmatchcase(n, variant) for n in _PROC_NAMES)):
                 return True
     return False
@@ -310,107 +310,12 @@ def _hits_local_api(raw: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Patterns in a command's paths (F4), searches over AURA's folders, tool configuration (F6)
+# The text checks for a shell command (deny-only)
 # ---------------------------------------------------------------------------
-
-_RECURSIVE_ALWAYS = {"find", "rg", "ag", "ack", "fd", "fdfind", "tree", "du", "locate", "plocate"}
-_PWSH_LIST = {"get-childitem", "gci", "ls", "dir", "select-string", "sls"}
-_GREPS = {"grep", "egrep", "fgrep", "zgrep"}
-_RECURSE_FLAG = re.compile(r"^-[A-Za-z]*[rR][A-Za-z]*$")
-
-
-def _prog(seg) -> str:
-    return re.sub(r"\.(exe|cmd|bat|ps1)$", "", os.path.basename(seg.program.replace("\\", "/")).casefold())
-
-
-def _windows_like(parsed) -> bool:
-    return os.name == "nt" or parsed.dialect != "posix"
-
-
-def _candidate_words(parsed, raw: str) -> list[str]:
-    words: list[str] = []
-    for seg in parsed.segments:
-        words.extend(seg.tokens[1:])
-    words.extend(r.raw for r in parsed.paths)
-    words.extend(pathglob.words_of(raw))
-    out = list(words)
-    for w in words:  # --output=~/.a*/x, of=~/.a*/x
-        if "=" in w and not w.startswith("="):
-            out.append(w.split("=", 1)[1])
-    return pathglob.unique(w for w in out if w)
-
-
-def _glob_check(parsed, raw: str, bases: list[str], workdir: str | None) -> tuple[bool, bool]:
-    """(refers to AURA's own paths, could name a protected path) for the pattern words of a command."""
-    home = os.path.expanduser("~")
-    windows = _windows_like(parsed)
-    ci = match._case_insensitive() or windows
-    dot_ok = windows or pathglob.dotglob_on(raw)
-    own = self_paths()
-    prot = settings.device_protected_path_list
-    hit = protected = False
-    # A relative pattern may be read from the working directory, from home, or from a folder the
-    # command itself changes to (`cd DIR`, `tar -C DIR`): try each.
-    bases = list(bases)
-    for ref in parsed.paths:
-        try:
-            d = match.normalize_path(ref.raw, bases[0] if bases else home)
-        except match.BadArgs:
-            continue
-        for cand in (d, os.path.dirname(d)):
-            if os.path.isdir(cand) and cand not in bases:
-                bases.append(cand)
-    if home not in bases:
-        bases.append(home)
-    for word in _candidate_words(parsed, raw):
-        if not pathglob.has_glob(word):
-            continue
-        if pathglob.expand_braces(word) is None:
-            protected = True  # more variants than can be listed: ask, rather than guess
-        for b in bases:
-            for real in pathglob.existing_matches(word, b, home, ci=ci, windows=windows, dot_ok=dot_ok):
-                if in_self_path(real) or (parsed.deletes and any(_f(p) != _f(real) and _under(_f(p), _f(real)) for p in own)):
-                    hit = True
-                if in_protected(real):
-                    protected = True
-            if any(pathglob.could_match(word, o, b, home, ci=ci, windows=windows, dot_ok=dot_ok) for o in own):
-                hit = True
-            if any(pathglob.could_match(word, o, b, home, ci=ci, windows=windows, dot_ok=dot_ok) for o in prot):
-                protected = True
-    return hit, protected
-
-
-def _search_roots(seg, base: str, home: str, windows: bool) -> list[str]:
-    roots: list[str] = []
-    for tok in seg.tokens[1:]:
-        if tok.startswith("-") or (windows and tok.startswith("/") and len(tok) <= 3 and tok[1:2].isalpha()):
-            continue
-        word = tok
-        if pathglob.has_glob(word):
-            comps = []
-            for comp in re.split(r"[\\/]", word.replace("\\", "/")):
-                if pathglob.has_glob(comp):
-                    break
-                comps.append(comp)
-            word = "/".join(comps) or "."
-            if word.startswith("/") is False and tok.startswith("/"):
-                word = "/" + word
-        try:
-            roots.append(match.normalize_path(word, base))
-        except match.BadArgs:
-            continue
-    return roots
-
-
-def _recursive_over_self(parsed, base: str, workdir: str | None) -> bool:
-    """A command that walks a whole tree starting at (or above) a folder that holds AURA's own files."""
-    own = self_paths()
-    for r in match.walk_roots(parsed, base):
-        fr = _f(r)
-        if any(_under(_f(o), fr) for o in own):
-            return True
-    return False
-
+#
+# Reading a command's text can never prove what it will touch, so nothing here can make a command run: these
+# checks can only deny (or, with computer protection on, ask). While protection is off the gate asks the owner
+# about every command anyway (wall.py).
 
 _TOOL_CONFIG_NAMES = re.compile(
     r"(^|/)(\.gitconfig|\.gitmodules|\.npmrc|\.yarnrc(\.yml|\.yaml)?|\.pnpmrc|pip\.(conf|ini)|\.pypirc|\.netrc|\.condarc|"
@@ -428,14 +333,13 @@ def is_tool_config(path: str) -> bool:
     """A tool's configuration file anywhere (`.npmrc`, `.gitconfig`, `pip.ini`, `.cargo/config*`, `.m2/settings.xml` ...).
 
     Windows ignores trailing dots and spaces and alternate-stream suffixes, so they are dropped first."""
-    comps = pathglob.components(path.replace("\\", "/"), windows=True)
+    comps = canon.components(path.replace("\\", "/"), windows=True)
     return bool(_TOOL_CONFIG_NAMES.search("/".join(c for c in comps if c != "/")))
 
 
-def _writes_tool_config(parsed) -> bool:
-    for ref in parsed.paths:
-        if ref.role == "write" and is_tool_config(ref.raw):
-            return True
+def _writes_tool_config(parsed, words: list[str]) -> bool:
+    if any(is_tool_config(w) for w in words):
+        return True
     for seg in parsed.segments:
         toks = [t.casefold() for t in seg.tokens]
         prog = _prog(seg)
@@ -446,6 +350,10 @@ def _writes_tool_config(parsed) -> bool:
     return False
 
 
+def _prog(seg) -> str:
+    return re.sub(r"\.(exe|cmd|bat|ps1)$", "", os.path.basename(seg.program.replace("\\", "/")).casefold())
+
+
 def _unique(items):
     out = []
     for i in items:
@@ -454,17 +362,21 @@ def _unique(items):
     return out
 
 
-_URL = re.compile(r"^[a-z][a-z0-9+.\-]*://", re.IGNORECASE)
+_DRIVE_FORMS = re.compile(r"(?<![\w])/(?:mnt/|cygdrive/)?([A-Za-z])/")
 
 
-def _path_like(tok: str) -> bool:
-    if _URL.match(tok):
-        return False
-    return bool(tok) and ("/" in tok or "\\" in tok or tok.startswith(("~", ".")) or tok.casefold() in _SELF_NAMES)
+def _readings(raw: str, dialect: str) -> list[str]:
+    """The command text read three ways (as is; `\\` as a separator; POSIX escapes removed), and for a POSIX
+    line also with `/c/`, `/mnt/c/` and `/cygdrive/c/` spelled as `C:/` (shells on Windows rewrite them)."""
+    base = [raw, raw.replace("\\", "/"), re.sub(r"\\(.)", r"\1", raw)]
+    out = list(base)
+    if dialect == "posix":
+        out.extend(_DRIVE_FORMS.sub(lambda m: m.group(1).upper() + ":/", t) for t in base)
+    return _unique(out)
 
 
-def _shell_floor(policy: ToolPolicy, targets, roots=None) -> tuple[FloorResult, bool]:
-    """(floor result, needs the user every time)."""
+def text_floor(policy: ToolPolicy, targets) -> tuple[FloorResult, bool]:
+    """(floor result, needs the user every time). Deny-only text checks for run_command / run_in_background."""
     cmd = next((t for t in targets if t.kind == "command"), None)
     if cmd is None or cmd.parsed is None:
         return OK, False
@@ -472,84 +384,42 @@ def _shell_floor(policy: ToolPolicy, targets, roots=None) -> tuple[FloorResult, 
     raw = cmd.raw
     workdir = next((t.value for t in targets if t.kind == "path" and t.role == "exec"), None)
     base = workdir or os.path.expanduser("~")
-    # Where a relative path may really point: the working directory when one is given, else
-    # wherever the shell starts (home, or the first allowed root when home is outside them).
-    bases = [workdir] if workdir else _unique([base, *(settings.device_allowed_root_list if roots is None else roots)])
+    own_msg = "That command refers to AURA's own data, database, settings or program files. AURA never touches those."
 
     # 1. AURA's own files, by path or by name anywhere in the text.
     if workdir and in_self_path(workdir):
         return _deny("FLOOR_SELF_PATH", "Commands may not run inside AURA's own folders."), False
-    if _mentions_self(raw) or refers_to_proc_self(raw) or any(
-            refers_to_proc_self(t) for seg in parsed.segments for t in seg.tokens) or any(
-            refers_to_proc_self(r.raw) for r in parsed.paths):
-        return _deny("FLOOR_SELF_PATH", "That command refers to AURA's own data, database, settings or program files. AURA never touches those."), False
+    for text in _readings(raw, parsed.dialect):
+        if _mentions_self(text) or refers_to_proc_self(text):
+            return _deny("FLOOR_SELF_PATH", own_msg), False
+    if any(refers_to_proc_self(w) for w in parsed.words):
+        return _deny("FLOOR_SELF_PATH", own_msg), False
+
+    # 1b. The literal path words (see match.literal_path_words), resolved lexically against the working folder.
     protected = bool(workdir and in_protected(workdir))
-    for ref in parsed.paths:
+    words = match.literal_path_words(parsed)
+    for word in words:
         try:
-            real = match.normalize_path(ref.raw, base)
+            real = match.normalize_path(word, base)
         except match.BadArgs:
             continue
         takes_self_along = parsed.deletes and any(
             _f(p) != _f(real) and _under(_f(p), _f(real)) for p in self_paths()
         )
         if in_self_path(real) or takes_self_along:
-            return _deny("FLOOR_SELF_PATH", "That command refers to AURA's own data, database, settings or program files. AURA never touches those."), False
-        if in_protected(real) or (ref.role == "write" and _GIT_EXECUTABLE.search(real)):
+            return _deny("FLOOR_SELF_PATH", own_msg), False
+        if in_protected(real) or _GIT_EXECUTABLE.search(real):
             protected = True
-
-    for seg in parsed.segments:
-        for tok in seg.tokens:
-            if not _path_like(tok):
-                continue
-            for b in bases:
-                try:
-                    real = match.normalize_path(tok, b)
-                except match.BadArgs:
-                    continue
-                if in_self_path(real):
-                    return _deny("FLOOR_SELF_PATH", "That command refers to AURA's own data, database, settings or program files. AURA never touches those."), False
-
-    # 1a. Windows spellings: 8.3 short names, drive-relative paths, UNC paths (NF / second review). A path read
-    # from its text that cannot be resolved is refused when AURA's own or a protected path could lie under the
-    # literal part before the unreadable bit; else the command is flagged unreadable (it always asks).
-    if _windows_like(parsed):
-        home = os.path.expanduser("~")
-        words = _unique([*(r.raw for r in parsed.paths), *(t for seg in parsed.segments for t in seg.tokens[1:])])
-        for b in bases:
-            for word in words:
-                form = pathglob.opaque_form(word, b, home, True)
-                if form is not None:
-                    if any(pathglob.prefix_overlaps(form[1], o) for o in self_paths()):
-                        return _deny("FLOOR_SELF_PATH", "That command names a path AURA cannot read in full (a short name, a drive-relative or network path) where its own files may be. AURA never touches those."), False
-                    if any(pathglob.prefix_overlaps(form[1], o) for o in settings.device_protected_path_list):
-                        return _deny("FLOOR_PROTECTED_PATH", "That command names a path AURA cannot read in full where a protected location may be."), False
-                elif _path_like(word) or re.match(r"^[A-Za-z]:", word):
-                    if any(pathglob.could_match(word, o, b, home, ci=True, windows=True) for o in self_paths()):
-                        return _deny("FLOOR_SELF_PATH", "That command refers to AURA's own data, database, settings or program files. AURA never touches those."), False
-                    if any(pathglob.could_match(word, o, b, home, ci=True, windows=True)
-                           for o in settings.device_protected_path_list):
-                        protected = True
-
-    # 1b. Wildcards, braces and extended globs: the shell expands them before the program runs, so
-    # the text of the command is not the path it will touch. Checked two ways: what the word
-    # expands to today, and whether it could expand to one of AURA's own or a protected path.
-    glob_hit, glob_protected = _glob_check(parsed, raw, bases, workdir)
-    if glob_hit:
-        return _deny("FLOOR_SELF_PATH", "That command refers to AURA's own data, database, settings or program files (by a wildcard or pattern). AURA never touches those."), False
-    protected = protected or glob_protected
-    # 1c. A search that walks a whole folder tree would walk into AURA's own files.
-    if _recursive_over_self(parsed, base, workdir):
-        protected = True
-    # 1d. Tool configuration files are written only with the user's say-so.
-    if _writes_tool_config(parsed):
+    # tool configuration files are written only with the user's say-so
+    if _writes_tool_config(parsed, list(parsed.words)):
         protected = True
 
     # 2. database tools and migrations.
     for seg in parsed.segments:
-        prog = re.sub(r"\.(exe|cmd|bat|ps1)$", "", os.path.basename(seg.program.replace("\\", "/")).casefold())
+        prog = _prog(seg)
         if prog == "alembic":
             return _deny("FLOOR_SELF_PATH", "Database migrations are run by AURA itself, never from a command."), False
-        if prog in _SPAWNERS and _mentions_self(raw):
+        if prog in _SPAWNERS and any(_mentions_self(t) for t in _readings(raw, parsed.dialect)):
             return _deny("FLOOR_SELF_PATH", "AURA's database is off limits to commands."), False
 
     # 3. AURA's own HTTP API.
@@ -563,7 +433,7 @@ def _shell_floor(policy: ToolPolicy, targets, roots=None) -> tuple[FloorResult, 
     if not verdict.allowed:
         return _deny("FLOOR_DENYLIST", f"This command {verdict.reason}."), False
 
-    always = bool(policy.dyn_always_user and (parsed.deletes or protected or parsed.unreadable))
+    always = bool(policy.dyn_always_user and (parsed.deletes or protected))
     return OK, always
 
 
@@ -781,7 +651,7 @@ def check(db, user, policy: ToolPolicy, targets, ctx=None, *, front=None, access
     r = _file_floor(targets)
     if r.deny:
         return r
-    shell, always = _shell_floor(policy, targets, None if acc is None else list(acc.roots))
+    shell, always = text_floor(policy, targets)
     if shell.deny:
         return shell
     always = always or _file_writes_tool_config(targets)

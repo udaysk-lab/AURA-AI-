@@ -373,6 +373,8 @@ export interface PendingAction {
   expires_at?: string | null;
   origin?: "chat" | "schedule" | "automation" | "inbound" | string;
   reason?: string;
+  /** For example UNCHECKED_COMMAND: a command that always asks. */
+  reason_code?: string;
   work_item_id?: string | null;
   /** The conversation the waiting task belongs to (used to mark it in the sidebar). */
   conversation_id?: string | null;
@@ -660,6 +662,10 @@ export interface DeviceStatus {
   present?: boolean;
   /** The user's own switch for mouse and keyboard use (the install setting is a ceiling above it). */
   screen_control_user?: boolean;
+  /** False while commands ask every time (no operating-system wall yet). */
+  computer_protection_active?: boolean;
+  /** The server's one line for the This computer screen; empty once protection is on. */
+  computer_protection_line?: string;
 }
 
 export interface DeviceRunResult {
@@ -861,6 +867,8 @@ export interface PermissionState {
   auto_effective: boolean;
   reviewer_model: string;
   boundaries: string;
+  /** True on a local install while computer protection is off: every command asks, in every mode. */
+  commands_ask_every_time?: boolean;
 }
 
 export interface CatalogueEntry {
@@ -886,6 +894,10 @@ export interface PermissionRule {
   revoked_at?: string | null;
   note?: string;
   created_at?: string;
+  /** "asks_until_protection": a stored command rule that covers nothing while computer protection is off. */
+  status?: string;
+  /** The server's label for that status. */
+  status_label?: string;
 }
 
 export interface NewPermissionRule {

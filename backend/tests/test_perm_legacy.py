@@ -340,6 +340,7 @@ def test_a_grant_for_delete_file_is_not_carried_and_the_delete_still_asks(device
     assert (d.kind, d.reason_code) == ("ask", "ALWAYS_USER")
 
 
+@pytest.mark.usefixtures("wall_on")
 def test_exec_full_allowlist_and_denylist(device, monkeypatch):
     root, db = device
     shell = {"run_command", "run_in_background"}

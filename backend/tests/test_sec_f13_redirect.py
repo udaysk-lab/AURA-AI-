@@ -138,3 +138,33 @@ def test_the_network_floors_still_apply_on_the_www_hop(tmp_path, monkeypatch, we
     w = build(tmp_path, monkeypatch)
     out = fetch(w)
     assert "error" in out and requested == ["a.example"], out
+
+
+def test_an_ask_rule_for_the_www_twin_refuses_the_hop_with_a_clear_sentence(tmp_path, monkeypatch, web):
+    requested, state = web
+    state["location"] = "https://www.a.example/landing"
+    w = build(tmp_path, monkeypatch)
+    rule(w, "ask", "www.a.example")
+    out = fetch(w)
+    assert "error" in out and "www.a.example" in out["error"] and "asks about first" in out["error"], out
+    assert requested == ["a.example"]
+
+
+def test_the_twin_is_judged_against_the_first_address_only(tmp_path, monkeypatch):
+    requested: list[str] = []
+    table = {h: [PUBLIC] for h in ("a.example", "www.a.example", "www.www.a.example")}
+    monkeypatch.setattr(net, "resolve", lambda host, port: list(table[host.lower().rstrip(".")]))
+    nxt = {"a.example": "https://www.a.example/x", "www.a.example": "https://www.www.a.example/y"}
+
+    def handler(request):
+        host = request.headers.get("host", "")
+        requested.append(host)
+        if host in nxt:
+            return httpx.Response(302, headers={"location": nxt[host]})
+        return httpx.Response(200, text=f"page on {host}")
+
+    real = net._make_client
+    monkeypatch.setattr(net, "_make_client", lambda transport=None: real(httpx.MockTransport(handler)))
+    w = build(tmp_path, monkeypatch)
+    out = fetch(w)
+    assert "error" in out and requested == ["a.example", "www.a.example"], (out, requested)

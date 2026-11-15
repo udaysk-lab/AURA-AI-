@@ -275,8 +275,8 @@ def test_preblock_writing_a_script(env, tmp_path, monkeypatch):
     assert model.calls == []
 
 
-@pytest.mark.parametrize("command", ["ls $(id)", "rm -rf build", "sudo ls", "echo `id`", "python -c 'print(1)'"])
-def test_preblock_opaque_or_dangerous_shell(env, command):
+@pytest.mark.parametrize("command", ["rm -rf build", "sudo ls"])
+def test_preblock_dangerous_shell(env, command):
     db, user, model = env
     pol = catalogue.CATALOGUE["run_command"]
     args = {"command": command}

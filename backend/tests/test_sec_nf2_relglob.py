@@ -1,4 +1,5 @@
-"""NF2: a relative path whose first component is a wildcard is a path reference, so block and ask rules see it."""
+"""NF2: a relative path whose first component is a wildcard. Its expansion is not read from the text: while computer
+protection is off the command asks the owner, whatever the rules say."""
 
 from __future__ import annotations
 
@@ -6,7 +7,7 @@ import os
 
 import pytest
 
-from app.permissions import gate, rules, shellparse
+from app.permissions import gate, match, rules, shellparse
 from tests.sec_world import build
 
 POSIX, PWSH, CMD = "posix", "pwsh", "cmd"
@@ -35,12 +36,6 @@ def w(tmp_path, monkeypatch):
     world.engine.dispose()
 
 
-# A POSIX-shell command given a native Windows working folder cannot be resolved with certainty, and the checker then
-# refuses it outright as a possible reach into AURA's own files. That is the stricter answer, so it is accepted
-# there; what must never happen on any platform is an allow.
-_STRICTER = ("FLOOR_SELF_PATH",) if os.name == "nt" else ()
-
-
 def rule(w, effect, tree=None):
     rules.add(w.db, w.user, effect=effect, system="device-control", tool=None, target_kind="path",
               pattern=(tree or w.finance) + "/**", actor="user")
@@ -53,37 +48,28 @@ def decide(w, command, dialect):
                        gate.build_context(w.db, w.user, "chat"))
 
 
-def test_a_relative_glob_is_a_path_reference():
-    p = shellparse.parse("cat */salary.txt fin*/x", POSIX, "/tmp")
-    assert {r.raw for r in p.paths} >= {"*/salary.txt", "fin*/x"}
+def test_a_relative_glob_is_not_expanded_from_the_text():
+    p = shellparse.parse("cat */salary.txt fin*/x ~/work/a.txt", POSIX)
+    assert match.literal_path_words(p) == ["~/work/a.txt"]
 
 
+@pytest.mark.parametrize("effect", ["block", "ask"])
 @pytest.mark.parametrize("dialect,command", CASES)
-def test_a_block_rule_stops_a_relative_glob(w, dialect, command):
-    rule(w, "block")
+def test_a_relative_glob_is_never_allowed(w, dialect, command, effect):
+    rule(w, effect)
     d = decide(w, command, dialect)
-    assert d.kind == "deny" and d.reason_code in ("RULE_BLOCK", *_STRICTER), (command, d.kind, d.reason_code)
-
-
-@pytest.mark.parametrize("dialect,command", CASES)
-def test_an_ask_rule_makes_a_relative_glob_ask(w, dialect, command):
-    rule(w, "ask")
-    d = decide(w, command, dialect)
-    stricter = d.kind == "deny" and d.reason_code in _STRICTER
-    assert (d.kind == "ask" and d.reason_code == "RULE_ASK") or stricter, (command, d.kind, d.reason_code)
-
-
-def test_a_glob_that_could_match_a_blocked_folder_that_does_not_exist_yet(w):
-    rule(w, "block", tree=w.work + "/future")
-    d = decide(w, "cat fut*/x.txt", POSIX)
-    assert d.kind == "deny" and d.reason_code == "RULE_BLOCK"
+    assert d.kind == "ask" and d.reason_code == "UNCHECKED_COMMAND" and d.options == ("once", "reject"), (
+        command, d.kind, d.reason_code)
 
 
 @pytest.mark.parametrize("dialect,command", [
     (POSIX, "cat *.txt"), (POSIX, "cat o*/x"), (POSIX, "cat n*.txt"), (PWSH, r"Get-Content n*.txt"),
     (CMD, "type n*.txt"), (POSIX, "grep -h 'a.*b' notes.txt"),
 ])
-def test_other_globs_are_not_affected(w, dialect, command):
+def test_other_globs_ask_like_every_command_and_follow_the_mode_once_protection_is_on(w, monkeypatch, dialect, command):
     rule(w, "block")
-    d = decide(w, command, dialect)
-    assert d.kind == "allow", (command, d.reason_code)
+    assert decide(w, command, dialect).reason_code == "UNCHECKED_COMMAND"
+    from app.permissions import wall
+
+    monkeypatch.setattr(wall, "active", lambda: True)
+    assert decide(w, command, dialect).kind == "allow", command

@@ -539,7 +539,7 @@ function RulesList({
     <>
       <div>{describeTarget(r.pattern)}</div>
       {r.target_kind ? <div className="text-[12.5px] text-muted">{targetKindLabel(r.target_kind)}</div> : null}
-      {[scopeNote(r), until(r), sourceNote(r)].filter(Boolean).map((n) => (
+      {[r.status === "asks_until_protection" ? r.status_label ?? "" : "", scopeNote(r), until(r), sourceNote(r)].filter(Boolean).map((n) => (
         <div key={n} className="text-[12.5px] text-muted">
           {n}
         </div>

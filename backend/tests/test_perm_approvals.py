@@ -269,6 +269,7 @@ def test_schedule_card_rule_is_scoped_to_that_schedule(env):
     assert kind("chat") == "ask"
 
 
+@pytest.mark.usefixtures("wall_on")
 def test_an_older_card_without_a_recorded_draft_is_worked_out_again(device):
     tmp, db = device
     user = mk(db)
@@ -281,6 +282,7 @@ def test_an_older_card_without_a_recorded_draft_is_worked_out_again(device):
     assert out["rule"]["id"] == row.id
 
 
+@pytest.mark.usefixtures("wall_on")
 def test_a_call_that_may_only_be_allowed_once_saves_no_rule(device):
     tmp, db = device
     user = mk(db)

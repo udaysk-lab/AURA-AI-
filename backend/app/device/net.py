@@ -306,6 +306,7 @@ def safe_get(url: str, *, transport=None, on_redirect_host=None) -> dict:
     import httpx
 
     current = url
+    origin = url  # the first address: a redirect is a twin only of this one, never hop by hop
     with _make_client(transport) as client:
         for _hop in range(MAX_HOPS):
             checked = check_url(current)
@@ -323,9 +324,10 @@ def safe_get(url: str, *, transport=None, on_redirect_host=None) -> dict:
                         old_host, new_host = _host_key(current), _host_key(target)
                         if new_host != old_host:
                             ask = on_redirect_host
-                            if same_site_redirect(current, target):
-                                # the www. twin: no new allow rule is needed, but a block rule still stops it
-                                ask = getattr(on_redirect_host, "blocks_only", None)
+                            if same_site_redirect(origin, target):
+                                # the www. twin of the first host: no allow rule is needed, but block and ask
+                                # rules still stop it
+                                ask = getattr(on_redirect_host, "twin", None)
                             refusal = ask(target, new_host) if ask is not None else None
                             if refusal:
                                 raise FetchDenied(refusal, "FLOOR_REDIRECT_HOST")

@@ -1,5 +1,6 @@
-"""F6: an allow rule never covers a command that sets environment variables, and tool configuration
-files are changed only with the user's say-so."""
+"""F6: an allow rule never covers a command that sets environment variables (harmless ones included), and tool
+configuration files are changed only with the user's say-so. Both hold while computer protection is off (every
+command asks) and once it is on."""
 
 from __future__ import annotations
 
@@ -67,20 +68,19 @@ CMD_BAD = [
     (r"SET Home=C:\x && git status", ["git status", "set"]),
 ]
 
-HARMLESS = [
-    ("LANG=C git status", ["git status"], POSIX),
-    ("LC_ALL=C TZ=UTC git status", ["git status"], POSIX),
-    ("NO_COLOR=1 git status", ["git status"], POSIX),
-    ("TERM=dumb CI=1 FORCE_COLOR=0 git status", ["git status"], POSIX),
-    ("env LANG=C git status", ["git status"], POSIX),
-    ("lc_all=C git status", ["git status"], POSIX) if False else ("LC_MESSAGES=C git status", ["git status"], POSIX),
-    ("git status", ["git status"], POSIX),
-    (r"$env:NO_COLOR=1; git status", ["git status"], PWSH),
-    (r"$env:LANG='C'; git status", ["git status"], PWSH),
-    ("set NO_COLOR=1 && git status", ["git status"], CMD),
-    ("set LANG=C&& git status", ["git status"], CMD),
-    ("set", ["set"], CMD),
+# No variable is "harmless" any more: nothing derived from a command's text decides what may run unasked.
+ASSIGNING = [
+    ("LANG=C git status", ["git status"], POSIX), ("LC_ALL=C TZ=UTC git status", ["git status"], POSIX),
+    ("NO_COLOR=1 git status", ["git status"], POSIX), ("env LANG=C git status", ["git status"], POSIX),
+    (r"$env:NO_COLOR=1; git status", ["git status"], PWSH), ("set NO_COLOR=1 && git status", ["git status"], CMD),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _protection_on(monkeypatch):
+    from app.permissions import wall
+
+    monkeypatch.setattr(wall, "active", lambda: True)  # the matcher only decides once the wall is on
 
 
 @pytest.mark.parametrize("command,patterns", POSIX_BAD)
@@ -98,9 +98,10 @@ def test_cmd_environment_assignment_is_not_covered(command, patterns):
     assert not covered(command, patterns, CMD), command
 
 
-@pytest.mark.parametrize("command,patterns,dialect", HARMLESS)
-def test_harmless_variables_stay_covered(command, patterns, dialect):
-    assert covered(command, patterns, dialect), command
+@pytest.mark.parametrize("command,patterns,dialect", ASSIGNING)
+def test_no_variable_is_harmless_enough_to_be_covered(command, patterns, dialect):
+    assert not covered(command, patterns, dialect), command
+    assert covered("git status", ["git status"], dialect) or dialect == CMD
 
 
 @pytest.mark.parametrize("dialect,command", [
@@ -119,6 +120,13 @@ def test_the_gate_asks_instead_of_applying_the_allow_rule(tmp_path, monkeypatch,
                     gate.build_context(w.db, w.user, "chat"))
     assert d.kind == "ask" and d.reason_code == "MODE_ASK"
     assert d.proposed_rule is None or not d.proposed_rule.items  # no "always" pattern to remember from it
+    # and with computer protection off, nothing is covered at all
+    from app.permissions import wall
+
+    monkeypatch.setattr(wall, "active", lambda: False)
+    d = gate.decide(w.db, w.user, "run_command", {"command": "git status", "workdir": w.work},
+                    gate.build_context(w.db, w.user, "chat"))
+    assert d.kind == "ask" and d.reason_code == "UNCHECKED_COMMAND"
     w.db.close()
 
 
@@ -180,7 +188,7 @@ def test_ordinary_files_are_still_written_without_asking_in_skip_mode(w):
     (POSIX, "yarn config set npmRegistryServer http://x"),
     (CMD, "git config --global alias.st status"), (PWSH, "git config --global core.pager id"),
 ])
-def test_shell_writes_to_tool_configuration_need_the_user_each_time(w, monkeypatch, dialect, command):
+def test_shell_writes_to_tool_configuration_need_the_user_each_time(w, wall_on, monkeypatch, dialect, command):
     monkeypatch.setattr(gate, "_dialect", lambda p: dialect)
     d = gate.decide(w.db, w.user, "run_command", {"command": command, "workdir": os.path.join(w.home, "work")},
                     gate.build_context(w.db, w.user, "chat"))
@@ -189,10 +197,9 @@ def test_shell_writes_to_tool_configuration_need_the_user_each_time(w, monkeypat
 
 @pytest.mark.parametrize("dialect,command", [
     (POSIX, "git config --get user.name"), (POSIX, "git config --list"), (POSIX, "npm config get registry"),
-    (POSIX, "pip config list"), (POSIX, "cat .npmrc"), (PWSH, "Get-Content .npmrc"), (CMD, "type .npmrc"),
-    (POSIX, "echo x > notes.txt"),
+    (POSIX, "pip config list"), (POSIX, "echo x > notes.txt"),
 ])
-def test_reading_tool_configuration_is_not_held_up(w, monkeypatch, dialect, command):
+def test_reading_tool_configuration_is_not_held_up(w, wall_on, monkeypatch, dialect, command):
     monkeypatch.setattr(gate, "_dialect", lambda p: dialect)
     d = gate.decide(w.db, w.user, "run_command", {"command": command, "workdir": os.path.join(w.home, "work")},
                     gate.build_context(w.db, w.user, "chat"))

@@ -115,6 +115,11 @@ export default function ModePicker({
           rules cover. Schedules and automations keep their own approval setting and never
           skip approvals.
         </p>
+        {state.commands_ask_every_time && (
+          <p className="text-[13px] leading-relaxed text-muted">
+            On this computer, commands still ask every time until computer protection is available.
+          </p>
+        )}
         <p className="text-[13px] leading-relaxed text-muted">
           You can switch back at any time from the box where you write to AURA.
         </p>

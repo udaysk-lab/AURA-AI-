@@ -207,28 +207,27 @@ cannot see; screen control needs a real model.
 A command runs as your user, with your user's authority. See
 [what this does not protect against](#a-command-is-not-sandboxed).
 
-- **Approval** follows your mode and rules. In Ask first, a command asks. You
-  can write command rules, for example to allow `git status`, or block anything
-  containing `format`. An allow rule covers a command only if it covers every
-  part of it. A command that chains, pipes, redirects, substitutes, sets
-  environment variables first or hides what it runs is never covered by a
-  broad allow rule.
-- **A command AURA cannot read in full** always asks, in every mode, Skip
-  approvals and Auto included. That means a command with variables, command
-  substitution, `$'...'` quoting, `eval`, `xargs`, PowerShell `&` on a
-  variable or `iex`, cmd `%VAR%` or `for` variables, or a Windows short name
-  such as `PROGRA~1`. AURA cannot tell what it will touch, so you decide each
-  time. `$HOME`, `~`, `$PWD`, `%USERPROFILE%` and `$env:USERPROFILE` at the start
-  of a path are not in this group: AURA replaces them with their value and
-  judges the result like any path.
-- **Searches and recursive commands respect block rules.** A command that walks
-  a whole folder (`grep -r`, `find`, `ls -R`, `tree`, `tar`, `zip -r`,
-  `cp -r`, `dir /s`, `Get-ChildItem -Recurse`, `robocopy`, `xcopy /s`) is refused
-  when a folder you blocked lies inside it, and asks when a folder with an Ask
-  rule does. Run it on a subfolder, or leave the blocked folder out.
+- **Approval: every command asks, every time, for now.** Computer protection
+  (an operating-system wall around the programs AURA starts) is off in this
+  version, and reading a command's text can never prove what it will touch. So
+  in every mode, Skip approvals and Auto included, each command asks you, and the
+  card offers "Allow once" and "Don't allow" only. No allow rule, no 10-minute
+  allowance and no safety reviewer covers a command. The same goes for
+  background commands and for typing into one. Rules you stored for commands are
+  kept and marked "Asks every time until computer protection is on". The This
+  computer screen says "Computer protection: off. Commands ask every time."
+- **Use the file tools for files.** Listing, reading, searching, writing and
+  moving files are done by AURA's file tools, which follow your mode and rules
+  as before and do not need a command. Keep commands for what only a command can
+  do (git, builds, tests).
+- **Block rules and the refusals still come first.** Commands that name AURA's
+  own files, its API or the install's denylist are refused before you are asked,
+  and so are commands that a Block rule covers (a command rule, or a path rule
+  against the plain path words in the command).
 - **A command that deletes files, or names a protected location,** asks every
   time, in every mode. So does a command that writes a tool's own configuration
-  file.
+  file. (Today every command asks; this applies as well once computer protection
+  is on.)
 - **What the command gets.** The command receives your own environment minus
   everything AURA uses for its own configuration: AURA's settings, keys, the
   sign-in key and anything named in its settings files. Your `PATH` and your own

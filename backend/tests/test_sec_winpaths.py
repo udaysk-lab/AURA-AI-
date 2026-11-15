@@ -8,29 +8,18 @@ import os
 
 import pytest
 
-from app.permissions import floors, gate, match, pathglob, shellparse
+from app.permissions import canon, gate, match
 from tests.sec_world import build
 
 NT = match.PathOps(ntpath, True)
 HOME = r"C:\Users\u"
 
 
-def test_a_short_name_may_be_aura_s_folder():
-    assert pathglob.could_match(r"C:\Users\u\AURA~1\aura.env", r"C:\Users\u\.aura", r"C:\Users\u\work", HOME,
-                                ci=True, windows=True)
-    assert pathglob.opaque_prefix(r"C:\Users\u\AURA~1\aura.env", HOME, HOME, True) == r"C:/Users/u"
-    assert pathglob.opaque_prefix(r"C:\Users\u\work\a.txt", HOME, HOME, True) is None
-    assert pathglob.opaque_prefix(r"C:\Users\u\AURA~1\aura.env", HOME, HOME, False) is None  # not Windows
-
-
 def test_a_drive_relative_path_is_resolved_against_the_working_directory():
-    assert pathglob.absolute_components(r"C:.aura\aura.env", HOME, HOME, True) == ["C:", "Users", "u", ".aura", "aura.env"]
     assert match.normalize_path(r"C:.aura\aura.env", HOME, NT) == r"C:\Users\u\.aura\aura.env"
-    assert pathglob.could_match(r"C:.aura\aura.env", r"C:\Users\u\.aura", HOME, HOME, ci=True, windows=True)
 
 
-def test_a_drive_relative_path_on_another_drive_is_opaque():
-    assert pathglob.opaque_prefix(r"D:secret\x", HOME, HOME, True) is not None
+def test_a_drive_relative_path_on_another_drive_is_refused():
     with pytest.raises(match.BadArgs):
         match.normalize_path(r"D:secret\x", HOME, NT)
 
@@ -49,7 +38,7 @@ def test_a_unc_path_to_this_computer_is_a_drive_path(raw):
     got = match.normalize_path(raw, HOME, NT)
     assert got == r"C:\Users\u\work\finance\x", got
     assert match.path_matches(r"C:\Users\u\work\finance\**", got, NT)
-    assert pathglob.components(raw, windows=True)[:3] == ["C:", "Users", "u"]
+    assert canon.components(raw, windows=True)[:3] == ["C:", "Users", "u"]
 
 
 def test_this_host_name_counts(monkeypatch):
@@ -61,7 +50,7 @@ def test_this_host_name_counts(monkeypatch):
 
 
 def test_a_share_on_another_computer_is_not_rewritten():
-    assert pathglob.opaque_prefix(r"\\fileserver\c$\x", HOME, HOME, True) is not None
+    assert canon.local_unc_to_drive(r"\\fileserver\c$\x") is None
     assert not match.normalize_path(r"\\fileserver\c$\x", HOME, NT).upper().startswith("C:")
 
 
@@ -79,18 +68,27 @@ def decide(w, command, dialect, workdir=None):
                        gate.build_context(w.db, w.user, "chat"))
 
 
-def test_a_short_name_under_the_folder_that_holds_aura_s_files_is_refused(w):
-    d = decide(w, r"Get-Content ~\AURA~1\aura.env", "pwsh")
-    assert d.kind == "deny" and d.reason_code == "FLOOR_SELF_PATH", (d.kind, d.reason_code)
-    d = decide(w, r"type ~\AURA~1\aura.env", "cmd")
-    assert d.kind == "deny" and d.reason_code == "FLOOR_SELF_PATH", (d.kind, d.reason_code)
+WIN_FORMS = [
+    (r"Get-Content ~\AURA~1\aura.env", "pwsh"), (r"type ~\AURA~1\aura.env", "cmd"),
+    (r"Get-Content ~\work\FINANC~1\x.txt", "pwsh"), (r"type ~\work\FINANC~1\x.txt", "cmd"),
+    (r"Get-Content C:.aura\aura.env", "pwsh"), (r"type \\127.0.0.1\c$\Users\u\work\finance\x", "cmd"),
+    (r"type \\?\UNC\127.0.0.1\c$\Users\u\work\finance\x", "cmd"),
+    (r"type \\?\GLOBALROOT\??\C:\x", "cmd"), (r"type \\.\GLOBALROOT\x", "cmd"),
+    (r"type \\?\Volume{12345678-1234-1234-1234-123456789012}\x", "cmd"),
+]
 
 
-def test_a_short_name_elsewhere_always_needs_the_user(w):
-    d = decide(w, r"Get-Content ~\work\FINANC~1\x.txt", "pwsh")
-    assert d.kind == "ask" and d.always_user and tuple(d.options) == ("once", "reject")
-    d = decide(w, r"type ~\work\FINANC~1\x.txt", "cmd")
-    assert d.kind == "ask" and d.always_user
+@pytest.mark.parametrize("command,dialect", WIN_FORMS)
+def test_windows_path_forms_are_never_allowed(w, command, dialect):
+    d = decide(w, command, dialect)
+    assert d.kind in ("deny", "ask"), command
+    if d.kind == "ask":
+        assert d.reason_code == "UNCHECKED_COMMAND" and d.options == ("once", "reject")
+
+
+def test_a_short_name_under_the_folder_that_holds_aura_s_files_is_still_named_by_its_literal_part(w):
+    d = decide(w, r"type ~\.aura\aura.env", "cmd")
+    assert d.kind == "deny" and d.reason_code == "FLOOR_SELF_PATH"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="native Windows paths")

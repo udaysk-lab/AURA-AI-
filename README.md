@@ -275,7 +275,7 @@ backend/app/
   permissions/
     gate.py              The one decision function
     catalogue.py         Every tool: its system and its kind of action
-    rules.py · match.py · shellparse.py · pathglob.py   Rules and how they match
+    rules.py · match.py · shellparse.py · canon.py      Rules and how they match
     floors.py            The hard limits
     access.py            Connected folders, app grants, the blocked list, presence
     approvals.py         Approval cards: queueing, answering, expiry
@@ -399,16 +399,18 @@ release workflow runs against every build (see
   and 17:00 UTC (once `CRON_SECRET` is set). A schedule fires on the next tick
   after its time, and a task left waiting while the page is closed continues on
   the next tick. The desktop app runs its worker continuously.
-- **Commands are not sandboxed.** A command runs as your operating-system user and
-  can reach anything that user can. What stands in front of it is the gate (mode,
-  rules, cards), block rules, the install's denylist, the refusal of commands
-  that name AURA's own files, and the change log. That is not an
-  operating-system wall. See [DEVICE.md](./DEVICE.md).
+- **Every command asks, every time, for now.** A command runs as your
+  operating-system user and can reach anything that user can, and reading its text
+  cannot prove what it will touch. Until computer protection (an operating-system
+  wall) exists, each command asks you in every mode, Skip approvals included, and
+  no allow rule covers one. AURA uses its file tools to list, read, search, write
+  and move files. Block rules, the install's denylist and the refusal of commands
+  that name AURA's own files still apply first. See [DEVICE.md](./DEVICE.md).
 - **Auto is a model's judgement.** It can be wrong. Use Ask first where a mistake
   would cost you.
 - **Screen control is pixels, not structure.** AURA looks at a screenshot and
   clicks a position. A window that moves between the screenshot and the click
-  means a misclick. Prefer the command line where a task has one.
+  means a misclick. Prefer a file tool or a command where a task has one.
 - **Without a model key it cannot see,** and it cannot review actions. The demo
   model has no vision, so screen control needs a real model, and Auto is
   unavailable.

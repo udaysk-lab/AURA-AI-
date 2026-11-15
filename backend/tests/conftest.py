@@ -148,3 +148,12 @@ def pytest_collection_modifyitems(config, items):
     if drop:
         config.hook.pytest_deselected(items=drop)
         items[:] = keep
+
+
+@pytest.fixture
+def wall_on(monkeypatch):
+    """Force computer protection on, so commands follow the mode and the rules (the later-package path).
+    Nothing in the product turns it on yet; tests of the mode and rule machinery use a command to reach it."""
+    from app.permissions import wall
+
+    monkeypatch.setattr(wall, "active", lambda: True)

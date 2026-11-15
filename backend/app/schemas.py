@@ -1011,6 +1011,9 @@ class DeviceStatusOut(BaseModel):
     present: bool = False
     # The user's own switch for mouse and keyboard use (the install setting is a ceiling above it).
     screen_control_user: bool = True
+    # Computer protection (an operating-system wall around commands) is off: commands ask every time.
+    computer_protection_active: bool = False
+    computer_protection_line: str = ""
 
 
 class DeviceFolderIn(BaseModel):

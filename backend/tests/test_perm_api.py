@@ -27,9 +27,10 @@ from tests.perm_helpers import apply_legacy  # noqa: E402
 from tests.schema import drop_test_schema, ensure_test_schema  # noqa: E402
 
 KEY = "api-test-key"
-STATE_KEYS = {"mode", "mode_label", "auto_available", "auto_effective", "reviewer_model", "boundaries"}
+STATE_KEYS = {"mode", "mode_label", "auto_available", "auto_effective", "reviewer_model", "boundaries",
+              "commands_ask_every_time"}
 RULE_KEYS = {"id", "effect", "system", "tool", "target_kind", "pattern", "applies_to", "source", "expires_at",
-             "revoked_at", "note", "created_at"}
+             "revoked_at", "note", "created_at", "status", "status_label"}
 EVENT_KEYS = {"seq", "actor", "kind", "tool", "target", "outcome", "reason_code", "run_key", "detail", "created_at"}
 
 
@@ -144,7 +145,7 @@ def test_state_shape_and_defaults(client, owner):
     assert set(r.json()) == STATE_KEYS
     assert r.json() | {"reviewer_model": ""} == {
         "mode": "ask", "mode_label": "Ask first", "auto_available": False, "auto_effective": False,
-        "reviewer_model": "", "boundaries": ""}
+        "reviewer_model": "", "boundaries": "", "commands_ask_every_time": r.json()["commands_ask_every_time"]}
     assert client.get("/api/permissions").status_code == 401
 
 
@@ -250,6 +251,30 @@ def test_catalogue(client, owner):
 
 def add(client, owner, **body):
     return client.post("/api/permissions/rules", headers=owner, json={"effect": "allow", "system": "core-inbox", **body})
+
+
+def test_command_allow_rules_are_kept_and_labelled_while_protection_is_off(client, owner):
+    from app.permissions import wall
+
+    assert client.get("/api/permissions", headers=owner).json()["commands_ask_every_time"] is True
+    status = client.get("/api/device", headers=owner).json()
+    assert status["computer_protection_active"] is False
+    assert status["computer_protection_line"] == "Computer protection: off. Commands ask every time."
+    exact = add(client, owner, system="device-control", tool="run_command", target_kind="command", pattern="=git status")
+    wide = add(client, owner, system="device-control", tool="run_command")
+    whole = add(client, owner, system="device-control")
+    other = add(client, owner, tool="send_email", target_kind="recipient", pattern="bob@example.com")
+    block = add(client, owner, system="device-control", tool="run_command", target_kind="command", pattern="git push",
+                effect="block")
+    got = {r["id"]: r for r in client.get("/api/permissions/rules", headers=owner).json()}
+    for made in (exact, wide, other, block):
+        assert made.status_code == 200, made.text
+    assert (got[exact.json()["id"]]["status"], got[exact.json()["id"]]["status_label"]) == (
+        "asks_until_protection", wall.LABEL_RULE)
+    assert got[wide.json()["id"]]["status_label"] == wall.LABEL_TOOL_WIDE == wall.LABEL_RULE
+    assert whole.status_code == 200, whole.text
+    assert got[whole.json()["id"]]["status_label"] == wall.LABEL_SYSTEM_WIDE
+    assert got[other.json()["id"]]["status"] == "" and got[block.json()["id"]]["status"] == ""
 
 
 def test_add_list_and_remove_a_rule(client, owner):

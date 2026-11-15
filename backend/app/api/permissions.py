@@ -23,7 +23,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.deps import CurrentUser, DbSession, PresentUser, get_user_settings
 from app.models import PermissionRule, User, utcnow
-from app.permissions import catalogue, changes, events, gate, legacy, match, reviewer
+from app.permissions import catalogue, changes, events, gate, legacy, match, reviewer, wall
 from app.permissions import rules as rules_store
 
 log = logging.getLogger("aura.permissions.api")
@@ -45,6 +45,8 @@ class PermissionStateOut(BaseModel):
     auto_effective: bool
     reviewer_model: str
     boundaries: str
+    # Computer protection is off on a local install: every command asks every time, in every mode.
+    commands_ask_every_time: bool = False
 
 
 class ModeIn(BaseModel):
@@ -77,6 +79,9 @@ class RuleOut(BaseModel):
     revoked_at: datetime | None = None
     note: str = ""
     created_at: datetime | None = None
+    # "asks_until_protection" for a stored command allow rule that covers nothing while computer protection is off
+    status: str = ""
+    status_label: str = ""
 
 
 class RuleIn(BaseModel):
@@ -132,6 +137,7 @@ def _state(db, user: User) -> PermissionStateOut:
         auto_effective=mode == "auto" and available,
         reviewer_model=reviewer.model_name() or "",
         boundaries=row.reviewer_boundaries or "",
+        commands_ask_every_time=bool(settings.device_control_enabled and wall.commands_ask_every_time()),
     )
 
 
@@ -202,8 +208,23 @@ def _aware(dt: datetime | None) -> datetime | None:
     return dt if dt is None or dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _status_of(row: PermissionRule) -> tuple[str, str]:
+    """A stored allow rule that could cover a command is kept, and says that it asks until protection is on."""
+    if row.effect != "allow" or not wall.commands_ask_every_time() or row.system != "device-control":
+        return "", ""
+    if row.tool is not None and row.tool not in wall.SHELL_TOOLS:
+        return "", ""
+    if row.target_kind == "command" and row.pattern:
+        return wall.STATUS_ASKS, wall.LABEL_RULE
+    if not row.target_kind and not row.pattern:
+        # A rule for the whole system still covers the file and app tools; only its commands keep asking.
+        return wall.STATUS_ASKS, (wall.LABEL_SYSTEM_WIDE if row.tool is None else wall.LABEL_TOOL_WIDE)
+    return "", ""
+
+
 def _rule_out(row: PermissionRule) -> RuleOut:
-    return RuleOut(
+    status, label = _status_of(row)
+    return RuleOut(status=status, status_label=label,
         id=row.id, effect=row.effect, system=row.system, tool=row.tool, target_kind=row.target_kind or "",
         pattern=row.pattern or "", applies_to=row.applies_to or "", source=row.source,
         expires_at=_aware(row.expires_at), revoked_at=_aware(row.revoked_at), note=row.note or "",

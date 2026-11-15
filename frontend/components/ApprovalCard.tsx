@@ -85,6 +85,7 @@ export default function ApprovalCard({
   const toolName = action.action_text || humanTool(action.tool_name).toLowerCase();
   const origin = action.origin ? ORIGIN_LABEL[action.origin] : undefined;
 
+  const unchecked = action.reason_code === "UNCHECKED_COMMAND";
   const options = OPTION_ORDER.filter((o) => action.options?.includes(o));
   const rule = describeProposedRule(payload, action.tool_name);
 
@@ -120,7 +121,7 @@ export default function ApprovalCard({
       case "always":
         return "Always allow";
       case "reject":
-        return "Deny";
+        return unchecked ? "Don't allow" : "Deny";
     }
   };
 
@@ -244,7 +245,7 @@ export default function ApprovalCard({
         </p>
       )}
 
-      {options.includes("always") && !expired && (
+      {options.includes("always") && !unchecked && !expired && (
         <p className="text-[12.5px] leading-relaxed text-muted">
           <span className="font-medium text-ink">Always allow</span> means:{" "}
           {rule ?? "a saved rule for this kind of action. You can change or remove it in Settings, under Permissions."}
