@@ -156,7 +156,13 @@ own files is refused.
 ## Apps and the blocked list
 
 - **Opening and closing apps** (`open_app`, `close_app`, `kill_process`) is a
-  change like any other and follows your mode and rules.
+  change like any other and follows your mode and rules. **Opening a file** that
+  could run as a program does not: a script, program, installer, shortcut, web
+  page, macro document, archive, file with no extension or unknown type asks you
+  every time, in every mode, and the card says AURA cannot check what it does.
+  Plain text, Markdown, PDF, common images, audio and video, CSV and the Office and
+  OpenDocument formats without macros open as your mode allows, and so do folders.
+  A link is judged by the file it leads to, and AURA opens exactly that file.
 - **The blocked list** starts with banking, trading, crypto wallets and password
   managers. AURA never opens, closes, ends or uses a blocked app, in any mode.
   You can add to or remove from the list. A default you remove stays removed.
@@ -191,6 +197,17 @@ If the app has no grant, a card asks. Terminals and code editors are limited to
 click and scroll whatever you choose. Run commands through the shell instead,
 where your rules apply. Browsers are treated like any other app: they need a
 grant.
+
+**The mouse and keyboard always ask.** In every mode, Skip approvals included, each
+click, scroll, key press or piece of typing asks you first, because any of them can
+start a program (a double-click in a file manager, a launcher, a download bar). The
+card offers "Allow once", "Allow for 10 minutes in <application>" and "Don't allow",
+never "Always", and says that for this time AURA can do in that application whatever
+you could do there with mouse and keyboard, including starting programs, so you
+should watch. The 10 minutes cover only the application that was under the pointer
+when you answered; input aimed at another application asks again. No rule and no
+safety reviewer covers it, and a schedule, an automation or an inbound message never
+gets it. Taking a screenshot still follows your mode and rules.
 
 If AURA's own window or a blocked app comes to the front, screen control pauses
 for a minute. For ten seconds after AURA clicks or types, a click on a card is

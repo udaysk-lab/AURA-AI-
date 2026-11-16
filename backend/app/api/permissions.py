@@ -23,7 +23,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.deps import CurrentUser, DbSession, PresentUser, get_user_settings
 from app.models import PermissionRule, User, utcnow
-from app.permissions import catalogue, changes, events, gate, legacy, match, reviewer, wall
+from app.permissions import asks, catalogue, changes, events, gate, legacy, match, reviewer, wall
 from app.permissions import rules as rules_store
 
 log = logging.getLogger("aura.permissions.api")
@@ -64,6 +64,7 @@ class CatalogueEntryOut(BaseModel):
     targets: list[str]
     always_user: bool
     action_text: str = ""  # "create a task": completes "AURA wants to ..."
+    note: str = ""  # what the tool does by default when that is not just "follows mode and rules" (screen input, open_app)
 
 
 class RuleOut(BaseModel):
@@ -328,6 +329,10 @@ def patch_rule(rule_id: str, payload: RulePatch, user: PresentUser, db: DbSessio
     (what the web client did with POST + DELETE), so the log shows exactly what was allowed
     before and what is allowed now. The answer is the new rule, with a new id."""
     old = _own_rule(db, user, rule_id)
+    if old.source == asks.SCREEN_WINDOW_SOURCE:
+        # A 10 minute mouse and keyboard window is not a rule: changing it here would store an ordinary rule.
+        raise HTTPException(status_code=422, detail="A 10 minute window for the mouse and keyboard cannot be "
+                                                    "changed. Remove it to end it early.")
     fields = payload.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(status_code=422, detail="Nothing to change.")

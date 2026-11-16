@@ -518,12 +518,19 @@ function RulesList({
   onEffect: (rule: PermissionRule, effect: RuleEffect) => void;
   onRemove: (rule: PermissionRule) => void;
 }) {
+  // A 10 minute mouse and keyboard window is not a rule: it covers those tools in one application, and it can
+  // only be removed (which ends it early).
+  const isWindow = (r: PermissionRule) => r.source === "screen";
+  const actionName = (r: PermissionRule) =>
+    isWindow(r) ? "Mouse and keyboard" : r.tool ? humanTool(r.tool) : "Every action";
   const sourceNote = (r: PermissionRule) =>
-    r.source === "card"
-      ? "From an approval"
-      : r.source === "legacy"
-        ? "Carried over from your old settings"
-        : "";
+    isWindow(r)
+      ? "For 10 minutes, from an approval"
+      : r.source === "card"
+        ? "From an approval"
+        : r.source === "legacy"
+          ? "Carried over from your old settings"
+          : "";
   const scopeNote = (r: PermissionRule) =>
     r.applies_to?.startsWith("schedule:")
       ? "Only in one schedule"
@@ -566,21 +573,25 @@ function RulesList({
             {rules.map((r, i) => (
               <tr key={r.id ?? i} className="align-top">
                 <td className="py-2.5 pr-3">{systemName(r.system)}</td>
-                <td className="py-2.5 pr-3">{r.tool ? humanTool(r.tool) : "Every action"}</td>
+                <td className="py-2.5 pr-3">{actionName(r)}</td>
                 <td className="max-w-[16rem] break-words py-2.5 pr-3">{cell(r)}</td>
                 <td className="py-1.5 pr-3">
-                  <EffectControl
-                    value={r.effect}
-                    onChange={(e) => onEffect(r, e)}
-                    label={`Rule for ${r.tool ? humanTool(r.tool) : "every action"} in ${systemName(r.system)}`}
-                  />
+                  {isWindow(r) ? (
+                    <span className="inline-flex min-h-[44px] items-center text-muted">Allowed for now</span>
+                  ) : (
+                    <EffectControl
+                      value={r.effect}
+                      onChange={(e) => onEffect(r, e)}
+                      label={`Rule for ${actionName(r).toLowerCase()} in ${systemName(r.system)}`}
+                    />
+                  )}
                 </td>
                 <td className="py-1.5">
                   <button
                     type="button"
                     onClick={() => onRemove(r)}
                     className="btn-quiet min-h-[44px] min-w-[44px] px-3"
-                    aria-label={`Remove rule for ${r.tool ? humanTool(r.tool) : "every action"} in ${systemName(r.system)}`}
+                    aria-label={`Remove rule for ${actionName(r).toLowerCase()} in ${systemName(r.system)}`}
                   >
                     <Trash2 size={14} aria-hidden />
                   </button>
@@ -599,21 +610,25 @@ function RulesList({
               <dt className="text-muted">System</dt>
               <dd>{systemName(r.system)}</dd>
               <dt className="text-muted">Action</dt>
-              <dd>{r.tool ? humanTool(r.tool) : "Every action"}</dd>
+              <dd>{actionName(r)}</dd>
               <dt className="text-muted">Only for</dt>
               <dd className="min-w-0 break-words">{cell(r)}</dd>
             </dl>
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <EffectControl
-                value={r.effect}
-                onChange={(e) => onEffect(r, e)}
-                label={`Rule for ${r.tool ? humanTool(r.tool) : "every action"} in ${systemName(r.system)}`}
-              />
+              {isWindow(r) ? (
+                <span className="text-muted">Allowed for now</span>
+              ) : (
+                <EffectControl
+                  value={r.effect}
+                  onChange={(e) => onEffect(r, e)}
+                  label={`Rule for ${actionName(r).toLowerCase()} in ${systemName(r.system)}`}
+                />
+              )}
               <button
                 type="button"
                 onClick={() => onRemove(r)}
                 className="btn-quiet min-h-[44px]"
-                aria-label={`Remove rule for ${r.tool ? humanTool(r.tool) : "every action"} in ${systemName(r.system)}`}
+                aria-label={`Remove rule for ${actionName(r).toLowerCase()} in ${systemName(r.system)}`}
               >
                 <Trash2 size={14} aria-hidden /> Remove
               </button>
@@ -733,6 +748,7 @@ function AddRuleForm({
               </option>
             ))}
           </select>
+          {entry?.note && <p className="mt-1.5 text-[12.5px] leading-relaxed text-muted">{entry.note}</p>}
         </div>
       </div>
 

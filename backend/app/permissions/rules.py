@@ -23,7 +23,7 @@ from app.models import PermissionRule, User, utcnow
 from app.permissions import catalogue, events, match, shellparse
 
 EFFECTS = ("block", "ask", "allow")
-SOURCES = ("user", "card", "legacy")
+SOURCES = ("user", "card", "legacy", "screen")
 
 
 @dataclass(frozen=True)
@@ -82,6 +82,7 @@ def stored(db: Session, user_id: str, policy: catalogue.ToolPolicy, ctx, now: da
         .where(
             PermissionRule.user_id == user_id,
             PermissionRule.revoked_at.is_(None),
+            PermissionRule.source != "screen",  # a screen window is read only by the gate's own screen step
             PermissionRule.system.in_(("*", policy.system)),
             or_(PermissionRule.tool.is_(None), PermissionRule.tool == policy.name),
         )
@@ -162,3 +163,40 @@ def revoke(db: Session, user: User, rule_id: str, *, actor: str = "user") -> boo
     events.append(db, user.id, "rule_revoked", actor=actor, tool=row.tool or "", outcome=row.effect,
                   detail={"rule_id": row.id})
     return True
+
+
+# ---------------------------------------------------------------------------
+# Screen input windows (permissions/asks.py): "for 10 minutes in this application"
+# ---------------------------------------------------------------------------
+
+
+def screen_window(db: Session, user_id: str, app_id: str, now: datetime | None = None) -> PermissionRule | None:
+    """The live 10 minute window for this application, if the owner opened one. Only rules the approval of a
+    screen card wrote (source "screen") count; a rule typed in Settings never does."""
+    from app.device import appnames
+
+    now = now or utcnow()
+    rows = db.scalars(
+        select(PermissionRule).where(
+            PermissionRule.user_id == user_id, PermissionRule.source == "screen", PermissionRule.effect == "allow",
+            PermissionRule.target_kind == "app", PermissionRule.revoked_at.is_(None),
+            PermissionRule.expires_at.is_not(None),
+        )
+    ).all()
+    for r in rows:
+        exp = _aware(r.expires_at)
+        if exp is not None and exp > now and appnames.canonical(r.pattern or "") == app_id:
+            return r
+    return None
+
+
+def add_screen_window(db: Session, user: User, app_id: str, app_name: str, minutes: int) -> PermissionRule:
+    """Open the window: one allow rule limited to one application, ending in `minutes`. It carries no tool, so
+    it covers the four screen input tools; the gate reads it for those tools only."""
+    from datetime import timedelta
+
+    return add(
+        db, user, effect="allow", system="device-control", tool=None, target_kind="app", pattern=app_id,
+        source="screen", expires_at=utcnow() + timedelta(minutes=minutes),
+        note=f"For {minutes} minutes, use the mouse and keyboard in {app_name}"[:300], actor="user",
+    )

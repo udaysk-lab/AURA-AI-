@@ -59,6 +59,14 @@ def grant(db, user, app, tier):
     db.commit()
 
 
+def open_window(db, user, app):
+    """The owner answered a screen input card with "for 10 minutes" in this application."""
+    from app.permissions import rules as rules_store
+
+    rules_store.add_screen_window(db, user, app, app, 10)
+    db.commit()
+
+
 def go(db, user, tool, args=None, trigger="chat", **kw):
     return gate.decide(db, user, tool, args or {}, ctx(db, user, trigger, **kw))
 
@@ -160,7 +168,10 @@ def test_grant_changes_apply_without_restart(env, monkeypatch):
     here(user)
     assert go(db, user, "mouse_click", {"x": 1, "y": 1}).kind == "ask"
     grant(db, user, "chrome", "click")
-    assert go(db, user, "mouse_click", {"x": 1, "y": 1}).card is None
+    d = go(db, user, "mouse_click", {"x": 1, "y": 1})
+    assert d.card == "tool" and d.reason_code == "SCREEN_INPUT"  # the grant is only the app floor; the owner still asks
+    open_window(db, user, "chrome")
+    assert go(db, user, "mouse_click", {"x": 1, "y": 1}).kind == "allow"
     row = db.scalars(select(DeviceAppGrant)).one()
     from app.models import utcnow
 
@@ -201,6 +212,7 @@ def test_post_click_suspend(env, monkeypatch):
                         lambda x, y: Front(state["app"], state["title"], 999_999, state["app"]))
     here(user)
     grant(db, user, "notes", "full")
+    open_window(db, user, "notes")
 
     def click(*a, **k):
         state.update(app="chrome", title="Approvals · AURA")  # the click landed on AURA's own card
@@ -223,7 +235,9 @@ def test_the_window_must_not_change_between_decision_and_action(env, monkeypatch
     front(monkeypatch, "notes")
     here(user)
     grant(db, user, "notes", "full")
+    open_window(db, user, "notes")
     d = go(db, user, "mouse_click", {"x": 1, "y": 1})
+    assert d.kind == "allow"
     front(monkeypatch, "chrome")
     called = []
     monkeypatch.setattr(screen, "click", lambda *a, **k: called.append(1) or {})

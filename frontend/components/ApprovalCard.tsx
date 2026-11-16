@@ -85,7 +85,13 @@ export default function ApprovalCard({
   const toolName = action.action_text || humanTool(action.tool_name).toLowerCase();
   const origin = action.origin ? ORIGIN_LABEL[action.origin] : undefined;
 
-  const unchecked = action.reason_code === "UNCHECKED_COMMAND";
+  const unchecked =
+    action.reason_code === "UNCHECKED_COMMAND" || action.reason_code === "UNCHECKED_OPEN";
+  const screenInput = action.reason_code === "SCREEN_INPUT";
+  const screenApp =
+    typeof payload.screen_input?.app_name === "string" ? payload.screen_input.app_name : "";
+  const openedPath =
+    typeof payload.unchecked_open?.path === "string" ? payload.unchecked_open.path : "";
   const options = OPTION_ORDER.filter((o) => action.options?.includes(o));
   const rule = describeProposedRule(payload, action.tool_name);
 
@@ -117,7 +123,9 @@ export default function ApprovalCard({
       case "once":
         return "Allow once";
       case "window":
-        return "Allow for 10 minutes";
+        return screenInput && screenApp
+          ? `Allow for 10 minutes in ${screenApp}`
+          : "Allow for 10 minutes";
       case "always":
         return "Always allow";
       case "reject":
@@ -226,6 +234,15 @@ export default function ApprovalCard({
           <br />
           Answering yes allows deleting files in this folder and deletes now. Each later
           delete still asks you.
+        </p>
+      )}
+
+      {openedPath && (
+        <p className="break-words text-[13px] leading-relaxed text-muted">
+          File:{" "}
+          <code className="rounded-md border border-line bg-canvas/60 px-1.5 py-0.5 text-[12px] text-ink">
+            {openedPath}
+          </code>
         </p>
       )}
 

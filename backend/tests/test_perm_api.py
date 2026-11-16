@@ -232,10 +232,10 @@ def test_reviewer_model_is_reported_and_settable(client, owner, monkeypatch):
 
 def test_catalogue(client, owner):
     rows = client.get("/api/permissions/catalogue", headers=owner).json()
-    assert len(rows) == 60 and all(set(r) == {"tool", "system", "kind", "targets", "always_user", "action_text"} for r in rows)
+    assert len(rows) == 60 and all(set(r) == {"tool", "system", "kind", "targets", "always_user", "action_text", "note"} for r in rows)
     by = {r["tool"]: r for r in rows}
     assert by["send_email"] == {"tool": "send_email", "system": "core-inbox", "kind": "send", "targets": ["recipient"], "always_user": False,
-                                "action_text": "send an email"}
+                                "action_text": "send an email", "note": ""}
     assert by["create_task"]["action_text"] == "create a task"
     assert by["delete_file"]["always_user"] is True and by["delete_file"]["targets"] == ["path"]
     assert by["fetch_url"]["targets"] == ["domain"] and by["list_tasks"]["targets"] == []
@@ -421,6 +421,32 @@ def test_pattern_validation_per_kind(client, owner):
 def test_a_schedule_scoped_rule(client, owner):
     r = add(client, owner, tool="send_email", applies_to="schedule:abc")
     assert r.status_code == 200 and r.json()["applies_to"] == "schedule:abc"
+
+
+def test_a_screen_window_can_be_removed_but_never_changed_into_a_rule(client, owner):
+    from app.permissions import asks, rules as rules_store
+
+    uid = me(client, owner)
+    db = SessionLocal()
+    try:
+        row = rules_store.add_screen_window(db, db.get(User, uid), "notes", "Notes", asks.WINDOW_MINUTES)
+        db.commit()
+        rid = row.id
+    finally:
+        db.close()
+    listed = [r for r in client.get("/api/permissions/rules", headers=owner).json() if r["id"] == rid]
+    assert listed and listed[0]["source"] == "screen" and listed[0]["expires_at"]
+    for body in ({"effect": "allow"}, {"effect": "block"}, {"minutes": 600}, {"pattern": "terminal"}, {"note": "x"}):
+        r = client.patch(f"/api/permissions/rules/{rid}", headers=owner, json=body)
+        assert r.status_code == 422 and "cannot be changed" in r.json()["detail"], (body, r.text)
+    db = SessionLocal()
+    try:
+        live = db.scalars(select(PermissionRule).where(PermissionRule.user_id == uid,
+                                                       PermissionRule.revoked_at.is_(None))).all()
+        assert [(r.id, r.source) for r in live if r.target_kind == "app"] == [(rid, "screen")]  # nothing was stored
+    finally:
+        db.close()
+    assert client.delete(f"/api/permissions/rules/{rid}", headers=owner).json() == {"revoked": True}
 
 
 def test_patch_replaces_the_rule(client, owner):

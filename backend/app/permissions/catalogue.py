@@ -302,8 +302,21 @@ def log_missing(tool_names: Iterable[str]) -> list[str]:
     return missing
 
 
+def default_note(name: str) -> str:
+    """One plain line for Settings > Permissions about a tool that does not simply follow mode and rules."""
+    from app.permissions import asks
+
+    if name in asks.SCREEN_TOOLS:
+        return asks.NOTE_SCREEN
+    if name == "open_app":
+        return asks.NOTE_OPEN
+    if name == "take_screenshot":
+        return asks.NOTE_SCREENSHOT
+    return ""
+
+
 def describe() -> list[dict]:
-    """Rows for GET /api/permissions/catalogue: {tool, system, kind, targets, always_user, action_text}."""
+    """Rows for GET /api/permissions/catalogue: {tool, system, kind, targets, always_user, action_text, note}."""
     return [
         {
             "tool": p.name,
@@ -312,6 +325,7 @@ def describe() -> list[dict]:
             "targets": list(p.rule_target_kinds),
             "always_user": p.always_user,
             "action_text": action_phrase(p.name) or "",
+            "note": default_note(p.name),
         }
         for p in CATALOGUE.values()
         if not p.loop_internal

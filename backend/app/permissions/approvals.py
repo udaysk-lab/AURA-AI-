@@ -44,7 +44,7 @@ from app.models import (
     User,
     utcnow,
 )
-from app.permissions import access, catalogue, events, floors, gate, match
+from app.permissions import access, asks, catalogue, events, floors, gate, match
 from app.permissions import rules as rules_store
 
 log = logging.getLogger("aura.approvals")
@@ -712,8 +712,21 @@ def resolve(db: Session, user: User, action_id: str, answer: str, caller: Caller
     return _approve(db, user, action, stored, caller)
 
 
+def _create_screen_window(db: Session, user: User, action: PendingAction, answer: str) -> tuple[list, str]:
+    """"For 10 minutes" on a screen input card: a window bound to the application the card named (the gate's
+    re-check at approval has already refused if the pointer is over another one). Never "always"."""
+    shown = (action.card_payload or {}).get("screen_input") or {}
+    app_id = shown.get("app_id")
+    if answer != "window" or not app_id:
+        return [], "Screen input can only be allowed once or for 10 minutes in one application."
+    row = rules_store.add_screen_window(db, user, app_id, str(shown.get("app_name") or app_id), asks.WINDOW_MINUTES)
+    return [row], ""
+
+
 def _create_rules(db: Session, user: User, action: PendingAction, answer: str) -> tuple[list, str]:
     """The rules a "for 10 minutes" / "always" answer stores. Returns (rules, note)."""
+    if action.reason_code == asks.SCREEN_INPUT:
+        return _create_screen_window(db, user, action, answer)
     draft = _draft_from_json((action.card_payload or {}).get("rule_draft"))
     if draft is None:
         draft = gate.proposed_rule_for(db, user, action)

@@ -373,7 +373,7 @@ export interface PendingAction {
   expires_at?: string | null;
   origin?: "chat" | "schedule" | "automation" | "inbound" | string;
   reason?: string;
-  /** For example UNCHECKED_COMMAND: a command that always asks. */
+  /** For example UNCHECKED_COMMAND, UNCHECKED_OPEN or SCREEN_INPUT: a question that always asks the owner. */
   reason_code?: string;
   work_item_id?: string | null;
   /** The conversation the waiting task belongs to (used to mark it in the sidebar). */
@@ -878,6 +878,8 @@ export interface CatalogueEntry {
   /** Which kinds of target a rule on this tool can be limited to. */
   targets: Array<string | { kind?: string; name?: string }>;
   always_user: boolean;
+  /** The server's line on what this tool does by default (screen input, opening files). May be empty. */
+  note?: string;
 }
 
 export interface PermissionRule {
@@ -889,7 +891,7 @@ export interface PermissionRule {
   target_kind?: RuleTargetKind | string;
   pattern?: string;
   applies_to?: string;
-  source: "user" | "card" | "legacy" | "install" | string;
+  source: "user" | "card" | "legacy" | "install" | "screen" | string;
   expires_at?: string | null;
   revoked_at?: string | null;
   note?: string;

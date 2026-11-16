@@ -25,6 +25,8 @@ AURA is now a personal employee. It works from the first message: you give it an
 - The **folders you had allowed** become connected folders.
 - **Channels need their owner confirmed** in Channels before messages on them start tasks. Until you do, they are kept as notifications.
 - **Every command asks, every time, for now,** whatever your mode or rules, until computer protection is available. That includes background commands and typing into one. Allow rules you had for commands are kept, marked "Asks every time until computer protection is on", and cover nothing yet. AURA lists, reads, searches, writes and moves files with its file tools, which follow your mode and rules as before. Your own console is unchanged.
+- **Opening a file that could run as a program always asks,** in every mode: scripts, programs, installers, shortcuts, web pages, macro documents, archives, files with no extension and unknown types. Documents, text, PDF, images, audio, video and folders open as your mode allows.
+- **The mouse and keyboard always ask,** in every mode. You can answer once or for 10 minutes in one application, never always. The card tells you AURA can do in that application whatever you could, including starting programs, so you should watch. Taking a screenshot is unchanged.
 - Preferences you had taught AURA are moved into the new preference memory.
 - Approvals still waiting from 1.x are given an expiry.
 

@@ -117,7 +117,8 @@ export default function ModePicker({
         </p>
         {state.commands_ask_every_time && (
           <p className="text-[13px] leading-relaxed text-muted">
-            On this computer, commands still ask every time until computer protection is available.
+            On this computer, commands still ask every time until computer protection is available. Mouse and
+            keyboard control, and opening a file that can run, always ask.
           </p>
         )}
         <p className="text-[13px] leading-relaxed text-muted">

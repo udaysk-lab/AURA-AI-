@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import AutomationRule, PendingAction, Schedule, User, UserSettings, utcnow
-from app.permissions import catalogue, events, floors, match, reviewer, rules as rules_store, shellparse, triggers, wall
+from app.permissions import asks, catalogue, events, floors, match, reviewer, rules as rules_store, shellparse, triggers, wall
 from app.permissions.catalogue import ALLOW_KINDS, READ_KINDS, ToolPolicy
 from app.permissions.match import BadArgs, Target
 
@@ -210,6 +210,7 @@ class _Pre:
     digest: str
     floor: floors.FloorResult
     rules: list
+    window: Any = None  # the window a screen call lands on (device/windows.Frontmost), for the card's words
 
 
 def _dialect(policy: ToolPolicy) -> str:
@@ -247,6 +248,7 @@ def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> De
     dialect = _dialect(policy)
     front = None
     under = None
+    landing = None
     extra: dict[str, Any] = {}
     if policy.system == "device-control" and settings.device_control_enabled:
         from app.device import windows
@@ -258,6 +260,7 @@ def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> De
                 # F22: a click or scroll lands where the pointer is, not necessarily on the front window.
                 under = _window_under(windows, args)
                 extra["frontmost"] = under.app_id if under else None
+            landing = under if policy.name in floors.POINT_TOOLS else front
         if any(t.kind == "pid" for t in policy.targets):
             extra["pid_app"] = windows.app_for_pid
     try:
@@ -300,7 +303,7 @@ def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> De
     block = match.first_match("block", applicable, targets, dialect)
     if block:
         return deny("rule", "RULE_BLOCK", _block_reason(block, targets, dialect), block.id)
-    return _Pre(policy, targets, dialect, digest, fl, applicable)
+    return _Pre(policy, targets, dialect, digest, fl, applicable, landing)
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +350,31 @@ def _propose(policy: ToolPolicy, targets: tuple[Target, ...], ctx: GateContext) 
         parent = os.path.dirname(chosen.value) or chosen.value
         items.append(("path", os.path.join(parent, "**")))
     return RuleDraft(system=policy.system, tool=policy.name, applies_to=applies, items=tuple(dict.fromkeys(items)))
+
+
+def _unchecked_open(pre: _Pre):
+    """(real path, Kind) when this open_app call opens something that could run, else None."""
+    if pre.policy.name != "open_app":
+        return None
+    from app.device import filetypes
+
+    for t in pre.targets:
+        if t.kind == "path" and t.opened:
+            kind = filetypes.classify(t.value)
+            if filetypes.needs_owner(kind):
+                return t.value, kind
+    return None
+
+
+def _screen_app(pre: _Pre) -> tuple[str, str]:
+    """The application a screen call lands on (the window under the pointer for a click or scroll, the front window
+    for keys), as (canonical id, name to show)."""
+    for t in pre.targets:
+        if t.kind == "app" and t.role == "frontmost":
+            win = pre.window
+            name = (getattr(win, "name", "") or "").strip() or t.raw or t.value
+            return t.value, name
+    return "", "the window in front"
 
 
 def _ask(pre: _Pre, ctx: GateContext, source: str, code: str, reason: str, *, rule_id: str | None = None,
@@ -400,6 +428,29 @@ def _decide(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> 
                      tool=tool, args_digest=pre.digest, targets=pre.targets, tool_kind=policy.kind,
                      always_user=True, card="tool", card_payload={"unchecked": {"code": wall.CARD_CODE}},
                      options=ONCE_ONLY, proposed_rule=None, user_id=user.id)
+    # 6b. open_app with a file that could run as a program: the owner, once or not at all, in every mode.
+    unchecked = _unchecked_open(pre)
+    if unchecked is not None:
+        return _make(kind="ask", source="always_user", reason_code=asks.UNCHECKED_OPEN,
+                     reason=asks.UNCHECKED_OPEN_REASON, tool=tool, args_digest=pre.digest, targets=pre.targets,
+                     tool_kind=policy.kind, always_user=True, card="tool",
+                     card_payload={"unchecked_open": {"path": unchecked[0], "type": unchecked[1].ext,
+                                                      "why": unchecked[1].why}},
+                     options=ONCE_ONLY, proposed_rule=None, user_id=user.id)
+    # 6c. screen input: the owner, in every mode; the only allowance is a 10 minute window for one application.
+    if policy.name in asks.SCREEN_TOOLS:
+        app_id, app_name = _screen_app(pre)
+        if app_id and rules_store.screen_window(db, user.id, app_id):
+            return _make(kind="allow", source="rule", reason_code=asks.SCREEN_WINDOW_CODE,
+                         reason=asks.screen_window_reason(app_name), tool=tool, args_digest=pre.digest,
+                         targets=pre.targets, tool_kind=policy.kind, user_id=user.id)
+        return _make(kind="ask", source="always_user", reason_code=asks.SCREEN_INPUT,
+                     reason=asks.screen_reason(app_name), tool=tool, args_digest=pre.digest, targets=pre.targets,
+                     tool_kind=policy.kind, always_user=True, card="tool",
+                     card_payload={"screen_input": {"app_id": app_id, "app_name": app_name,
+                                                    "window_minutes": asks.WINDOW_MINUTES}},
+                     options=ONCE_ONLY if not app_id else ("once", "window", "reject"), proposed_rule=None,
+                     user_id=user.id)
     if policy.always_user or pre.floor.always_user:
         why = ("Permanently deleting files always needs your approval."
                if policy.always_user else
@@ -563,8 +614,34 @@ def decide_approved(db: Session, user: User, action: PendingAction) -> Decision:
         d = _deny("floor", pre.floor.refuse_code or "FLOOR_OUTSIDE_FOLDERS", pre.floor.reason, tool=action.tool_name,
                   digest=args_digest(args), user=user, policy=pre.policy, targets=pre.targets)
     else:
-        d = _allow(pre, "rule", "APPROVED_BY_USER", "You approved this.", user=user, tool=action.tool_name)
+        d = _approved_call(pre, action, user)
     return _finish(db, user, d, ctx)
+
+
+def _approved_call(pre: _Pre, action: PendingAction, user: User) -> Decision:
+    """The answer covers exactly what the card showed: the same file, the same application, the same kind."""
+    tool = action.tool_name
+    payload = action.card_payload or {}
+
+    def refuse(code: str, why: str) -> Decision:
+        return _deny("floor", code, why, tool=tool, digest=pre.digest, user=user, policy=pre.policy,
+                     targets=pre.targets)
+
+    unchecked = _unchecked_open(pre)
+    if unchecked is not None:
+        shown = (payload.get("unchecked_open") or {}).get("path")
+        if action.reason_code != asks.UNCHECKED_OPEN or not shown or \
+                os.path.normcase(shown) != os.path.normcase(unchecked[0]):
+            return refuse("OPEN_CHANGED", "The file is not what was shown to you, so it was not opened.")
+        return _allow(pre, "rule", "APPROVED_UNCHECKED_OPEN", "You approved opening this file.", user=user, tool=tool)
+    if pre.policy.name in asks.SCREEN_TOOLS:
+        app_id, _ = _screen_app(pre)
+        shown = (payload.get("screen_input") or {}).get("app_id")
+        if action.reason_code != asks.SCREEN_INPUT or not app_id or shown != app_id:
+            return refuse("SCREEN_APP_CHANGED",
+                          "The application under the pointer is not the one you were asked about, so nothing was done.")
+        return _allow(pre, "rule", "APPROVED_SCREEN_INPUT", "You approved this.", user=user, tool=tool)
+    return _allow(pre, "rule", "APPROVED_BY_USER", "You approved this.", user=user, tool=tool)
 
 
 def proposed_rule_for(db: Session, user: User, action: PendingAction) -> RuleDraft | None:

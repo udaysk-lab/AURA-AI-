@@ -123,7 +123,7 @@ def test_describe_matches_client_shape():
     rows = {r["tool"]: r for r in catalogue.describe()}
     assert set(rows) == set(tools.REGISTRY)
     assert rows["send_email"] == {"tool": "send_email", "system": "core-inbox", "kind": "send", "targets": ["recipient"], "always_user": False,
-                               "action_text": "send an email"}
+                               "action_text": "send an email", "note": ""}
     assert rows["fetch_url"]["targets"] == ["domain"]
     assert rows["run_command"]["targets"] == ["command"]  # the workdir is not a rule target
     assert not (LOOP_TOOLS & set(rows))

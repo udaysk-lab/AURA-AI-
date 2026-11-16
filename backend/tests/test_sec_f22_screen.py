@@ -16,7 +16,7 @@ from app.config import settings
 from app.device import screen, windows
 from app.permissions import access, gate
 from tests.perm_helpers import ctx, make_session, make_user
-from tests.test_perm_screen import Front, code, env, go, grant, here  # noqa: F401
+from tests.test_perm_screen import Front, code, env, go, grant, here, open_window  # noqa: F401
 
 
 def setup(monkeypatch, db, user, front_app="notes", under=None, grant_to=("notes",), tier="click"):
@@ -28,6 +28,7 @@ def setup(monkeypatch, db, user, front_app="notes", under=None, grant_to=("notes
     here(user)
     for app in grant_to:
         grant(db, user, app, tier)
+    open_window(db, user, front_app)  # screen input always asks; these tests are about the floors behind it
     return state
 
 

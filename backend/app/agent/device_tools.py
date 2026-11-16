@@ -382,14 +382,23 @@ def _make_directory(ctx: ToolContext, args: dict) -> dict:
 
 @tool(
     "open_app",
-    "Open an application, a file, or a URL on this computer.",
+    "Open an application, a file, or a URL on this computer."
+    " Documents and media open as your mode allows; a script, program, shortcut, installer, macro document or"
+    " unknown file needs the owner's approval each time.",
     {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
     destructive=True,
     preview=lambda a: f"Open {a.get('name')}",
 )
 @_safe
 def _open_app(ctx: ToolContext, args: dict) -> dict:
-    result = apps.open_app(args["name"])
+    decision = getattr(ctx, "decision", None)
+    if decision is not None:
+        # Open exactly what the gate decided on: the real path it judged, and its type as it judged it.
+        opened = next((t.value for t in decision.targets if t.kind == "path" and t.opened), None)
+        approved = decision.reason_code == "APPROVED_UNCHECKED_OPEN"
+        result = apps.open_app(args["name"], decided=opened, owner_approved=approved, decided_none=opened is None)
+    else:
+        result = apps.open_app(args["name"])
     _log(ctx, "open_app", args["name"])
     return result
 
@@ -506,7 +515,7 @@ def _take_screenshot(ctx: ToolContext, args: dict) -> dict:
 @tool(
     "mouse_click",
     "Click the mouse on this computer, optionally at a screen pixel. Take a screenshot "
-    "first to find coordinates.",
+    "first to find coordinates. The owner is asked before mouse and keyboard use, in every mode.",
     {
         "type": "object",
         "properties": {

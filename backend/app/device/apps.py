@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 
-from app.device import childenv, files
+from app.device import childenv, filetypes, files
 from app.device.runtime import DeviceUnavailable, hidden_process, require_enabled
 
 
@@ -68,12 +68,42 @@ def _windows_open(target: str) -> None:
     os.startfile(target)  # type: ignore[attr-defined]
 
 
-def open_app(name: str) -> dict:
-    """Launch an application by name (or open a file/URL target)."""
+def open_decided_path(decided: str, label: str, *, owner_approved: bool) -> dict:
+    """Open exactly the real path the gate decided on, after judging it again with the same function.
+
+    A file whose type needs the owner opens only when the owner approved this very path; a path that changed
+    place, or became something else since the decision, is refused. Nothing is looked up by name here."""
+    require_enabled()
+    try:
+        real = files.resolve(decided, must_exist=True)
+    except DeviceUnavailable as exc:
+        return {"error": str(exc)}
+    if os.path.normcase(real) != os.path.normcase(decided):
+        return {"error": f"{label} no longer points where it did when this was checked, so nothing was opened."}
+    kind = filetypes.classify(real)
+    if kind.kind == "missing":
+        return {"error": f"{label} does not exist any more, so nothing was opened."}
+    if kind.kind == "unchecked" and not owner_approved:
+        return {"error": f"{label} is not a document or media file, and opening it may run it. "
+                         "It needs your approval each time."}
+    return _open_target(real, label=f"Opened {label}")
+
+
+def open_app(name: str, *, decided: str | None = None, owner_approved: bool = False,
+             decided_none: bool = False) -> dict:
+    """Launch an application by name (or open a file/URL target).
+
+    `decided` is the canonical real path the permission gate judged for a file or folder argument: that exact path
+    is opened, never the text again. `decided_none` says the gate saw no file there, so an argument that names a
+    file now is not what was decided and is refused."""
     require_enabled()
     target = (name or "").strip()
     if not target:
         return {"error": "No application given."}
+    if decided is not None:
+        return open_decided_path(decided, target, owner_approved=owner_approved)
+    if decided_none and os.path.exists(os.path.expanduser(target)) and not target.lower().startswith(("http://", "https://")):
+        return {"error": f"{target!r} is a file now, not what was checked, so nothing was opened."}
 
     # If it names a path inside the allowed roots, open it as a document —
     # unless opening it would run it.

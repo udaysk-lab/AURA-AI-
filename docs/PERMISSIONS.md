@@ -117,6 +117,30 @@ These ask every time, in every mode, and no rule can turn the card off:
   says AURA cannot check what the command does, and offers "Allow once" and
   "Don't allow" only. Commands that reach `/proc/<anything>/cwd`, `root`,
   `environ` or `fd` are refused.
+- Opening a file that could run as a program (`open_app` with a file). Plain
+  text, Markdown, PDF, common images, audio and video, CSV and TSV, and the
+  Office and OpenDocument formats without macros (`.docx`, `.xlsx`, `.pptx`,
+  `.odt`, `.ods`, `.odp`, `.odg`) follow your mode and rules, and so does a
+  folder. Everything else asks every time: scripts, programs, installers,
+  shortcuts (`.lnk`, `.url`, `.desktop`, `.webloc`), web pages (`.html`,
+  `.svg`), macro documents (`.docm`, `.xlsm`, `.pptm`, and the old `.doc`,
+  `.xls`, `.ppt`), archives, files with no extension, unknown extensions, and
+  any file whose content is not what its name says. A link is judged by the
+  file it leads to, and AURA opens exactly that file. The card says the file may
+  run as a program and that AURA cannot check what it does. It offers "Allow
+  once" and "Don't allow" only.
+- Using the mouse and keyboard (click, scroll, type, press keys). Any of them can
+  start a program (a double-click in a file manager, a launcher, a download bar),
+  so the card says that for this time AURA can do in that application whatever
+  you could do there, including starting programs, and asks you to watch. It
+  offers "Allow once", "Allow for 10 minutes in <application>" and "Don't
+  allow", never "Always". The 10 minutes cover that one application, the one
+  under the pointer when you answer; input aimed at any other application asks
+  again. Skip approvals, stored rules and Auto review do not cover it, and
+  schedules, automations and inbound messages never get it. Taking a screenshot
+  still follows your mode and rules. AURA's own window, blocked apps, the
+  click-and-scroll limit for terminals and editors, and your per-app levels
+  still apply first.
 - Writing to a tool's own configuration file (for example a git, npm, pip or
   cargo settings file).
 - Connecting a folder, allowing an app, and allowing deletes in a folder.
