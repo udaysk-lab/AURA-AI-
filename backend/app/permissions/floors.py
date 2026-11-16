@@ -490,7 +490,10 @@ def too_broad_for_a_card(folder: str) -> bool:
     if not folder or _is_fs_root(folder):
         return True
     home = os.path.realpath(os.path.expanduser("~"))
-    return os.path.normcase(os.path.realpath(folder)) == os.path.normcase(home)
+    try:
+        return os.path.normcase(os.path.realpath(folder)) == os.path.normcase(home)
+    except (OSError, ValueError):
+        return True  # a folder the system cannot resolve is never offered in one click
 
 
 def _cards_allowed(ctx) -> bool:

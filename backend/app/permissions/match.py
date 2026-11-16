@@ -110,7 +110,12 @@ def normalize_path(raw: str, base: str | None = None, ops: PathOps | None = None
         text = _windows_form(text, base, ops)
     if not ops.pm.isabs(text):
         text = ops.pm.join(base or ops.pm.expanduser("~"), text)
-    return ops.pm.realpath(text)
+    try:
+        return ops.pm.realpath(text)
+    except (OSError, ValueError) as exc:
+        # Some paths cannot be resolved at all: Windows answers "the handle is invalid" for device forms such as
+        # \\?\GLOBALROOT\??. A path nobody can resolve is refused, never guessed at.
+        raise BadArgs("path cannot be resolved") from exc
 
 
 def _split_pattern(pattern: str, ops: PathOps) -> tuple[str, str, str]:

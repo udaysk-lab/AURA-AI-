@@ -95,3 +95,24 @@ def test_a_short_name_under_the_folder_that_holds_aura_s_files_is_still_named_by
 def test_native_windows_unc_and_short_names(w):
     d = decide(w, rf"type \\127.0.0.1\c$\{os.path.splitdrive(w.aura_home)[1].lstrip(chr(92))}\aura.env", "cmd")
     assert d.kind == "deny"
+
+
+def test_a_path_the_system_cannot_resolve_is_refused_and_never_a_crash(monkeypatch):
+    """Windows answers "the handle is invalid" for device forms such as \\\\?\\GLOBALROOT\\??; the resolver used to
+    let that error escape from the middle of a decision. Any path nobody can resolve is refused instead."""
+    import os
+
+    from app.permissions import match
+
+    real = os.path.realpath
+
+    def flaky(path, *args, **kwargs):
+        if "GLOBALROOT" in str(path):
+            raise OSError(6, "The handle is invalid", str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", flaky)
+    with pytest.raises(match.BadArgs):
+        match.normalize_path(os.path.join(os.sep, "GLOBALROOT", "x"), os.path.expanduser("~"))
+    # a path that resolves is unaffected
+    assert match.normalize_path(os.path.expanduser("~")) == real(os.path.expanduser("~"))

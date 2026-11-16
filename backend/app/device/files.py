@@ -183,12 +183,17 @@ def read_text(path: str, max_bytes: int | None = None) -> dict:
     }
 
 
-def _blocked(real: str, skip: tuple[str, ...]) -> bool:
-    """Is this path inside a tree the user's block rules cover?"""
+def _blocked(path: str, skip: tuple[str, ...]) -> bool:
+    """Is this entry inside a tree the user's block rules cover? An entry the system cannot resolve counts as
+    blocked: it is left out rather than guessed at."""
     if not skip:
         return False
     from app.permissions import match
 
+    try:
+        real = os.path.realpath(path)
+    except (OSError, ValueError):
+        return True
     return any(match.path_matches(pattern, real) for pattern in skip)
 
 
@@ -207,7 +212,7 @@ def list_directory(path: str = "~", show_hidden: bool = False, skip: tuple[str, 
         for entry in it:
             if not show_hidden and entry.name.startswith("."):
                 continue
-            if _blocked(os.path.realpath(entry.path), skip):
+            if _blocked(entry.path, skip):
                 skipped += 1
                 continue
             try:
@@ -256,7 +261,7 @@ def search_files(
             if d.startswith(".") or d in {"node_modules", "__pycache__", "venv", ".venv", "dist", "build"}:
                 continue
             full_dir = os.path.join(dirpath, d)
-            if _blocked(os.path.realpath(full_dir), skip):
+            if _blocked(full_dir, skip):
                 skipped += 1
                 continue
             if _safe(full_dir):
@@ -264,7 +269,7 @@ def search_files(
         dirnames[:] = keep
         for name in filenames:
             full = os.path.join(dirpath, name)
-            if _blocked(os.path.realpath(full), skip):
+            if _blocked(full, skip):
                 skipped += 1
                 continue
             if not _safe(full):
