@@ -129,10 +129,12 @@ def _test_peers_are_ordinary_programs(request, monkeypatch):
 def pytest_collection_modifyitems(config, items):
     """Run one slice of the suite when AURA_TEST_SHARD is "i/n" (CI on slow runners).
 
-    Whole test modules stay together, so module-scoped fixtures behave as usual.
+    Whole test modules stay together, so module-scoped fixtures behave as usual. Modules are dealt out by size,
+    largest first, each to the slice with the fewest tests so far, so the slices come out close to even. Every
+    slice collects the same tests and so computes the same split.
     """
+    import collections
     import os
-    import zlib
 
     spec = os.environ.get("AURA_TEST_SHARD", "").strip()
     if not spec or spec == "1/1":
@@ -141,10 +143,20 @@ def pytest_collection_modifyitems(config, items):
     index, total = int(index), int(total)
     if not 1 <= index <= total:
         raise pytest.UsageError(f"AURA_TEST_SHARD={spec!r} is not i/n with 1 <= i <= n")
+
+    def module(item) -> str:
+        return item.nodeid.split("::", 1)[0].replace("\\", "/")
+
+    sizes = collections.Counter(module(item) for item in items)
+    load = [0] * total
+    slice_of: dict[str, int] = {}
+    for name, size in sorted(sizes.items(), key=lambda kv: (-kv[1], kv[0])):
+        k = min(range(total), key=lambda i: (load[i], i))
+        slice_of[name] = k
+        load[k] += size
     keep, drop = [], []
     for item in items:
-        module = item.nodeid.split("::", 1)[0].replace("\\", "/")
-        (keep if zlib.crc32(module.encode()) % total == index - 1 else drop).append(item)
+        (keep if slice_of[module(item)] == index - 1 else drop).append(item)
     if drop:
         config.hook.pytest_deselected(items=drop)
         items[:] = keep
