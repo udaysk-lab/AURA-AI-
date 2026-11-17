@@ -31,7 +31,12 @@ def test_the_running_interpreter_and_its_libraries_are_self_paths():
         assert floors.in_self_path(os.path.join(os.path.realpath(sysconfig.get_path(key)), "anything.py")), key
     import site
 
+    # On Windows site.getsitepackages() also names the installation root, which holds other programs: only the
+    # library folders below it count (the root of a virtual environment is checked just below).
+    roots = {os.path.normcase(os.path.realpath(p)) for p in (sys.prefix, sys.base_prefix)}
     for folder in site.getsitepackages():
+        if os.path.normcase(os.path.realpath(folder)) in roots:
+            continue
         assert floors.in_self_path(os.path.join(os.path.realpath(folder), "module.py")), folder
     if sys.prefix != sys.base_prefix:
         assert floors.in_self_path(os.path.join(os.path.realpath(sys.prefix), "pyvenv.cfg"))
