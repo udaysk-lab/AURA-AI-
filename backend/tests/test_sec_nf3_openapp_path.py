@@ -80,7 +80,11 @@ def test_a_file_outside_the_connected_folders_needs_the_folder_card(tmp_path, mo
     w.engine.dispose()
 
 
-def test_an_ordinary_document_and_an_app_name_still_open_in_skip(w):
+def test_an_ordinary_document_and_an_app_name_still_open_in_skip(w, monkeypatch):
+    from app.device import programs
+
+    # An installed application: found outside every connected folder, on whatever system the tests run.
+    monkeypatch.setattr(programs, "resolve", lambda name: os.path.join(os.sep, "opt", "spotify", "spotify"))
     assert decide(w, "~/work/notes.txt").kind == "allow"
     assert decide(w, "Spotify").kind == "allow"
 

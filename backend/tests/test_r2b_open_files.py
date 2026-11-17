@@ -287,6 +287,10 @@ def test_a_document_swapped_for_a_script_before_it_opens_is_refused(w):
 def test_a_name_that_became_a_file_since_the_decision_is_refused(w, monkeypatch):
     if w.mode == "ask":
         pytest.skip("an app name asks in Ask first")
+    from app.device import programs
+
+    # An installed application: found outside every connected folder, on whatever system the tests run.
+    monkeypatch.setattr(programs, "resolve", lambda name: os.path.join(os.sep, "opt", "spotify", "spotify"))
     monkeypatch.chdir(w.work)
     d = decide(w, "Spotify")
     assert d.kind == "allow" and not any(t.kind == "path" for t in d.targets)
