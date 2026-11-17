@@ -1,6 +1,7 @@
 """The two questions that always need the owner, whatever the mode (docs/PERMISSIONS.md; the companion of wall.py).
 
-UNCHECKED_OPEN  `open_app` with a file that may run as a program when the system opens it.
+UNCHECKED_OPEN  `open_app` with a file that may run as a program when the system opens it, or with an application
+                name that resolves to a program inside a folder AURA can change (or cannot be found).
 SCREEN_INPUT    every tool that moves the pointer, clicks, scrolls, types or presses keys.
 
 Both are decided in the gate before ask rules, allow rules, defaults, the mode and the reviewer, so none of them
@@ -15,6 +16,18 @@ UNCHECKED_OPEN_REASON = (
     "Opening this file may run it as a program, and AURA cannot check what it does. It would run with your "
     "account, so it could read, change or delete anything you can. Allow it once only if you know what the file is."
 )
+
+UNCHECKED_OPEN_FOLDER_REASON = (
+    "This application is in a folder AURA can change, so AURA cannot tell who put it there or what it does. "
+    "Starting it would run it with your account, so it could read, change or delete anything you can. "
+    "Allow it once only if you know what it is."
+)
+UNCHECKED_OPEN_UNFOUND_REASON = (
+    "AURA could not find where this application is installed, so it cannot check what would start. "
+    "Starting it would run it with your account, so it could read, change or delete anything you can. "
+    "Allow it once only if you know what it is."
+)
+UNCHECKED_OPEN_WHY = {"folder": "It is in a folder AURA can change.", "unfound": "AURA could not find where it is installed."}
 
 # --- screen input -----------------------------------------------------------
 SCREEN_INPUT = "SCREEN_INPUT"
@@ -37,7 +50,8 @@ def screen_window_reason(app: str) -> str:
 
 # --- the line Settings > Permissions shows for these tools --------------------
 NOTE_OPEN = ("Documents, media and folders follow your mode and rules. Anything that could run as a program "
-             "(scripts, shortcuts, installers, macro documents, unknown files) asks you every time.")
+             "(scripts, shortcuts, installers, macro documents, unknown files, an application found inside a folder AURA "
+             "can change) asks you every time.")
 NOTE_SCREEN = ("Asks you every time, in every mode: once, or for 10 minutes in one application. "
                "Skip approvals, rules and Auto review do not cover it.")
 NOTE_SCREENSHOT = "Follows your mode and rules."

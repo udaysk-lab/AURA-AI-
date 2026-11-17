@@ -108,6 +108,11 @@ installed shows there too and cannot be edited there.
 
 ## What always needs you
 
+Connect the folders you work in, not your whole home folder. Inside a connected
+folder AURA can change any file, including files that other programs read as their
+settings or run on their own. The list of protected places is a safety net, not a
+proof that nothing else can matter.
+
 These ask every time, in every mode, and no rule can turn the card off:
 
 - Permanently deleting a file (`delete_file`).
@@ -129,6 +134,14 @@ These ask every time, in every mode, and no rule can turn the card off:
   file it leads to, and AURA opens exactly that file. The card says the file may
   run as a program and that AURA cannot check what it does. It offers "Allow
   once" and "Don't allow" only.
+- Starting an application by name (`open_app` with a name such as `notes`) when
+  the program that would start is found inside a folder you connected, or when
+  AURA cannot find where it is installed (Windows and macOS). AURA looks the name
+  up itself and starts exactly that program, and you are asked each time, in every
+  mode, even if you set a rule for the application. The card says the program
+  would run with your account and to allow it once only if you know what it is.
+  If nothing is found on Linux, nothing starts. Programs outside your connected
+  folders follow your mode and rules.
 - Using the mouse and keyboard (click, scroll, type, press keys). Any of them can
   start a program (a double-click in a file manager, a launcher, a download bar),
   so the card says that for this time AURA can do in that application whatever

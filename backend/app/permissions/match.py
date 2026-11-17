@@ -373,6 +373,8 @@ class Target:
     tree: bool = False  # stands for everything beneath it (a search root): an ask rule anywhere inside it applies
     named: bool = False  # a path a shell command names or runs in: block and ask rules see it, allow rules do not need it
     opened: bool = False  # a path a tool opens (open_app): the floors check it like a file argument
+    program: str = ""  # open_app with a bare name: the directory entry the name resolved to ("" when none was found)
+    resolved: bool = False  # the name was looked up (so "" in `program` means nothing was found)
 
 
 def extract(
@@ -383,12 +385,14 @@ def extract(
     home: str | None = None,
     frontmost: str | None = None,
     pid_app: Callable[[int], str | None] | None = None,
+    resolve_program: Callable[[str], str] | None = None,
     ops: PathOps | None = None,
 ) -> tuple[Target, ...]:
     """The targets of one call. Raises BadArgs when an argument cannot be read.
 
     `frontmost` is the canonical id of the front window's app (screen tools);
-    `pid_app` maps a pid to a canonical app id. Both come from the device layer.
+    `pid_app` maps a pid to a canonical app id; `resolve_program` maps a bare application name to the directory
+    entry that would start. All three come from the device layer.
     """
     if not isinstance(args, dict):
         raise BadArgs("arguments must be an object")
@@ -453,6 +457,13 @@ def extract(
             app_id = appnames.canonical(value)
             if not app_id:
                 raise BadArgs("not an application name")
+            if policy.name == "open_app" and resolve_program is not None:
+                try:
+                    program = resolve_program(value.strip())
+                except Exception:  # a lookup that fails finds nothing
+                    program = ""
+                out.append(Target("app", app_id, "", value, program=program, resolved=True))
+                continue
             out.append(Target("app", app_id, "", value))
         elif spec.kind == "pid":
             if isinstance(value, bool) or not isinstance(value, (int, str)) or not str(value).strip().isdigit():

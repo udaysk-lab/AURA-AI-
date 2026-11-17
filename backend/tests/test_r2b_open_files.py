@@ -214,7 +214,10 @@ def test_unattended_triggers_never_open_files(w):
             assert decide(w, path, trigger).kind == "deny", trigger
 
 
-def test_an_app_name_and_a_url_are_unchanged(w):
+def test_an_app_name_and_a_url_are_unchanged(w, monkeypatch):
+    from app.device import programs
+
+    monkeypatch.setattr(programs, "current_platform", lambda: programs.LINUX)
     d = decide(w, "Spotify")
     assert d.reason_code != "UNCHECKED_OPEN"
     d = decide(w, "https://example.com/page")

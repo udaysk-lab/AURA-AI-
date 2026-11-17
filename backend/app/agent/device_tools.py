@@ -384,21 +384,21 @@ def _make_directory(ctx: ToolContext, args: dict) -> dict:
     "open_app",
     "Open an application, a file, or a URL on this computer."
     " Documents and media open as your mode allows; a script, program, shortcut, installer, macro document or"
-    " unknown file needs the owner's approval each time.",
+    " unknown file needs the owner's approval each time, and so does an application found inside a folder"
+    " AURA can change.",
     {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
     destructive=True,
     preview=lambda a: f"Open {a.get('name')}",
 )
 @_safe
 def _open_app(ctx: ToolContext, args: dict) -> dict:
-    decision = getattr(ctx, "decision", None)
-    if decision is not None:
-        # Open exactly what the gate decided on: the real path it judged, and its type as it judged it.
-        opened = next((t.value for t in decision.targets if t.kind == "path" and t.opened), None)
-        approved = decision.reason_code == "APPROVED_UNCHECKED_OPEN"
-        result = apps.open_app(args["name"], decided=opened, owner_approved=approved, decided_none=opened is None)
-    else:
-        result = apps.open_app(args["name"])
+    # Open exactly what the gate judged: the real path of a file, or the entry a name resolved to. No decision means
+    # nothing was judged, and then nothing starts.
+    targets = getattr(getattr(ctx, "decision", None), "targets", ())
+    approved = getattr(getattr(ctx, "decision", None), "reason_code", "") == "APPROVED_UNCHECKED_OPEN"
+    opened = next((t.value for t in targets if t.kind == "path" and t.opened), None)
+    program = next((t.program for t in targets if t.kind == "app" and t.resolved), None)
+    result = apps.open_app(args["name"], decided=opened, owner_approved=approved, program=program)
     _log(ctx, "open_app", args["name"])
     return result
 

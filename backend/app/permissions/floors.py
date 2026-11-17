@@ -568,6 +568,15 @@ def _app_floor(acc, policy: ToolPolicy, targets) -> FloorResult:
             return _deny("FLOOR_AURA_WINDOW", "That is AURA itself.")
         if acc.blocked(t.value):
             return _deny("FLOOR_BLOCKED_APP", "That app is on your blocked list. AURA never opens, closes or uses it.")
+        if t.resolved and t.program:
+            # open_app by name: the file the name resolved to is judged too, by its place and by its own name.
+            from app.device import programs
+
+            if programs.judge(t.program, acc.roots, in_self_path).kind == "self":
+                return _deny("FLOOR_AURA_WINDOW", "That is AURA itself.")
+            if acc.blocked(appnames.canonical(os.path.basename(t.program))):
+                return _deny("FLOOR_BLOCKED_APP",
+                             "That app is on your blocked list. AURA never opens, closes or uses it.")
     return OK
 
 

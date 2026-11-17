@@ -1,9 +1,9 @@
 """Launching and closing applications.
 
-"Open Spotify", "open this folder", "open that URL in the browser" — the
-cross-platform launchers for each OS, plus a best-effort close. Opening a
-document or URL goes through the same per-platform opener (`open`, `start`,
-`xdg-open`), with any file path fenced to the allowed roots first.
+`open_app` opens only what the permission gate judged for the call: the real path of a file or folder, an http or
+https URL, or the directory entry a bare application name resolved to (app/device/programs.py). It never hands the
+text it was given to the system to look up, except for a name the owner approved after AURA said it could not find
+it. `close_app` is a best-effort close by name.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 
-from app.device import childenv, filetypes, files
+from app.device import childenv, filetypes, files, programs
 from app.device.runtime import DeviceUnavailable, hidden_process, require_enabled
 
 
@@ -25,10 +25,8 @@ from app.device.runtime import DeviceUnavailable, hidden_process, require_enable
 _UNSAFE_NAME = set('&|<>^%!"`$;*?\n\r\t\x00')
 
 
-# Opening one of these runs it, and that's what run_command is for — which
-# asks first, where opening an app doesn't in auto mode. Scripts are plain
-# text, so the file tools could write one; they're never opened, by path or by
-# name (a name is looked up on PATH, which can include folders in your home).
+# A NAME that ends like one of these is refused outright: opening it would run it, and that is what run_command is
+# for. (A file of such a type given by path is judged by app/device/filetypes.py and asks the owner every time.)
 _SCRIPTS = (
     ".bat", ".cmd", ".ps1", ".psm1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh",
     ".hta", ".reg", ".py", ".pyw", ".sh", ".bash", ".zsh", ".command", ".tool",
@@ -89,34 +87,62 @@ def open_decided_path(decided: str, label: str, *, owner_approved: bool) -> dict
     return _open_target(real, label=f"Opened {label}")
 
 
-def open_app(name: str, *, decided: str | None = None, owner_approved: bool = False,
-             decided_none: bool = False) -> dict:
-    """Launch an application by name (or open a file/URL target).
+def _start_judged(target: str, program: str, owner_approved: bool) -> dict:
+    """Start a bare application name the gate judged: exactly the entry it judged, after resolving and judging the
+    name again with the same functions. A different answer than the one judged is refused."""
+    from app.permissions import access, floors
 
-    `decided` is the canonical real path the permission gate judged for a file or folder argument: that exact path
-    is opened, never the text again. `decided_none` says the gate saw no file there, so an argument that names a
-    file now is not what was decided and is refused."""
+    now = programs.resolve(target)
+    if os.path.normcase(now) != os.path.normcase(program):
+        return {"error": f"{target!r} no longer leads to the program it did when this was checked, so nothing was started."}
+    platform = programs.current_platform()
+    verdict = programs.judge(now, access.roots(), floors.in_self_path, platform)
+    if verdict.kind == "self":
+        return {"error": f"{target!r} is part of AURA itself, so nothing was started."}
+    if verdict.kind == "nothing":
+        return {"error": f"Couldn't find an app called {target!r} on PATH."}
+    if verdict.kind == "owner" and not owner_approved:
+        return {"error": f"{target!r} needs your approval each time, and it was not given for this program, "
+                         "so nothing was started."}
+    try:
+        if not now:
+            # The owner approved a name AURA could not find: the system looks it up, as it always did.
+            if platform == programs.MACOS:
+                subprocess.run(["open", "-a", target], check=True, env=childenv.child_env())
+            else:
+                _windows_open(target)
+        elif platform == programs.MACOS:
+            subprocess.run(["open", "-a", now], check=True, env=childenv.child_env())
+        elif platform == programs.WINDOWS:
+            _windows_open(now)
+        else:
+            subprocess.Popen(
+                [now], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True,
+                env=childenv.child_env(),
+            )
+        return {"message": f"Launched {target}.", "app": target}
+    except (subprocess.CalledProcessError, OSError):
+        return {"error": f"Couldn't launch {target!r}. Check the name and that it's installed."}
+
+
+def open_app(name: str, *, decided: str | None = None, owner_approved: bool = False,
+             program: str | None = None) -> dict:
+    """Open what the permission gate judged for this call, and nothing else.
+
+    `decided` is the canonical real path the gate judged for a file or folder argument: that exact path is opened,
+    never the text again. `program` is the directory entry the gate resolved a bare application name to ("" when it
+    found none): that exact entry is started, after resolving and judging the name again. With neither, nothing was
+    judged: an argument that names a file now is refused as not what was checked, and a name is treated as one the
+    gate found nothing for, so it starts only if it still resolves to nothing and the owner approved that."""
     require_enabled()
     target = (name or "").strip()
     if not target:
         return {"error": "No application given."}
     if decided is not None:
         return open_decided_path(decided, target, owner_approved=owner_approved)
-    if decided_none and os.path.exists(os.path.expanduser(target)) and not target.lower().startswith(("http://", "https://")):
+    if os.path.exists(os.path.expanduser(target)) and not target.lower().startswith(("http://", "https://")):
         return {"error": f"{target!r} is a file now, not what was checked, so nothing was opened."}
-
-    # If it names a path inside the allowed roots, open it as a document —
-    # unless opening it would run it.
-    maybe_path = os.path.expanduser(target)
-    if os.path.exists(maybe_path):
-        executable = os.name != "nt" and os.path.isfile(maybe_path) and os.access(maybe_path, os.X_OK)
-        if _ends(maybe_path, _SCRIPTS + _PROGRAMS) or executable:
-            return {"error": f"{target!r} is a program or script, and opening it would run it. {_RUN_IT}"}
-        try:
-            resolved = files.resolve(maybe_path, must_exist=True)
-            return _open_target(resolved, label=f"Opened {target}")
-        except DeviceUnavailable:
-            pass  # fall through to treat it as an app name
 
     if target.lower().startswith(("http://", "https://")):
         if any(ch in target for ch in '"\n\r\x00') or " " in target:
@@ -128,23 +154,7 @@ def open_app(name: str, *, decided: str | None = None, owner_approved: bool = Fa
     problem = _check_name(target)
     if problem:
         return {"error": problem}
-    try:
-        if sys.platform == "darwin":
-            subprocess.run(["open", "-a", target], check=True, env=childenv.child_env())
-        elif os.name == "nt":
-            _windows_open(target)
-        else:
-            exe = shutil.which(target)
-            if not exe:
-                return {"error": f"Couldn't find an app called {target!r} on PATH."}
-            subprocess.Popen(
-                [exe], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, start_new_session=True,
-                env=childenv.child_env(),
-            )
-        return {"message": f"Launched {target}.", "app": target}
-    except (subprocess.CalledProcessError, OSError):
-        return {"error": f"Couldn't launch {target!r}. Check the name and that it's installed."}
+    return _start_judged(target, program or "", owner_approved)
 
 
 def _open_target(target: str, label: str) -> dict:

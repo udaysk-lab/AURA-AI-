@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import AutomationRule, PendingAction, Schedule, User, UserSettings, utcnow
+from app.permissions import access as access_mod
 from app.permissions import asks, catalogue, events, floors, match, reviewer, rules as rules_store, shellparse, triggers, wall
 from app.permissions.catalogue import ALLOW_KINDS, READ_KINDS, ToolPolicy
 from app.permissions.match import BadArgs, Target
@@ -211,6 +212,7 @@ class _Pre:
     floor: floors.FloorResult
     rules: list
     window: Any = None  # the window a screen call lands on (device/windows.Frontmost), for the card's words
+    roots: tuple[str, ...] = ()  # the user's connected folders (open_app judges a program's place against them)
 
 
 def _dialect(policy: ToolPolicy) -> str:
@@ -263,6 +265,10 @@ def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> De
             landing = under if policy.name in floors.POINT_TOOLS else front
         if any(t.kind == "pid" for t in policy.targets):
             extra["pid_app"] = windows.app_for_pid
+        if policy.name == "open_app":
+            from app.device import programs
+
+            extra["resolve_program"] = programs.resolve
     try:
         targets = match.extract(policy, args, dialect=dialect, **extra)
     except BadArgs as exc:
@@ -288,7 +294,8 @@ def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> De
         return deny("floor", "INSTALL_OFF", "Screen control is turned off on this install.")
 
     # 3. floors
-    fl = floors.check(db, user, policy, targets, ctx, front=front, under=under)
+    acc = access_mod.snapshot(db, user) if policy.name == "open_app" else None
+    fl = floors.check(db, user, policy, targets, ctx, front=front, under=under, access=acc)
     if fl.deny:
         return deny("floor", fl.code, fl.reason)
 
@@ -303,7 +310,7 @@ def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> De
     block = match.first_match("block", applicable, targets, dialect)
     if block:
         return deny("rule", "RULE_BLOCK", _block_reason(block, targets, dialect), block.id)
-    return _Pre(policy, targets, dialect, digest, fl, applicable, landing)
+    return _Pre(policy, targets, dialect, digest, fl, applicable, landing, acc.roots if acc is not None else ())
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +371,36 @@ def _unchecked_open(pre: _Pre):
             if filetypes.needs_owner(kind):
                 return t.value, kind
     return None
+
+
+def _unchecked_program(pre: _Pre):
+    """(app target, Judgement) when this open_app call starts a program by name that needs the owner, else None."""
+    if pre.policy.name != "open_app":
+        return None
+    from app.device import programs
+
+    for t in pre.targets:
+        if t.kind == "app" and t.resolved:
+            j = programs.judge(t.program, pre.roots, floors.in_self_path)
+            return (t, j) if j.kind == "owner" else None
+    return None
+
+
+def _same_program(card: dict | None, t: Target) -> bool:
+    """The card showed exactly this entry (or, for a name that was not found, exactly this name)."""
+    if card is None:
+        return False
+    shown = card.get("path") or ""
+    if t.program:
+        return bool(shown) and os.path.normcase(shown) == os.path.normcase(t.program)
+    return not shown and (card.get("name") or "").strip() == (t.raw or "").strip()
+
+
+def _program_card(t: Target, j) -> dict:
+    from app.device import filetypes
+
+    return {"name": (t.raw or "").strip(), "path": t.program, "type": filetypes.extension(t.program) if t.program else "",
+            "why": asks.UNCHECKED_OPEN_WHY[j.why]}
 
 
 def _screen_app(pre: _Pre) -> tuple[str, str]:
@@ -437,6 +474,13 @@ def _decide(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> 
                      card_payload={"unchecked_open": {"path": unchecked[0], "type": unchecked[1].ext,
                                                       "why": unchecked[1].why}},
                      options=ONCE_ONLY, proposed_rule=None, user_id=user.id)
+    program = _unchecked_program(pre)
+    if program is not None:
+        reason = asks.UNCHECKED_OPEN_FOLDER_REASON if program[1].why == "folder" else asks.UNCHECKED_OPEN_UNFOUND_REASON
+        return _make(kind="ask", source="always_user", reason_code=asks.UNCHECKED_OPEN, reason=reason, tool=tool,
+                     args_digest=pre.digest, targets=pre.targets, tool_kind=policy.kind, always_user=True,
+                     card="tool", card_payload={"unchecked_open": _program_card(*program)}, options=ONCE_ONLY,
+                     proposed_rule=None, user_id=user.id)
     # 6c. screen input: the owner, in every mode; the only allowance is a 10 minute window for one application.
     if policy.name in asks.SCREEN_TOOLS:
         app_id, app_name = _screen_app(pre)
@@ -634,6 +678,18 @@ def _approved_call(pre: _Pre, action: PendingAction, user: User) -> Decision:
                 os.path.normcase(shown) != os.path.normcase(unchecked[0]):
             return refuse("OPEN_CHANGED", "The file is not what was shown to you, so it was not opened.")
         return _allow(pre, "rule", "APPROVED_UNCHECKED_OPEN", "You approved opening this file.", user=user, tool=tool)
+    program = _unchecked_program(pre)
+    shown_card = payload.get("unchecked_open") if isinstance(payload.get("unchecked_open"), dict) else None
+    if program is not None or (action.reason_code == asks.UNCHECKED_OPEN and shown_card is not None
+                               and any(t.kind == "app" and t.resolved for t in pre.targets)):
+        # A program started by name: the answer covers exactly the entry the card showed.
+        target = next(t for t in pre.targets if t.kind == "app" and t.resolved)
+        same = action.reason_code == asks.UNCHECKED_OPEN and _same_program(shown_card, target)
+        if not same:
+            return refuse("OPEN_CHANGED", "The program is not the one that was shown to you, so it was not started.")
+        if program is not None:
+            return _allow(pre, "rule", "APPROVED_UNCHECKED_OPEN", "You approved starting this program.", user=user,
+                          tool=tool)
     if pre.policy.name in asks.SCREEN_TOOLS:
         app_id, _ = _screen_app(pre)
         shown = (payload.get("screen_input") or {}).get("app_id")

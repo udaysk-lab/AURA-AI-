@@ -163,6 +163,11 @@ own files is refused.
   Plain text, Markdown, PDF, common images, audio and video, CSV and the Office and
   OpenDocument formats without macros open as your mode allows, and so do folders.
   A link is judged by the file it leads to, and AURA opens exactly that file.
+  **Starting an application by name** works the same way: AURA looks the name up
+  itself, and if the program it finds is inside a folder you connected (or, on
+  Windows and macOS, it cannot find where the program is installed), it asks you
+  every time, in every mode, and then starts exactly that program. Connect the
+  folders you work in, not your whole home folder.
 - **The blocked list** starts with banking, trading, crypto wallets and password
   managers. AURA never opens, closes, ends or uses a blocked app, in any mode.
   You can add to or remove from the list. A default you remove stays removed.
@@ -289,7 +294,10 @@ No mode, rule or approval lifts these:
   `~/.config/gcloud`, `~/.kube`, `~/.docker/config.json`), everything that runs by
   itself (the Windows Startup folder and PowerShell profiles, macOS
   LaunchAgents, Linux autostart entries and systemd user units, shell start-up
-  files such as `.bashrc`, `.profile`, `.zshrc`), git's own configuration, and
+  files such as `.bashrc`, `.profile`, `.zshrc`), the files that decide which
+  program opens a document or what a login reads (`~/.config/mimeapps.list`,
+  `~/.local/share/applications`, `~/.config/environment.d` and similar, also under
+  `XDG_CONFIG_HOME` and `XDG_DATA_HOME` when you set them), git's own configuration, and
   every repository's `.git/hooks` and `.git/config`. You can add more with
   `DEVICE_EXTRA_PROTECTED_PATHS`.
 - **AURA's own API** and the loopback of this computer, from a command.

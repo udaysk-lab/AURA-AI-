@@ -195,9 +195,14 @@ export function ConnectedFolders({ status }: { status: DeviceStatus }) {
         <label htmlFor={`${uid}-path`} className="label block">
           Connect a folder
         </label>
+        <p id={`${uid}-path-hint`} className="text-[12.5px] leading-relaxed text-muted">
+          Connect the folders you work in, not your whole home folder. Inside a connected folder
+          AURA can change any file, including files that other programs read as their settings.
+        </p>
         <div className="flex flex-col gap-2 sm:flex-row">
           <input
             id={`${uid}-path`}
+            aria-describedby={`${uid}-path-hint`}
             className="input min-h-[44px] min-w-0 flex-1 font-mono text-[12.5px]"
             value={path}
             onChange={(e) => setPath(e.target.value)}

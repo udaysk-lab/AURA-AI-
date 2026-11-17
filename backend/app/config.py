@@ -227,15 +227,13 @@ class Settings(BaseSettings):
         "~/.ssh,~/.aws,~/.gnupg,~/.config/gcloud,~/.kube,~/.docker/config.json"
     )
 
-    # How shell command approval works, on top of the permission mode and rules
-    # (see app/permissions/):
+    # Read once when an older install is upgraded, and turned into permission rules
+    # (app/migration_ops.py); nothing reads them while running. The old meaning:
     #   ask        every command is previewed and queued for approval unless a
     #              standing grant covers it (the safe default)
     #   allowlist  commands matching device_exec_allowlist run without asking;
     #              everything else is queued
     #   full       commands run without asking (still subject to the denylist)
-    # The permission mode still applies: in auto mode it already waves shell
-    # through, and this narrows that back down when you want it.
     device_exec_mode: Literal["ask", "allowlist", "full"] = "ask"
 
     # Command prefixes allowed to run without approval under device_exec_mode
@@ -446,7 +444,8 @@ class Settings(BaseSettings):
         import os.path
 
         raw = ",".join(
-            [self.device_protected_paths, self.device_extra_protected_paths, *ALWAYS_PROTECTED]
+            [self.device_protected_paths, self.device_extra_protected_paths, *ALWAYS_PROTECTED,
+             *_xdg_forms(ALWAYS_PROTECTED)]
         )
         out: list[str] = []
         for p in raw.split(","):
@@ -528,7 +527,36 @@ ALWAYS_PROTECTED = (
     "~/.zshenv",
     "~/.zlogin",
     "~/.config/fish",
+    # Which program opens a document, and what a login or a shell reads: files other programs act on by themselves
+    "~/.config/mimeapps.list",
+    "~/.local/share/applications",
+    "~/.local/share/mime",
+    "~/.config/environment.d",
+    "~/.pam_environment",
+    "~/.xprofile",
+    "~/.xsessionrc",
+    "~/.xinitrc",
+    "~/.bash_logout",
+    "~/.zlogout",
+    "~/.config/powershell",
+    "~/.local/share/systemd",
+    "~/Library/Preferences/com.apple.LaunchServices",
 )
+
+
+def _xdg_forms(entries: tuple[str, ...]) -> list[str]:
+    """The entries under ~/.config and ~/.local/share again, under XDG_CONFIG_HOME / XDG_DATA_HOME when those are
+    set to something other than the defaults."""
+    import os
+
+    out: list[str] = []
+    for var, default, prefix in (("XDG_CONFIG_HOME", "~/.config", "~/.config/"),
+                                 ("XDG_DATA_HOME", "~/.local/share", "~/.local/share/")):
+        base = (os.environ.get(var) or "").strip()
+        if not base or os.path.abspath(os.path.expanduser(base)) == os.path.abspath(os.path.expanduser(default)):
+            continue
+        out.extend(os.path.join(base, e[len(prefix):]) for e in entries if e.startswith(prefix))
+    return out
 
 
 @lru_cache
