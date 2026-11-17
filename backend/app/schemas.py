@@ -974,12 +974,9 @@ class AccountDeleteIn(BaseModel):
 class DevicePolicyOut(BaseModel):
     allowed_roots: list[str] = Field(default_factory=list)
     protected_paths: list[str] = Field(default_factory=list)
-    exec_mode: str = "ask"
-    exec_allowlist: list[str] = Field(default_factory=list)
     denylist_active: bool = False
     exec_timeout_seconds: int = 300
     max_read_bytes: int = 200_000
-    explanation: str = ""
 
 
 class DeviceStatusOut(BaseModel):

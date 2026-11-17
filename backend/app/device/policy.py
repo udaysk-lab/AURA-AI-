@@ -1,15 +1,12 @@
 """Shell command policy.
 
 The permission mode and rules decide whether a command needs your approval. This module
-decides two narrower things on top of that:
+decides one narrower thing on top of that:
 
 * **Is a command flat-out refused?** `device_command_denylist` is the last stop
   against a catastrophic instruction — from you in a bad moment, or from a web
   page the agent read. Empty by default, because "operate the whole machine"
   should mean it; populate it to fence a machine off.
-
-* **Can a command skip approval under `device_exec_mode=allowlist`?** So "git
-  status" and "ls" run freely while anything else still asks.
 
 It also flags obviously dangerous commands so the approval card can warn you in
 words ("this deletes files recursively") rather than making you parse the shell
@@ -44,7 +41,6 @@ _DANGER = [
 @dataclass
 class Verdict:
     allowed: bool              # False => refuse outright (denylist)
-    auto: bool                 # True  => may run without approval (allowlist/full)
     dangerous: bool            # True  => warn loudly on the card
     reason: str = ""           # why refused, or what makes it dangerous
 
@@ -54,7 +50,7 @@ def classify(command: str) -> Verdict:
     mode — the agent loop combines this with the mode and standing grants."""
     cmd = (command or "").strip()
     if not cmd:
-        return Verdict(allowed=False, auto=False, dangerous=False, reason="empty command")
+        return Verdict(allowed=False, dangerous=False, reason="empty command")
 
     lowered = cmd.lower()
 
@@ -63,7 +59,6 @@ def classify(command: str) -> Verdict:
         if needle in lowered:
             return Verdict(
                 allowed=False,
-                auto=False,
                 dangerous=True,
                 reason=f"matches the command denylist ({needle!r})",
             )
@@ -75,48 +70,4 @@ def classify(command: str) -> Verdict:
             dangerous, why = True, explanation
             break
 
-    # 3. May it skip approval?
-    auto = False
-    if settings.device_exec_mode == "full":
-        auto = True
-    elif settings.device_exec_mode == "allowlist":
-        auto = _allowlisted(cmd) and not dangerous
-
-    return Verdict(allowed=True, auto=auto, dangerous=dangerous, reason=why)
-
-
-# Characters that let a second command ride along behind an allowed one —
-# "git status && rm -rf ~", "git status; ...", "echo x > ~/.bashrc", a
-# PowerShell "(subexpression)" or "{ script block }", cmd's ^ and ! — so a
-# command containing any of them is never waved through, whatever it starts
-# with. It can still run; it just asks first.
-_CHAINING = set(";&|<>`$(){}[]^!\n\r")
-
-
-def _allowlisted(command: str) -> bool:
-    """True if the command starts with an allowlisted prefix and does nothing more.
-
-    Prefix match on whitespace boundaries, so "git status" allows "git status
-    --short" but not "git stash". A lone "git" would allow all of git, which is
-    the operator's call to make. Anything that chains, pipes, redirects or
-    substitutes is never allowlisted.
-    """
-    cmd = command.strip()
-    if any(ch in _CHAINING for ch in cmd):
-        return False
-    for prefix in settings.device_exec_allow_list:
-        p = prefix.strip()
-        if not p:
-            continue
-        if cmd == p or cmd.startswith(p + " "):
-            return True
-    return False
-
-
-def describe_mode() -> str:
-    mode = settings.device_exec_mode
-    return {
-        "ask": "Every command is queued for your approval unless you grant it standing permission.",
-        "allowlist": "Allowlisted commands run on their own; everything else is queued for approval.",
-        "full": "Commands run without approval (the denylist still refuses catastrophic ones).",
-    }.get(mode, mode)
+    return Verdict(allowed=True, dangerous=dangerous, reason=why)

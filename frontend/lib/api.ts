@@ -636,7 +636,6 @@ export interface DevicePolicy {
   denylist_active: boolean;
   exec_timeout_seconds: number;
   max_read_bytes: number;
-  explanation: string;
 }
 
 export interface DeviceStatus {

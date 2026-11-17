@@ -189,8 +189,6 @@ def capabilities(include_policy: bool = False) -> dict:
             # themselves are the user's, in the database (permissions/access.py).
             "allowed_roots": _ceiling(),
             "protected_paths": settings.device_protected_path_list,
-            "exec_mode": settings.device_exec_mode,
-            "exec_allowlist": settings.device_exec_allow_list,
             "denylist_active": bool(settings.device_command_deny_list),
             "exec_timeout_seconds": settings.device_exec_timeout_seconds,
             "max_read_bytes": settings.device_max_read_bytes,

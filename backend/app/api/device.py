@@ -26,7 +26,6 @@ from sqlalchemy.orm import Session
 from app.agent import skills as skill_registry
 from app.config import settings
 from app.device import files as device_files
-from app.device import policy as device_policy
 from app.device import shell as device_shell
 from app.device import system as device_system
 from app.device.runtime import DeviceUnavailable, capabilities
@@ -88,7 +87,7 @@ def device_status(request: Request, user: CurrentUser, db: DbSession) -> DeviceS
 
     out_policy = None
     if raw_policy:
-        out_policy = DevicePolicyOut(**raw_policy, explanation=device_policy.describe_mode())
+        out_policy = DevicePolicyOut(**raw_policy)
 
     local_session = _presence_source_ok(request)
     return DeviceStatusOut(
