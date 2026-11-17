@@ -22,11 +22,13 @@ from app.config import settings  # noqa: E402
 from app.device import net  # noqa: E402
 from app.device.runtime import reset_cache  # noqa: E402
 from app.models import (  # noqa: E402
-    ApprovalGrant, AutomationRule, DeviceAppBlock, DeviceFolder, PendingAction, PermissionEvent, PermissionRule,
+    AutomationRule, DeviceAppBlock, DeviceFolder, PendingAction, PermissionEvent, PermissionRule,
     Schedule, UserSettings, utcnow,
 )
 from app.permissions import access, gate, legacy  # noqa: E402
 from tests import legacy_oracle  # noqa: E402
+from tests import legacy_schema
+from tests.legacy_schema import add_grant
 from tests.perm_helpers import apply_legacy, decide, make_session, make_user, pm02  # noqa: E402
 
 TIERS = ("strict", "conservative", "relaxed", "full")
@@ -156,16 +158,14 @@ def decisions(db, user, table, origins):
 def seed_user(db, tier, root):
     """A 1.0 user at this level with grants, a schedule and an automation, as a real account would have."""
     user = make_user(db, email=f"{tier}@example.com", level=tier)
-    db.add_all([
-        ApprovalGrant(user_id=user.id, tool_name="send_email", scope="always", target="bob@example.com"),
-        ApprovalGrant(user_id=user.id, tool_name="send_email", scope="always", target=""),
-        ApprovalGrant(user_id=user.id, tool_name="delete_event", scope="window", expires_at=utcnow() + timedelta(minutes=30)),
-        ApprovalGrant(user_id=user.id, tool_name="archive_email", scope="window", expires_at=utcnow() - timedelta(minutes=30)),
-        ApprovalGrant(user_id=user.id, tool_name="delete_task", scope="always", revoked=True),
-        ApprovalGrant(user_id=user.id, tool_name="delete_file", scope="always"),
-        ApprovalGrant(user_id=user.id, tool_name="open_app", scope="always"),
-        ApprovalGrant(user_id=user.id, tool_name="run_in_background", scope="always"),
-    ])
+    add_grant(db, user.id, tool_name="send_email", scope="always", target="bob@example.com")
+    add_grant(db, user.id, tool_name="send_email", scope="always", target="")
+    add_grant(db, user.id, tool_name="delete_event", scope="window", expires_at=utcnow() + timedelta(minutes=30))
+    add_grant(db, user.id, tool_name="archive_email", scope="window", expires_at=utcnow() - timedelta(minutes=30))
+    add_grant(db, user.id, tool_name="delete_task", scope="always", revoked=True)
+    add_grant(db, user.id, tool_name="delete_file", scope="always")
+    add_grant(db, user.id, tool_name="open_app", scope="always")
+    add_grant(db, user.id, tool_name="run_in_background", scope="always")
     sched = Schedule(user_id=user.id, name="S", prompt="p")
     auto = AutomationRule(user_id=user.id, name="A", actions=[
         {"tool": "create_event", "arguments": EVENT}, {"tool": "send_email", "arguments": SEND},
@@ -217,6 +217,7 @@ def test_a_user_with_no_grants_schedules_or_settings_row_maps_cleanly(env):
     user = models.User(email="bare@example.com", name="Bare")
     db.add(user)
     db.commit()
+    legacy_schema.ensure_legacy(db)  # the step reads the old column and table
     summary = pm02().map_legacy(db.connection(), {"device_control": False, "allowed_roots": [], "exec_mode": "ask",
                                                   "exec_allowlist": [], "command_denylist": []}, only_user_id=user.id)
     db.commit()
@@ -307,17 +308,15 @@ def test_grants(env):
     _, db = env
     user = make_user(db, level="conservative")
     soon = utcnow() + timedelta(minutes=20)
-    db.add_all([
-        ApprovalGrant(user_id=user.id, tool_name="send_email", scope="always", target="Bob@Example.com"),
-        ApprovalGrant(user_id=user.id, tool_name="send_email", scope="always", target=""),
-        ApprovalGrant(user_id=user.id, tool_name="send_email", scope="always", target="not an address"),
-        ApprovalGrant(user_id=user.id, tool_name="open_app", scope="always"),
-        ApprovalGrant(user_id=user.id, tool_name="delete_event", scope="window", expires_at=soon),
-        ApprovalGrant(user_id=user.id, tool_name="archive_email", scope="window", expires_at=utcnow() - timedelta(minutes=1)),
-        ApprovalGrant(user_id=user.id, tool_name="delete_task", scope="always", revoked=True),
-        ApprovalGrant(user_id=user.id, tool_name="delete_file", scope="always"),
-        ApprovalGrant(user_id=user.id, tool_name="gone_tool", scope="always"),
-    ])
+    add_grant(db, user.id, tool_name="send_email", scope="always", target="Bob@Example.com")
+    add_grant(db, user.id, tool_name="send_email", scope="always", target="")
+    add_grant(db, user.id, tool_name="send_email", scope="always", target="not an address")
+    add_grant(db, user.id, tool_name="open_app", scope="always")
+    add_grant(db, user.id, tool_name="delete_event", scope="window", expires_at=soon)
+    add_grant(db, user.id, tool_name="archive_email", scope="window", expires_at=utcnow() - timedelta(minutes=1))
+    add_grant(db, user.id, tool_name="delete_task", scope="always", revoked=True)
+    add_grant(db, user.id, tool_name="delete_file", scope="always")
+    add_grant(db, user.id, tool_name="gone_tool", scope="always")
     db.commit()
     summary = apply_legacy(db, user)
     got = {(r.tool, r.target_kind, r.pattern): r for r in rules_of(db, user)}
@@ -332,7 +331,7 @@ def test_grants(env):
 def test_a_grant_for_delete_file_is_not_carried_and_the_delete_still_asks(device):
     root, db = device
     user = make_user(db, level="full")
-    db.add(ApprovalGrant(user_id=user.id, tool_name="delete_file", scope="always"))
+    add_grant(db, user.id, tool_name="delete_file", scope="always")
     db.commit()
     apply_legacy(db, user)
     assert rules_of(db, user, tool="delete_file") == []
@@ -454,7 +453,7 @@ def test_old_spellings_of_the_level(env):
 def test_idempotent(env):
     _, db = env
     user = make_user(db, level="relaxed")
-    db.add(ApprovalGrant(user_id=user.id, tool_name="open_app", scope="always"))
+    add_grant(db, user.id, tool_name="open_app", scope="always")
     db.commit()
     first = apply_legacy(db, user)
     n = len(rules_of(db, user))

@@ -621,14 +621,14 @@ def test_sqlite_backup_created_named_and_rotated(kind, engine, tmp_path):
     for _ in range(4):
         migrate._CACHE.clear()
         with engine.begin() as conn:
-            conn.execute(text("UPDATE alembic_version SET version_num = :v"), {"v": FIRST})
+            conn.execute(text("UPDATE alembic_version SET version_num = :v"), {"v": "tl02_preferences"})
         report = migrate.upgrade_to_head(engine)
         assert report.state_before == State.BEHIND and Path(report.backup_path).exists()
         time.sleep(0.02)
     kept = backups(tmp_path)
     assert len(kept) == 3 and Path(report.backup_path) in kept
     for f in kept:
-        assert re.fullmatch(r"aura-0001_initial-\d{8}T\d{6}Z(-\d+)?\.db", f.name), f.name
+        assert re.fullmatch(r"aura-tl02_preferences-\d{8}T\d{6}Z(-\d+)?\.db", f.name), f.name
     assert not list((tmp_path / "backups").glob("*.part"))
 
 
@@ -765,7 +765,7 @@ def test_cli_exit_codes(engine, monkeypatch, capsys):
 
 
 def test_0002_legacy_defaults_data(engine):
-    migrate.upgrade_to_head(engine)
+    _upgrade(engine, "tl02_preferences")  # the contract steps after it drop these columns
     now = "2026-01-01 00:00:00"
     pg = engine.dialect.name == "postgresql"
     empty_json = "CAST('{}' AS json)" if pg else "'{}'"
@@ -792,7 +792,12 @@ def test_0002_legacy_defaults_data(engine):
 
 
 def test_0002_roundtrip(engine):
-    keys = [(t, c) for t, c in sorted(LEGACY_PENDING_DROP) if c and t in {"assistants", "user_settings", "user_skills", "automation_rules"}]
+    keys = [
+        ("assistants", "hatched_at"), ("assistants", "interactions"), ("assistants", "actions_taken"),
+        ("assistants", "corrections"), ("assistants", "stage"), ("assistants", "onboarded"),
+        ("user_settings", "autonomy_level"), ("user_settings", "tone"), ("user_skills", "learned_notes"),
+        ("automation_rules", "requires_confirmation"),
+    ]
 
     def defaults() -> dict:
         insp = sa.inspect(engine)
@@ -813,7 +818,8 @@ def test_0002_roundtrip(engine):
                           " VALUES ('k1', 'nobody', 'EM', :t, 0, 0, '2026-01-01', '2026-01-01')"), {"t": True})
     migrate._CACHE.clear()
     assert migrate.upgrade_to_head(engine).state_before == State.BEHIND
-    assert all(v is not None for v in defaults().values())
+    insp = sa.inspect(engine)
+    assert not [(t, c) for t, c in keys if c in {x["name"] for x in insp.get_columns(t)}], "the contract drops them"
 
 
 # ---------------------------------------------------------------------------
@@ -873,8 +879,8 @@ def test_pm02_permissions_data_data(engine, monkeypatch):
                                              arguments={}, preview="", status="pending", skill_code="",
                                              created_at=created, updated_at=created))
 
-    report = migrate.upgrade_to_head(engine)
-    assert version_rows(engine) == [migrate.EXPECTED_HEAD] and report.revision_after == migrate.EXPECTED_HEAD
+    _upgrade(engine, "pm02_permissions_data")  # the step under test; pm90 later drops what it reads
+    assert version_rows(engine) == ["pm02_permissions_data"]
 
     with engine.connect() as conn:
         modes = dict(conn.execute(text("SELECT user_id, permission_mode FROM user_settings")).all())
@@ -922,7 +928,7 @@ def test_pm02_permissions_data_data(engine, monkeypatch):
 
 
 def test_pm02_cannot_be_downgraded(engine):
-    migrate.upgrade_to_head(engine)
+    _upgrade(engine, "pm02_permissions_data")
     with engine.connect() as conn:
         with pytest.raises(NotImplementedError):
             command.downgrade(migrate.alembic_config(conn), "pm01_permissions")
@@ -964,9 +970,8 @@ def test_tl01_work_items_data(engine):
         conn.execute(_table(conn, "pending_actions").insert().values(
             id="p-none", user_id="u1", conversation_id="c1", tool_name="send_email", arguments={}, preview="",
             status="pending", skill_code="", created_at=now, updated_at=now))
-    migrate._CACHE.clear()
-    report = migrate.upgrade_to_head(engine)
-    assert report.ok and version_rows(engine) == [migrate.EXPECTED_HEAD]
+    _upgrade(engine, "tl02_preferences")
+    assert version_rows(engine) == ["tl02_preferences"]
 
     insp = sa.inspect(engine)
     assert {"work_items", "work_steps", "preferences"} <= set(insp.get_table_names())
@@ -1007,7 +1012,7 @@ def test_tl01_work_items_data(engine):
 
 def test_tl01_tl02_roundtrip(engine):
     """Down to pm02 removes exactly what tl01 and tl02 added, and pm01's own column stays."""
-    migrate.upgrade_to_head(engine)
+    _upgrade(engine, "tl02_preferences")  # the contract steps after tl02 cannot be undone
     with engine.connect() as conn:
         command.downgrade(migrate.alembic_config(conn), "pm02_permissions_data")
         conn.commit()
@@ -1070,8 +1075,7 @@ def test_tl02_preferences_data(engine):
                 id=sid, user_id=uid, code=code, enabled=True, run_count=0, success_count=0, learned_notes=notes,
                 created_at=now, updated_at=now))
 
-    migrate._CACHE.clear()
-    assert migrate.upgrade_to_head(engine).ok
+    _upgrade(engine, "tl02_preferences")  # the copy under test; tl90 later removes its sources
     with engine.connect() as conn:
         rows = conn.execute(text(
             "SELECT user_id, task_type, text, source, origin, active, system_scope FROM preferences")).all()
@@ -1107,6 +1111,7 @@ def test_tl02_preferences_data(engine):
 def test_unmapped_columns_are_safe(engine):
     """Every database column the models no longer map must be harmless to a new
     INSERT (nullable or defaulted) and be on the pending-drop list."""
+    assert LEGACY_PENDING_DROP == set(), "the contract steps drop every legacy column and table"
     migrate.upgrade_to_head(engine)
     insp = sa.inspect(engine)
     problems = []
@@ -1126,3 +1131,190 @@ def test_unmapped_columns_are_safe(engine):
             if not col["nullable"] and col["default"] is None:
                 problems.append(f"{table}.{col['name']} is NOT NULL without a default")
     assert not problems, problems
+
+
+# ---------------------------------------------------------------------------
+# Contract revisions pm90, tl90, sc90: the legacy columns and table are dropped
+# ---------------------------------------------------------------------------
+
+CONTRACT_CHAIN = ["tl02_preferences", "pm90_contract", "tl90_contract", "sc90_contract"]
+DROPPED_COLUMNS = {
+    "assistants": {"hatched_at", "interactions", "actions_taken", "corrections", "stage", "onboarded"},
+    "user_settings": {"autonomy_level", "tone"},
+    "user_skills": {"learned_notes"},
+    "automation_rules": {"requires_confirmation"},
+}
+
+
+def _seed_v1_module():
+    import importlib.util
+
+    path = BACKEND / "tests" / "migrations" / "seed_v1.py"
+    spec = importlib.util.spec_from_file_location("seed_v1_for_contract_tests", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _no_device(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "device_control", "off", raising=False)
+    monkeypatch.setattr(settings, "local_mode", False, raising=False)
+
+
+def _assert_contract_done(engine):
+    insp = sa.inspect(engine)
+    assert not has_table(engine, "approval_grants")
+    for table, gone in DROPPED_COLUMNS.items():
+        assert not gone & {c["name"] for c in insp.get_columns(table)}, table
+    with engine.connect() as conn:
+        command.check(migrate.alembic_config(conn))  # no model/schema difference left
+
+
+def test_contract_revisions_follow_tl02_in_order():
+    script = _script()
+    order = [r.revision for r in reversed(list(script.walk_revisions()))]
+    assert order[-4:] == CONTRACT_CHAIN
+    assert script.get_current_head() == "sc90_contract" == migrate.EXPECTED_HEAD
+    assert LEGACY_PENDING_DROP == set()
+
+
+@pytest.mark.parametrize("way", ["stamped", "unstamped"])
+def test_contract_from_a_1_0_0_database_keeps_the_data(engine, sqlite_0001_template, tmp_path, monkeypatch, way):
+    _no_device(monkeypatch)
+    (make_stamped_0001 if way == "stamped" else make_unstamped)(engine, sqlite_0001_template, tmp_path)
+    seeds = _seed_v1_module()
+    seeds.seed(engine)
+    meta = sa.MetaData()
+    meta.reflect(bind=engine)
+    with engine.begin() as conn:
+        users = list(conn.execute(sa.text("SELECT id FROM users ORDER BY email")).scalars())
+        for kind, content in (("habit", "Reads email at nine"), ("contact", "Priya is the CFO"), ("project", "Series A")):
+            seeds.insert(conn, dict(meta.tables), "memories", user_id=users[0], kind=kind, content=content,
+                         source="chat", confidence=0.9, embedding=[0.1], use_count=0, pinned=False,
+                         created_at=seeds.NOW, updated_at=seeds.NOW)
+        seeds.insert(conn, dict(meta.tables), "tasks", user_id=users[0], title="File the VAT return",
+                     created_at=seeds.NOW, updated_at=seeds.NOW)
+
+    report = migrate.upgrade_to_head(engine)
+    assert report.ok and report.revision_after == "sc90_contract" and version_rows(engine) == ["sc90_contract"]
+    _assert_contract_done(engine)
+
+    with engine.connect() as conn:
+        one = lambda q: conn.execute(text(q)).scalar()  # noqa: E731
+        assert (one("SELECT count(*) FROM users"), one("SELECT count(*) FROM assistants"),
+                one("SELECT count(*) FROM user_settings"), one("SELECT count(*) FROM user_skills"),
+                one("SELECT count(*) FROM automation_rules"), one("SELECT count(*) FROM schedules"),
+                one("SELECT count(*) FROM tasks"), one("SELECT count(*) FROM conversations"),
+                one("SELECT count(*) FROM messages"), one("SELECT count(*) FROM documents")) == (2, 2, 2, 2, 1, 1, 1, 1, 3, 1)
+        assert sorted(r[0] for r in conn.execute(text("SELECT kind FROM memories"))) == ["contact", "fact", "project"]
+        # what the old stores held was copied by tl02 before tl90 removed it
+        copied = {r[0] for r in conn.execute(text("SELECT text FROM preferences"))}
+        assert {"Likes bullet-point summaries", "Writes in a warm, brief tone", "prefers short replies",
+                "no meetings before 10"} <= copied
+        modes = dict(conn.execute(text(
+            "SELECT u.email, s.permission_mode FROM user_settings s JOIN users u ON u.id = s.user_id")).all())
+        assert modes == {"owner1@example.com": "ask", "owner2@example.com": "skip"}
+        assert one("SELECT name FROM assistants LIMIT 1") == "Aura"
+        assert one("SELECT count(*) FROM user_settings WHERE permission_mode IN ('ask', 'skip')") == 2
+    if engine.dialect.name == "sqlite":
+        assert len(backups(tmp_path)) == 1
+
+
+def test_contract_from_the_live_state_tl02(engine, monkeypatch):
+    """A database already at tl02_preferences, with rows written by both kinds of code."""
+    _no_device(monkeypatch)
+    _upgrade(engine, "tl02_preferences")
+    _seed_v1_module().seed(engine)  # fills the legacy columns, which still exist at this revision
+    migrate._CACHE.clear()
+    report = migrate.upgrade_to_head(engine)
+    assert report.ok and report.state_before == State.BEHIND and report.revision_before == "tl02_preferences"
+    assert version_rows(engine) == ["sc90_contract"]
+    _assert_contract_done(engine)
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM users")).scalar() == 2
+        assert conn.execute(text("SELECT count(*) FROM assistants")).scalar() == 2
+        assert sorted(r[0] for r in conn.execute(text("SELECT kind FROM memories"))) == ["fact"]
+
+
+def test_pm90_maps_a_user_with_no_permission_mode_row_before_dropping(engine, monkeypatch):
+    """A user who changed trust, or signed up, on a 1.0.0 instance after pm02 ran is not lost."""
+    from datetime import datetime, timezone
+
+    _no_device(monkeypatch)
+    now = datetime.now(timezone.utc)
+    _upgrade(engine, "tl02_preferences")
+    with engine.begin() as conn:
+        users, uset, grants = _table(conn, "users"), _table(conn, "user_settings"), _table(conn, "approval_grants")
+        for uid in ("u-early", "u-late", "u-bare"):
+            _user(conn, uid, now)
+        # u-early was mapped by pm02 (marker present); u-late was not (settings written by a 1.0.0 instance)
+        for uid, level, extra in (
+            ("u-early", "full", {"permissions_migrated": {"from_tier": "conservative", "at": now.isoformat()}}),
+            ("u-late", "full", {}),
+        ):
+            conn.execute(uset.insert().values(
+                id=f"s-{uid}", user_id=uid, briefing_time="08:00", briefing_enabled=True, autonomy_level=level,
+                tone="concise-professional", theme="warm", heartbeat_enabled=True, heartbeat_interval_minutes=30,
+                quiet_hours="22:00-07:00", extra=extra, permission_mode="ask", created_at=now, updated_at=now))
+        conn.execute(grants.insert().values(
+            id="g-late", user_id="u-late", tool_name="send_email", scope="always", expires_at=None, revoked=False,
+            target="Bob@Example.com", created_at=now, updated_at=now))
+    migrate._CACHE.clear()
+    assert migrate.upgrade_to_head(engine).ok
+    _assert_contract_done(engine)
+    with engine.connect() as conn:
+        modes = dict(conn.execute(text("SELECT user_id, permission_mode FROM user_settings")).all())
+        assert modes == {"u-early": "ask", "u-late": "skip"}, "mapped from the level the user last chose"
+        rules = conn.execute(text("SELECT user_id, tool, pattern, source FROM permission_rules")).all()
+        assert [tuple(r) for r in rules] == [("u-late", "send_email", "bob@example.com", "legacy")]
+        extra = conn.execute(text("SELECT extra FROM user_settings WHERE user_id = 'u-late'")).scalar()
+        extra = json.loads(extra) if isinstance(extra, str) else extra
+        assert extra["permissions_migrated"]["from_tier"] == "full"
+    # a second look at a user pm02 had marked does not map them again
+    assert modes["u-early"] == "ask"
+
+
+def test_contract_upgrade_twice_does_nothing_the_second_time(engine, sqlite_0001_template, tmp_path, monkeypatch):
+    _no_device(monkeypatch)
+    make_stamped_0001(engine, sqlite_0001_template, tmp_path)
+    _seed_v1_module().seed(engine)
+    first = migrate.upgrade_to_head(engine)
+    assert first.actions
+    snapshot = user_tables(engine)
+    with engine.connect() as conn:
+        rows = conn.execute(text("SELECT count(*) FROM preferences")).scalar(), conn.execute(
+            text("SELECT count(*) FROM permission_rules")).scalar()
+    migrate._CACHE.clear()
+    second = migrate.upgrade_to_head(engine)
+    assert second.ok and second.actions == [] and second.state_before == State.AT_HEAD
+    assert user_tables(engine) == snapshot and version_rows(engine) == ["sc90_contract"]
+    with engine.connect() as conn:
+        assert rows == (conn.execute(text("SELECT count(*) FROM preferences")).scalar(),
+                        conn.execute(text("SELECT count(*) FROM permission_rules")).scalar())
+
+
+def test_contract_revisions_tolerate_a_database_that_never_had_the_objects(engine, monkeypatch):
+    """Every drop is guarded: stepping the version back to tl02 on a contracted database upgrades again."""
+    _no_device(monkeypatch)
+    migrate.upgrade_to_head(engine)
+    before = user_tables(engine)
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE alembic_version SET version_num = 'tl02_preferences'"))
+    migrate._CACHE.clear()
+    report = migrate.upgrade_to_head(engine)
+    assert report.ok and version_rows(engine) == ["sc90_contract"]
+    assert user_tables(engine) == before
+    _assert_contract_done(engine)
+
+
+def test_contract_revisions_cannot_be_downgraded(engine):
+    migrate.upgrade_to_head(engine)
+    with engine.connect() as conn:
+        with pytest.raises(NotImplementedError, match="backup"):
+            command.downgrade(migrate.alembic_config(conn), "tl90_contract")
+    with engine.connect() as conn:
+        with pytest.raises(NotImplementedError, match="backup"):
+            command.downgrade(migrate.alembic_config(conn), "tl02_preferences")
+    assert version_rows(engine) == ["sc90_contract"], "a refused downgrade changes nothing"

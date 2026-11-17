@@ -72,7 +72,6 @@ def main() -> int:
     args = parser.parse_args()
 
     from app import migrate
-    from app.migration_ops import LEGACY_PENDING_DROP
 
     engine = sa.create_engine(args.url, poolclass=sa.pool.NullPool)
     url = sa.engine.make_url(args.url)
@@ -95,51 +94,50 @@ def main() -> int:
         rows = conn.execute(sa.text("SELECT version_num FROM alembic_version")).all()
         check("one alembic_version row, at head", [r[0] for r in rows] == [migrate.EXPECTED_HEAD], rows)
 
-        counts = seed_v1.count_rows(engine)
-        check("row counts unchanged", counts == seed_v1.EXPECTED_COUNTS, counts)
+        expected = dict(seed_v1.EXPECTED_COUNTS)
+        expected.pop("approval_grants")  # the table is dropped by pm90
+        expected["memories"] = 1  # the preference and style rows were copied to preferences, then deleted by tl90
+        counts = {name: conn.execute(sa.text(f"SELECT COUNT(*) FROM {name}")).scalar_one() for name in expected}
+        check("row counts as expected", counts == expected, counts)
 
-        stages = {r[0] for r in conn.execute(sa.text("SELECT stage FROM assistants"))}
-        modes = sorted(r[0] for r in conn.execute(sa.text("SELECT autonomy_level FROM user_settings")))
-        grant = conn.execute(sa.text("SELECT scope FROM approval_grants")).scalars().all()
+        insp = sa.inspect(conn)
+        left = sorted(f"{t}.{c}" for t, c in (
+            [("assistants", n) for n in ("hatched_at", "interactions", "actions_taken", "corrections", "stage", "onboarded")]
+            + [("user_settings", "autonomy_level"), ("user_settings", "tone"), ("user_skills", "learned_notes"),
+               ("automation_rules", "requires_confirmation")]
+        ) if c in {x["name"] for x in insp.get_columns(t)})
+        check("legacy columns are gone", not left, left)
+        check("approval_grants is gone", not insp.has_table("approval_grants"))
+
+        modes = dict(conn.execute(sa.text(
+            "SELECT u.email, s.permission_mode FROM user_settings s JOIN users u ON u.id = s.user_id")).all())
         kinds = sorted(r[0] for r in conn.execute(sa.text("SELECT kind FROM memories")))
-        check("1.0.0 values survived", stages == {"trusted"} and modes == ["full", "relaxed"]
-              and grant == ["always"] and kinds == ["fact", "preference", "style"], (stages, modes, grant, kinds))
+        copied = {r[0] for r in conn.execute(sa.text("SELECT text FROM preferences"))}
+        check("1.0.0 values survived", modes == {"owner1@example.com": "ask", "owner2@example.com": "skip"}
+              and kinds == ["fact"] and {"Likes bullet-point summaries", "Writes in a warm, brief tone",
+                                         "prefers short replies", "no meetings before 10"} <= copied,
+              (modes, kinds, sorted(copied)))
 
         if args.way == "unstamped":
             cols = {c["name"] for c in sa.inspect(conn).get_columns("users")}
             check("extra column kept", "legacy_extra" in cols, sorted(cols))
 
-        # New rows without any 1.0.0-only column: the server defaults from 0002.
+        # New rows: nothing left of the 1.0.0-only columns, so plain inserts work.
         meta = sa.MetaData()
         meta.reflect(bind=conn)
         tables = dict(meta.tables)
-        omit = {(t, c) for t, c in LEGACY_PENDING_DROP if c is not None}
         conn.rollback()  # end the read transaction; the inserts below are undone
         trans = conn.begin()
         try:
             stamp = {"created_at": seed_v1.NOW, "updated_at": seed_v1.NOW}
             uid = seed_v1.insert(conn, tables, "users", email=f"{uuid.uuid4()}@example.com", name="New", timezone="UTC",
                                  is_active=True, is_demo=False, **stamp)
-
-            def new_row(table: str, **values) -> None:
-                table_obj = tables[table]
-                row = dict(values, id=str(uuid.uuid4()), **stamp)
-                for column in table_obj.columns:
-                    if (table, column.name) in omit or column.name in row:
-                        continue
-                    if not column.nullable and column.server_default is None:
-                        row[column.name] = seed_v1._filler(column)
-                conn.execute(table_obj.insert().values(**row))
-
-            new_row("assistants", user_id=uid, name="Aura", personality="concise", avatar="teal", pronoun="it", goals=[])
-            new_row("user_settings", user_id=uid, extra={})
-            new_row("user_skills", user_id=uid, code="email", enabled=True, run_count=0, success_count=0)
-            new_row("automation_rules", user_id=uid, name="r", natural_language="", trigger_type="email_received",
-                    trigger_config={}, actions=[], enabled=True, run_count=0)
-            got = conn.execute(sa.text("SELECT stage, onboarded FROM assistants WHERE user_id = :u"), {"u": uid}).one()
-            check("insert without legacy columns gets defaults", got[0] == "stranger" and bool(got[1]) is True, tuple(got))
+            seed_v1.insert(conn, tables, "assistants", user_id=uid, name="Aura", personality="concise", avatar="teal",
+                           pronoun="it", goals=[], **stamp)
+            got = conn.execute(sa.text("SELECT count(*) FROM assistants WHERE user_id = :u"), {"u": uid}).scalar()
+            check("insert without legacy columns works", got == 1, got)
         except Exception as exc:
-            check("insert without legacy columns gets defaults", False, repr(exc))
+            check("insert without legacy columns works", False, repr(exc))
         finally:
             trans.rollback()
 

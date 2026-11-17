@@ -13,6 +13,7 @@ from sqlalchemy.pool import NullPool
 
 from app import models
 from app.permissions import gate
+from tests import legacy_schema
 from tests.schema import ensure_test_schema
 
 
@@ -22,11 +23,11 @@ def make_session(tmp_path):
     return engine, sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
 
 
-def make_user(db, email="owner@example.com", level="conservative", mode=None, migrated=False):
+def make_user(db, email="owner@example.com", level=None, mode=None, migrated=False):
     user = models.User(email=email, name="Owner")
     db.add(user)
     db.flush()
-    row = models.UserSettings(user_id=user.id, autonomy_level=level)
+    row = models.UserSettings(user_id=user.id)
     if mode:
         row.permission_mode = mode
     if migrated:
@@ -34,6 +35,9 @@ def make_user(db, email="owner@example.com", level="conservative", mode=None, mi
     db.add(row)
     db.commit()
     db.refresh(user)
+    if level:  # the 1.0 trust level: the old column is only there for the tests that map it
+        legacy_schema.set_tier(db, user, level)
+        db.commit()
     if migrated:
         legacy_folders(db, user)
     return user
@@ -102,8 +106,10 @@ def apply_legacy(db, user, tier=None, *, env=None, reset=True):
             extra.pop(key, None)
         row.extra = extra
         row.permission_mode = "ask"
+    db.commit()
+    legacy_schema.ensure_legacy(db)
     if tier:
-        row.autonomy_level = tier
+        legacy_schema.set_tier(db, user, tier)
     db.commit()
     summary = pm02().map_legacy(db.connection(), env if env is not None else install_env(), only_user_id=user.id)
     db.commit()

@@ -105,16 +105,6 @@ def _heuristic_compile(rule: str) -> dict:
     }
 
 
-def _needs_approval_hint(actions: list[dict]) -> bool:
-    """True when some action is one the default mode would ask about (informational only: the
-    gate decides at run time, per action)."""
-    for a in actions:
-        policy = catalogue.policy_for(a.get("tool", ""))
-        if policy is None or catalogue.default_disposition(policy.kind, "ask") != "allow":
-            return True
-    return False
-
-
 def screen_actions(db: Session | None, user: User | None, actions: list[dict]) -> tuple[list[dict], list[str]]:
     """Drop the steps an automation can never run, and say why (spec 9.1).
 
@@ -186,7 +176,6 @@ def create_rule_checked(
         trigger_config=compiled.get("trigger_config") or {},
         actions=actions,
         enabled=enabled,
-        requires_confirmation=_needs_approval_hint(actions),
         approval_mode=approval_mode if approval_mode in ("ask", "auto") else "ask",
     )
     db.add(rule)

@@ -16,8 +16,9 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from app.config import settings
-from app.models import ApprovalGrant, AutomationRule, User, UserSettings
+from app.models import AutomationRule, User, UserSettings
 from app.permissions import access, catalogue, gate, match, shellparse
+from tests import legacy_schema
 from app.permissions import rules as rules_store
 from app.permissions.rules import Rule
 
@@ -65,7 +66,7 @@ def _row(db, user):
 
 def tier_of(db, user) -> str:
     row = _row(db, user)
-    return normalise_tier(row.autonomy_level if row else None)
+    return normalise_tier(legacy_schema.get_tier(db, user) if row else None)
 
 
 def stored_mode(db, user) -> str:
@@ -92,21 +93,19 @@ def derived_rules(db, user, policy, ctx, dialect=shellparse.POSIX) -> list[Rule]
         rule("allow", "full-schedule")
     if name != "delete_file":
         now = datetime.now(timezone.utc)
-        for g in db.scalars(select(ApprovalGrant).where(
-            ApprovalGrant.user_id == user.id, ApprovalGrant.tool_name == name, ApprovalGrant.revoked == False  # noqa: E712
-        )).all():
-            expires = _aware(g.expires_at)
-            if g.scope != "always" and not (expires and expires > now):
+        for g in legacy_schema.grants_for(db, user.id, name):
+            expires = _aware(g["expires_at"])
+            if g["scope"] != "always" and not (expires and expires > now):
                 continue
-            kw = {"expires_at": expires if g.scope != "always" else None}
+            kw = {"expires_at": expires if g["scope"] != "always" else None}
             if name == "send_email":
-                if not g.target:
+                if not g["target"]:
                     continue
                 try:
-                    kw.update(target_kind="recipient", pattern=match.normalise_recipient_pattern(g.target))
+                    kw.update(target_kind="recipient", pattern=match.normalise_recipient_pattern(g["target"]))
                 except match.PatternError:
                     continue
-            out.append(Rule(id=f"legacy:grant:{g.id}", effect="allow", system=system, tool=name, source="legacy", **kw))
+            out.append(Rule(id=f"legacy:grant:{g['id']}", effect="allow", system=system, tool=name, source="legacy", **kw))
     if name in SHELL_TOOLS:
         if settings.device_exec_mode == "full":
             rule("allow", "exec-full")

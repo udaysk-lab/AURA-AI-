@@ -108,10 +108,6 @@ class UserSettings(Base, TimestampMixin):
     )
     briefing_time: Mapped[str] = mapped_column(String(5), default="08:00")
     briefing_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    # Legacy 1.0 column, kept for migrations and not read by the permission gate.
-    # The permission mode (app/permissions/) replaced it.
-    autonomy_level: Mapped[str] = mapped_column(String(20), default="conservative")
-    tone: Mapped[str] = mapped_column(String(50), default="concise-professional")
     theme: Mapped[str] = mapped_column(String(20), default="warm")
     heartbeat_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     heartbeat_interval_minutes: Mapped[int] = mapped_column(Integer, default=30)
@@ -446,7 +442,6 @@ class AutomationRule(Base, TimestampMixin):
     trigger_config: Mapped[dict] = mapped_column(JSON, default=dict)
     actions: Mapped[list] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    requires_confirmation: Mapped[bool] = mapped_column(Boolean, default=True)
     # ask | auto: what an approval needed during an unattended run does (spec 10, 2.4)
     approval_mode: Mapped[str] = mapped_column(String(8), default="ask", server_default="ask")
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -538,9 +533,7 @@ class PendingAction(Base, TimestampMixin):
 class Assistant(Base, TimestampMixin):
     """The user's assistant: name, personality, avatar.
 
-    One per user. The table still has six 1.0.0 columns that are deliberately
-    unmapped. Each has a server default (revision 0002) and is listed in
-    migration_ops.LEGACY_PENDING_DROP until a contract revision drops it.
+    One per user.
     """
 
     __tablename__ = "assistants"
@@ -575,9 +568,6 @@ class UserSkill(Base, TimestampMixin):
     run_count: Mapped[int] = mapped_column(Integer, default=0)
     success_count: Mapped[int] = mapped_column(Integer, default=0)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # Free-text corrections the user has given. Injected into the prompt when
-    # this skill is relevant — this is how a skill "learns how you like it done".
-    learned_notes: Mapped[list] = mapped_column(JSON, default=list)
 
 
 class SkillRun(Base, TimestampMixin):
@@ -598,27 +588,6 @@ class SkillRun(Base, TimestampMixin):
     work_item_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("work_items.id", ondelete="SET NULL"), index=True
     )
-
-
-class ApprovalGrant(Base, TimestampMixin):
-    """A standing permission the user has given for a specific tool.
-
-    Created when they pick 'Always allow' or 'Allow for 10 minutes' on a
-    confirmation prompt. Checked before anything is queued.
-    """
-
-    __tablename__ = "approval_grants"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    tool_name: Mapped[str] = mapped_column(String(120), index=True)
-    scope: Mapped[str] = mapped_column(String(20), default="always")  # always | window
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
-    # What the permission covers, for tools where "always" must not mean
-    # "anything": a grant for send_email names one recipient. Empty means the
-    # tool as a whole, which is how every other tool's grants work.
-    target: Mapped[str] = mapped_column(String(320), default="")
 
 
 class HeartbeatReport(Base, TimestampMixin):

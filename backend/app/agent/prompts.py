@@ -189,11 +189,8 @@ Return ONLY JSON of this shape:
   "name": "short human label",
   "trigger_type": "...",
   "trigger_config": {{}},
-  "actions": [{{"tool": "...", "arguments": {{}}}}],
-  "requires_confirmation": true
+  "actions": [{{"tool": "...", "arguments": {{}}}}]
 }}
-
-Set requires_confirmation to true if any action sends email or is otherwise externally visible.
 
 Rule: {rule}"""
 

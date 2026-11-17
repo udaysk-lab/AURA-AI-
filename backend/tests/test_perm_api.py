@@ -19,10 +19,11 @@ from app.db import SessionLocal, engine  # noqa: E402
 from app.device.runtime import reset_cache  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import (  # noqa: E402
-    ApprovalGrant, Notification, PairedDevice, PermissionEvent, PermissionRule, User, UserSettings, utcnow,
+    Notification, PairedDevice, PermissionEvent, PermissionRule, User, UserSettings, utcnow,
 )
 from app.permissions import access, catalogue, reviewer  # noqa: E402
 from app.security import create_access_token  # noqa: E402
+from tests.legacy_schema import add_grant  # noqa: E402
 from tests.perm_helpers import apply_legacy  # noqa: E402
 from tests.schema import drop_test_schema, ensure_test_schema  # noqa: E402
 
@@ -556,7 +557,7 @@ def test_the_legacy_mapping_shows_up_in_the_log(client, owner):
     db = SessionLocal()
     try:
         user = db.get(User, uid)
-        db.add(ApprovalGrant(user_id=uid, tool_name="open_app", scope="always"))
+        add_grant(db, uid, tool_name="open_app", scope="always")
         db.commit()
         apply_legacy(db, user, "relaxed")
     finally:

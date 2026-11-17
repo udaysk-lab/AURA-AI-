@@ -228,7 +228,6 @@ AUTOMATIONS = [
             {"tool": "create_task", "arguments": {"title": "Follow up: {subject}", "priority": "high"}},
             {"tool": "notify", "arguments": {"title": "Investor email from {sender}", "level": "urgent"}},
         ],
-        requires_confirmation=False,
     ),
     dict(
         name="Morning briefing at 08:00",
@@ -236,7 +235,6 @@ AUTOMATIONS = [
         trigger_type="schedule",
         trigger_config={"cron": "0 8 * * 1-5"},
         actions=[{"tool": "get_daily_briefing", "arguments": {}}],
-        requires_confirmation=False,
     ),
     dict(
         name="Urgent email → draft reply for approval",
@@ -244,7 +242,6 @@ AUTOMATIONS = [
         trigger_type="email_received",
         trigger_config={"importance": "urgent"},
         actions=[{"tool": "draft_reply", "arguments": {}}],
-        requires_confirmation=True,
     ),
 ]
 

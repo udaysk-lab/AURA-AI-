@@ -272,11 +272,11 @@ def test_a_rule_with_nothing_left_is_refused(env, monkeypatch):
         engine.create_rule_checked(db, user, "run ls every day")
 
 
-def test_a_rule_is_created_with_its_mode_and_hint(env, monkeypatch):
+def test_a_rule_is_created_with_its_mode(env, monkeypatch):
     db = env
     user = user_in(db)
     rule, warnings = engine.create_rule_checked(db, user, "when a task is due notify me", approval_mode="ask")
-    assert rule.approval_mode == "ask" and warnings == [] and rule.requires_confirmation is False
+    assert rule.approval_mode == "ask" and warnings == []
     rule, _ = engine.create_rule_checked(db, user, "x", approval_mode="skip")
     assert rule.approval_mode == "ask", "skip is not a thing for unattended work"
 

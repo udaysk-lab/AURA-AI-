@@ -25,13 +25,15 @@ def env(tmp_path):
     engine.dispose()
 
 
+OLD_KINDS = ("preference", "style", "habit")  # the 1.0 kinds, removed from the database by revision tl90
+
 def test_memory_kinds_narrowed(env):
     db, user = env
     assert mem.KINDS == ("fact", "contact", "project", "decision")
     for kind, text in (("fact", "Priya leads the Series A round"), ("contact", "Sam is the designer"),
                        ("project", "Series A closes in Q3"), ("decision", "Chose FastAPI for the backend")):
         db.add(Memory(user_id=user.id, kind=kind, content=text, source="chat"))
-    for kind in mem.LEGACY_KINDS:  # rows 1.0 wrote, left in place after the copy to preferences
+    for kind in OLD_KINDS:  # kinds 1.0 wrote; a row of another kind is never read, searched or counted
         db.add(Memory(user_id=user.id, kind=kind, content=f"Series A {kind} legacy row", source="chat"))
     db.commit()
     hits = mem.search(db, user.id, "Series A", limit=10)
@@ -459,7 +461,7 @@ def test_old_memory_kinds_are_not_listed_searched_or_counted(client, ha, hb):
     try:
         uid = _uid(client, ha)
         db.add(Memory(user_id=uid, kind="fact", content="Zebra budget is approved", source="chat"))
-        for kind in mem.LEGACY_KINDS:
+        for kind in OLD_KINDS:
             db.add(Memory(user_id=uid, kind=kind, content=f"Zebra {kind} copied by tl02", source="chat"))
         db.commit()
     finally:
@@ -467,7 +469,7 @@ def test_old_memory_kinds_are_not_listed_searched_or_counted(client, ha, hb):
     listed = client.get("/api/memories", headers=ha).json()
     assert [m["content"] for m in listed if "Zebra" in m["content"]] == ["Zebra budget is approved"]
     assert all(m["kind"] in mem.KINDS for m in listed)
-    for kind in mem.LEGACY_KINDS:
+    for kind in OLD_KINDS:
         assert client.get(f"/api/memories?kind={kind}", headers=ha).json() == []
     found = client.get("/api/memories/search", headers=ha, params={"q": "Zebra"}).json()
     assert [m["content"] for m in found] == ["Zebra budget is approved"]

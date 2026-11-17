@@ -14,8 +14,9 @@ from sqlalchemy import select  # noqa: E402
 from app import models, plugins  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.device.runtime import reset_cache  # noqa: E402
-from app.models import ApprovalGrant, PermissionEvent, utcnow  # noqa: E402
+from app.models import PermissionEvent, utcnow  # noqa: E402
 from app.permissions import events, gate, reviewer, rules  # noqa: E402
+from tests.legacy_schema import add_grant
 from tests.perm_helpers import apply_legacy, ctx, decide, make_session, make_user  # noqa: E402
 
 SEND = {"to": "bob@example.com", "subject": "Hi", "body": "x"}
@@ -414,10 +415,10 @@ def test_legacy_tiers_keep_existing_behaviour(env):
 def test_legacy_grants(env):
     _, db = env
     user = make_user(db, level="conservative")
-    db.add(ApprovalGrant(user_id=user.id, tool_name="send_email", scope="always", target="bob@example.com"))
-    db.add(ApprovalGrant(user_id=user.id, tool_name="delete_event", scope="window", expires_at=utcnow() + timedelta(minutes=5)))
-    db.add(ApprovalGrant(user_id=user.id, tool_name="archive_email", scope="window", expires_at=utcnow() - timedelta(minutes=5)))
-    db.add(ApprovalGrant(user_id=user.id, tool_name="delete_task", scope="always", revoked=True))
+    add_grant(db, user.id, tool_name="send_email", scope="always", target="bob@example.com")
+    add_grant(db, user.id, tool_name="delete_event", scope="window", expires_at=utcnow() + timedelta(minutes=5))
+    add_grant(db, user.id, tool_name="archive_email", scope="window", expires_at=utcnow() - timedelta(minutes=5))
+    add_grant(db, user.id, tool_name="delete_task", scope="always", revoked=True)
     db.commit()
     apply_legacy(db, user)
     assert codes(decide(db, user, "send_email", SEND)) == ("allow", "RULE_ALLOW")

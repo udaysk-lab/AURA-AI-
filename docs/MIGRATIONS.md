@@ -155,9 +155,9 @@ possible:
    live site for at least 24 hours and been checked. These drop the old columns
    and tables. Their ids end in 90 to 99 (`pm90`, `tl90`).
 
-No contract revision has shipped yet. Until one does, the 1.0 columns and
-tables (trust levels, grants, learned notes, the old tone setting) are still in
-the database and not used.
+The contract revisions are `pm90_contract`, `tl90_contract` and `sc90_contract`,
+in that order, after `tl02_preferences`. They cannot be undone: after they run,
+only a restore from a backup brings the old columns and tables back.
 
 ## The revisions so far
 
@@ -169,6 +169,9 @@ the database and not used.
 | `pm02_permissions_data` | Once per user, maps the 1.0 settings onto the new model: trust level to mode and rules, "always" grants to allow rules, `DEVICE_EXEC_*` and the command denylist to command rules, `DEVICE_ALLOWED_ROOTS` to connected folders, the default blocked-apps list, expiry on waiting approvals. Nobody is put on Auto. It reads install-level settings only at this moment; changing them afterwards does not redo it. |
 | `tl01_work_items` | Work items and their steps, and the links from runs, logs, usage and approvals to a work item. |
 | `tl02_preferences` | Preferences, the memory pause and per-chat switches, and the copy of 1.0 preference facts, skill notes and tone into preferences. |
+| `pm90_contract` | Contract. Maps the 1.0 trust settings once more for any user `pm02` has not marked, then drops `user_settings.autonomy_level`, `automation_rules.requires_confirmation` and the table `approval_grants`. |
+| `tl90_contract` | Contract. Deletes memories of kind preference, style and habit (already copied by `tl02`), and drops `user_settings.tone` and `user_skills.learned_notes`. |
+| `sc90_contract` | Contract. Drops the 1.0.0 assistant columns `hatched_at`, `interactions`, `actions_taken`, `corrections`, `stage` and `onboarded`. |
 
 ## Writing a new revision
 

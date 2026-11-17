@@ -505,8 +505,9 @@ def test_migration_maps_old_rows(tmp_path):
             conn.execute(t("user_skills").insert().values(
                 id=f"k{i}", user_id="u1", code=code, enabled=True, run_count=0, success_count=0, learned_notes=notes,
                 created_at=now, updated_at=now))
-    migrate._CACHE.clear()
-    assert migrate.upgrade_to_head(engine).ok
+    with engine.connect() as conn:  # the copy under test is tl02's; the contract steps after it drop its sources
+        command.upgrade(migrate.alembic_config(conn), "tl02_preferences")
+        conn.commit()
     with engine.connect() as conn:
         rows = conn.execute(text("SELECT task_type, text, source FROM preferences ORDER BY text")).all()
     by_text = {r[1]: (r[0], r[2]) for r in rows}

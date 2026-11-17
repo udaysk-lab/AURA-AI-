@@ -558,7 +558,6 @@ class AutomationOut(ORMModel):
     trigger_config: dict[str, Any]
     actions: list[Any]
     enabled: bool
-    requires_confirmation: bool
     # What an approval needed during a run does: ask parks it for you, auto sends it to the
     # safety reviewer. Never "skip": unattended work is always held to a check.
     approval_mode: Literal["ask", "auto"] = "ask"
@@ -580,7 +579,6 @@ class AutomationIn(BaseModel):
 class AutomationPatch(BaseModel):
     enabled: bool | None = None
     name: str | None = None
-    requires_confirmation: bool | None = None
     approval_mode: Literal["ask", "auto"] | None = None
 
 

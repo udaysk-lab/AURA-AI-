@@ -38,4 +38,5 @@ def drop_test_schema(engine: Engine) -> None:
     Base.metadata.drop_all(bind=engine)
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+        conn.execute(text("DROP TABLE IF EXISTS approval_grants"))  # added by tests/legacy_schema.py
     migrate._CACHE.clear()  # the next lifespan must look at the real database

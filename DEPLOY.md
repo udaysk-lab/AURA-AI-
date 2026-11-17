@@ -170,9 +170,10 @@ are, how to read a failure and how to write a revision is in
    the old code, which ignores the new columns and tables (the app serves
    normally and preflight shows a warning).
 6. A release that drops old columns or tables ships separately, only after step
-   3 has passed on the additive release and the site has run for 24 hours.
-   After that release, rolling back to older code needs a database restore
-   (Supabase backups, done by the owner), so do not roll back past it.
+   3 has passed on the additive release and the site has run for 24 hours (see
+   "The contract release" below). After that release, rolling back to older code
+   needs a database restore (Supabase backups, done by the owner), so do not
+   roll back past it.
 
 **The 1.0 to 2.0 upgrade.** The first start after the upgrade also maps each
 account's 1.0 settings onto the 2.0 permission model, once: the trust level
@@ -186,7 +187,41 @@ it, check the following with a test account:
   owner sets it in Channels, messages on that channel are kept as notifications
   and start no task.
 - The old trust columns and tables are still in the database, unused, until the
-  separate release in step 6.
+  contract release below.
+
+**The contract release (drops the old columns and tables).** Three revisions,
+`pm90_contract`, `tl90_contract` and `sc90_contract`, run on the first cold start
+after the deploy. **This cannot be undone.** They drop the 1.0 columns and the
+`approval_grants` table, and delete the old memory rows of kind preference, style
+and habit. Only a restore from a backup brings them back, and the operator cannot
+do that from Vercel.
+
+Before the deploy:
+
+1. Be sure the additive release has passed step 3 above and has run for at least
+   24 hours.
+2. Take an export of the production database: a Supabase backup (Project →
+   Database → Backups) or `pg_dump`, and keep it until the check below is done.
+   Note the number of users and the preferences listed on the Memory page of a
+   test account.
+3. Know that anything an older instance wrote after the additive release (a new
+   preference-kind memory, a skill note, a tone change) is not copied to
+   preferences by the contract release; those rows are lost with the old columns.
+   The first revision does map a user whose trust level an older instance saved
+   after the additive release.
+
+After the deploy:
+
+1. `https://<your-site>/health` must show `"schema": "sc90_contract"`, and
+   `/api/health/preflight` "Database schema: ok".
+2. Sign in with the test account. Settings, Permissions shows the same mode and
+   rules as before; the Memory page shows the same preferences; chat, Skills and
+   Automations open without an error.
+3. If `/api` answers 503 `schema_not_ready`, the database is unchanged (the
+   upgrade is one transaction), so Instant Rollback to the previous deployment is
+   safe. Once the health page shows `sc90_contract`, do not roll back to code
+   older than this release: it needs the dropped columns, and only restoring the
+   export fixes that.
 
 **The desktop app** upgrades `aura.db` every time it starts, before anything
 else. If it cannot (for example the database came from a newer AURA), it opens a

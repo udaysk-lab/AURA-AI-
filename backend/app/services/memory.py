@@ -38,11 +38,9 @@ _STOPWORDS = {
 }
 
 
-# The kinds a Memory row may have (spec 20 section 10.6). Rows written by 1.0 with the kinds
-# preference / style / habit are copied to the preference store by revision tl02 and are no
-# longer read, searched or compacted.
+# The kinds a Memory row may have. The 1.0 kinds preference, style and habit were copied to the
+# preference store by revision tl02 and removed by revision tl90.
 KINDS: tuple[str, ...] = ("fact", "contact", "project", "decision")
-LEGACY_KINDS: tuple[str, ...] = ("preference", "style", "habit")
 MAX_CONTENT = 2000
 
 

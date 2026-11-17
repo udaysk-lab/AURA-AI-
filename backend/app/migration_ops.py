@@ -14,21 +14,10 @@ import sqlalchemy as sa
 # (table, column) pairs that exist in the database but whose model attribute is
 # gone, or is about to go. (table, None) means the whole table. Each entry only
 # takes effect once the attribute is removed: alembic/env.py's include_object
-# ignores a database object the models do not know. Contract revisions drop
-# exactly these and leave the set empty.
-LEGACY_PENDING_DROP: set[tuple[str, str | None]] = {
-    ("assistants", "hatched_at"),
-    ("assistants", "interactions"),
-    ("assistants", "actions_taken"),
-    ("assistants", "corrections"),
-    ("assistants", "stage"),
-    ("assistants", "onboarded"),
-    ("user_settings", "autonomy_level"),
-    ("user_settings", "tone"),
-    ("user_skills", "learned_notes"),
-    ("automation_rules", "requires_confirmation"),
-    ("approval_grants", None),
-}
+# ignores a database object the models do not know. It is empty now: the contract
+# revisions (pm90, tl90, sc90) dropped every legacy column and table. A future
+# expand step that stops mapping a column adds it here until its contract runs.
+LEGACY_PENDING_DROP: set[tuple[str, str | None]] = set()
 
 
 # ---------------------------------------------------------------------------
