@@ -34,6 +34,7 @@ AURA is now a personal employee. It works from the first message: you give it an
 - **More protected places:** `mimeapps.list` files wherever they are, exported Flatpak launchers, session and window manager start-up files. The Python that runs AURA (interpreter, libraries, virtual environment) is protected like AURA's own files.
 - **Office and OpenDocument files** open as your mode allows only when they really are the kind of document their name says and hold no macros.
 - **Programs in folders you ever connected ask,** even after you disconnect the folder. Programs that shut down, restart, suspend or sign out always ask. A web link whose host cannot be looked up is refused.
+- **Moving a file into a folder** is checked at the place it lands, and never replaces a file already there.
 - Preferences you had taught AURA are moved into the new preference memory.
 - Approvals still waiting from 1.x are given an expiry.
 
