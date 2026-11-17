@@ -118,7 +118,7 @@ def test_the_window_is_checked_again_before_each_piece(notes, monkeypatch, later
 
 def test_aura_counts_as_typing_for_the_whole_call_and_the_cooldown_after(notes, monkeypatch):
     db, user, gui, _ = notes
-    clock = {"t": 1000.0}
+    clock = {"t": access._now()}  # the real monotonic time, so the owner noted by the fixture is still here
     monkeypatch.setattr(access, "_now", lambda: clock["t"])
     seen = []
 
@@ -136,7 +136,7 @@ def test_aura_counts_as_typing_for_the_whole_call_and_the_cooldown_after(notes, 
 
 def test_the_busy_marker_is_released_when_a_call_fails(notes, monkeypatch):
     db, user, gui, _ = notes
-    clock = {"t": 1000.0}
+    clock = {"t": access._now()}  # the real monotonic time, so the owner noted by the fixture is still here
     monkeypatch.setattr(access, "_now", lambda: clock["t"])
 
     def boom(n):

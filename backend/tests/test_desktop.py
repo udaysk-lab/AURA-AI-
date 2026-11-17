@@ -499,13 +499,19 @@ def test_notification_text_is_quoted_for_powershell():
 
 
 def test_fetch_url_only_reads():
+    """The web fetch takes no method: the gate and the tool runner refuse a call that passes one, and the handler
+    only ever reads (net.safe_get is a GET)."""
+    from app.agent import argcheck
     from app.agent.tools import REGISTRY, ToolContext
 
     tool = REGISTRY["fetch_url"]
     assert "method" not in tool.spec.parameters["properties"]
-    with mock.patch.object(settings, "device_control", "on"):
-        result = tool.handler(ToolContext(db=None, user=None), {"url": "https://example.com", "method": "POST"})
-    assert "error" in result
+    assert "'method'" in argcheck.problem(tool.spec.parameters, {"url": "https://example.com", "method": "POST"})
+    calls = []
+    with mock.patch.object(settings, "device_control", "on"), \
+            mock.patch("app.device.net.safe_get", side_effect=lambda url, **k: calls.append(url) or {"status": 200}):
+        tool.handler(ToolContext(db=None, user=None), {"url": "https://example.com"})
+    assert calls == ["https://example.com"]
 
 
 def test_the_skill_catalog_is_public_and_complete(here):
