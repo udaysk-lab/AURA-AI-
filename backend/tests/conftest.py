@@ -129,11 +129,14 @@ def _test_peers_are_ordinary_programs(request, monkeypatch):
 def pytest_collection_modifyitems(config, items):
     """Run one slice of the suite when AURA_TEST_SHARD is "i/n" (CI on slow runners).
 
-    Whole test modules stay together, so module-scoped fixtures behave as usual. Modules are dealt out by size,
-    largest first, each to the slice with the fewest tests so far, so the slices come out close to even. Every
-    slice collects the same tests and so computes the same split.
+    The suite is cut into units, dealt out by size (largest first, each to the slice with the fewest tests so far),
+    so the slices come out close to even. A unit is a whole test module, so module-scoped fixtures behave as usual;
+    a module larger than a quarter of a slice that uses no module- or class-scoped fixture is cut into pieces of a
+    quarter of a slice, because one such module would otherwise decide how long a slice takes. Every slice collects
+    the same tests and so computes the same split.
     """
     import collections
+    import math
     import os
 
     spec = os.environ.get("AURA_TEST_SHARD", "").strip()
@@ -144,19 +147,35 @@ def pytest_collection_modifyitems(config, items):
     if not 1 <= index <= total:
         raise pytest.UsageError(f"AURA_TEST_SHARD={spec!r} is not i/n with 1 <= i <= n")
 
-    def module(item) -> str:
-        return item.nodeid.split("::", 1)[0].replace("\\", "/")
-
-    sizes = collections.Counter(module(item) for item in items)
-    load = [0] * total
-    slice_of: dict[str, int] = {}
-    for name, size in sorted(sizes.items(), key=lambda kv: (-kv[1], kv[0])):
-        k = min(range(total), key=lambda i: (load[i], i))
-        slice_of[name] = k
-        load[k] += size
-    keep, drop = [], []
+    by_module: dict[str, list] = collections.defaultdict(list)
     for item in items:
-        (keep if slice_of[module(item)] == index - 1 else drop).append(item)
+        by_module[item.nodeid.split("::", 1)[0].replace("\\", "/")].append(item)
+
+    def shared_state(module_items) -> bool:
+        for item in module_items:
+            info = getattr(item, "_fixtureinfo", None)
+            for defs in (info.name2fixturedefs.values() if info is not None else ()):
+                if any(getattr(d, "scope", "function") in ("module", "class", "package") for d in defs):
+                    return True
+        return False
+
+    piece = max(1, math.ceil(len(items) / total / 4))
+    units: list[tuple[str, int, list]] = []
+    for name, module_items in by_module.items():
+        if len(module_items) > piece and not shared_state(module_items):
+            for k in range(0, len(module_items), piece):
+                units.append((name, k, module_items[k:k + piece]))
+        else:
+            units.append((name, 0, module_items))
+    load = [0] * total
+    keep_ids: set[int] = set()
+    for name, k, unit in sorted(units, key=lambda u: (-len(u[2]), u[0], u[1])):
+        target = min(range(total), key=lambda i: (load[i], i))
+        load[target] += len(unit)
+        if target == index - 1:
+            keep_ids.update(id(item) for item in unit)
+    keep = [item for item in items if id(item) in keep_ids]
+    drop = [item for item in items if id(item) not in keep_ids]
     if drop:
         config.hook.pytest_deselected(items=drop)
         items[:] = keep
