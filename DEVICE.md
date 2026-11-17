@@ -179,7 +179,9 @@ moving or deleting a whole project still work.
   itself, and if the program it finds is inside a folder you connected (or, on
   Windows and macOS, it cannot find where the program is installed), it asks you
   every time, in every mode, and then starts exactly that program. A folder you
-  connected earlier and have since disconnected still counts. A program that shuts
+  connected earlier and have since disconnected still counts, recognised by the
+  path it had then (after you rename or move it, AURA no longer recognises it).
+  A program that shuts
   down, restarts, suspends or signs out (`poweroff`, `reboot`, `shutdown`,
   `logoff` and similar) always asks, wherever it is. A web link whose host cannot
   be looked up is refused. Connect the folders you work in, not your whole home

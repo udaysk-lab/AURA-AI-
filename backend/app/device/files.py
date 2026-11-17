@@ -444,9 +444,20 @@ def move_path(src: str, dst: str) -> dict:
             f"{src!r} holds protected folders (keys, startup items or AURA's own "
             "config), so AURA won't move it."
         )
-    os.makedirs(os.path.dirname(real_dst) or ".", exist_ok=True)
-    shutil.move(real_src, real_dst)
-    return {"from": _rel(real_src), "to": _rel(real_dst)}
+    # A move into an existing folder creates <folder>/<name of the source>: that is the path written, so it is
+    # checked like any other (inside the connected folders, not AURA's own, not protected, not git's own, not
+    # completing a git folder), and the move goes to exactly that path and never over something already there.
+    from app.permissions import match
+
+    land = match.landing(real_src, real_dst)
+    if land != real_dst:
+        land = resolve(land)
+        _guard_write(land, _rel(land))
+        if os.path.lexists(land):
+            raise PathNotAllowed(f"{_rel(land)!r} already exists, so nothing was moved.")
+    os.makedirs(os.path.dirname(land) or ".", exist_ok=True)
+    shutil.move(real_src, land)
+    return {"from": _rel(real_src), "to": _rel(land)}
 
 
 def delete_path(path: str) -> dict:

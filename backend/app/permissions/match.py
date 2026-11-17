@@ -377,6 +377,15 @@ class Target:
     resolved: bool = False  # the name was looked up (so "" in `program` means nothing was found)
 
 
+def landing(src: str, dst: str, ops: PathOps | None = None) -> str:
+    """Where a move puts `src` when it is told to move it to `dst`: inside `dst` when that is an existing folder
+    (`<dst>/<name of src>`), else `dst` itself. The gate judges this path and the file layer moves to exactly it."""
+    ops = ops or PathOps()
+    if ops.pm.isdir(dst):
+        return ops.pm.join(dst, ops.pm.basename(src.rstrip("/\\")))
+    return dst
+
+
 def extract(
     policy: ToolPolicy,
     args: dict,
@@ -473,6 +482,15 @@ def extract(
             app_id = pid_app(pid) if pid_app else None
             if app_id:
                 out.append(Target("app", appnames.canonical(app_id), "pid", app_id))
+    if policy.name == "move_file":
+        # A move into an existing folder creates <folder>/<name of the source>. That path is a write target too, so
+        # the floors and the rules see the name the move creates, not only the folder it goes into.
+        src = next((t for t in out if t.kind == "path" and t.role == "delete"), None)
+        dst = next((t for t in out if t.kind == "path" and t.role == "write"), None)
+        if src is not None and dst is not None:
+            land = landing(src.value, dst.value, ops)
+            if land != dst.value:
+                out.append(Target("path", land, "write", land))
     return tuple(out)
 
 

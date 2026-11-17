@@ -367,7 +367,18 @@ def _search_files(ctx: ToolContext, args: dict) -> list | dict:
 )
 @_safe
 def _move_file(ctx: ToolContext, args: dict) -> dict:
-    result = files.move_path(_canon(ctx, args["source"], "delete"), _canon(ctx, args["destination"], "write"))
+    from app.permissions import match
+
+    src, dst = _canon(ctx, args["source"], "delete"), _canon(ctx, args["destination"], "write")
+    decision = getattr(ctx, "decision", None)
+    if decision is not None:
+        # The path the move creates must be one the gate judged: a destination that became a folder (or stopped
+        # being one) since the decision would put the source somewhere nobody checked.
+        judged = {t.value for t in decision.targets if t.kind == "path" and t.role == "write"}
+        if match.landing(src, dst) not in judged:
+            raise files.PathNotAllowed(
+                f"{args['destination']!r} changed since this was checked, so nothing was moved.")
+    result = files.move_path(src, dst)
     _log(ctx, "move_file", f"{args['source']} -> {args['destination']}")
     return result
 

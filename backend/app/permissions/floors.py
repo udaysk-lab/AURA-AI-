@@ -134,7 +134,12 @@ def _interpreter_paths() -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, .
     if os.name == "nt":
         libs.extend(os.path.join(prefix, "DLLs") for prefix in {sys.base_prefix, sys.prefix})
     venv = [sys.prefix] if sys.prefix != sys.base_prefix else []
-    return tuple(exes), tuple(p for p in libs if p), tuple(venv)
+    # On Windows site.getsitepackages() also names the installation root itself. That root is not AURA: a virtual
+    # environment's root is listed on its own (`venv`), and a system installation's root holds other programs.
+    roots = {os.path.normcase(os.path.realpath(p)) for p in
+             (sys.prefix, sys.base_prefix, getattr(sys, "exec_prefix", ""), getattr(sys, "base_exec_prefix", "")) if p}
+    libs = [p for p in libs if p and os.path.normcase(os.path.realpath(p)) not in roots]
+    return tuple(exes), tuple(libs), tuple(venv)
 
 
 def self_paths(shell: bool = False) -> list[str]:

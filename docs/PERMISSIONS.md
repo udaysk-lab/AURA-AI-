@@ -144,7 +144,9 @@ These ask every time, in every mode, and no rule can turn the card off:
   If nothing is found on Linux, nothing starts. Programs outside your connected
   folders follow your mode and rules. "Inside a connected folder" counts folders
   you connected earlier and have since disconnected: a file AURA could once have
-  written there is still a file you are asked about.
+  written there is still a file you are asked about. AURA recognises these folders
+  by the path they had when you connected them; after you rename or move one, it
+  no longer does.
 - Starting a program that shuts down, restarts, suspends or signs out of the
   computer (`poweroff`, `reboot`, `halt`, `shutdown`, `logoff`, `tsdiscon`,
   `suspend`, `hibernate`, `pm-suspend`, `pm-hibernate`), wherever it is. The card

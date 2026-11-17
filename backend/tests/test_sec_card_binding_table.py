@@ -46,7 +46,7 @@ def w(request, tmp_path, monkeypatch):
     os.chmod(script, 0o755)
     bin_dir = os.path.join(world.work, "bin")
     os.makedirs(bin_dir)
-    tool = os.path.join(bin_dir, "mytool")
+    tool = os.path.join(bin_dir, "mytool.exe" if os.name == "nt" else "mytool")
     with open(tool, "w") as fh:
         fh.write("#!/bin/sh\n")
     os.chmod(tool, 0o755)
