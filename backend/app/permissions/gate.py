@@ -235,9 +235,22 @@ def _block_reason(block, targets: tuple[Target, ...], dialect: str) -> str:
 
 def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> Decision | _Pre:
     """Steps 0 to 5. A terminal Decision, or the facts later steps need."""
+    from app.agent import argcheck
     from app.agent.tools import REGISTRY
 
     digest = args_digest(args)
+    # The arguments must have the form the model was shown for this tool, before anything reads them.
+    bad = argcheck.problem(argcheck.schema_for(tool), args)
+    if bad:
+        return _deny("system", "BAD_ARGS", f"The request could not be read safely: {bad}", tool=tool, digest=digest,
+                     user=user, policy=catalogue.CATALOGUE.get(tool))
+    if tool in asks.SCREEN_TOOLS and isinstance(args, dict):
+        from app.device import screen
+
+        bad = screen.input_problem(tool, args)
+        if bad:
+            return _deny("system", "BAD_ARGS", f"The request could not be read safely: {bad}", tool=tool,
+                         digest=digest, user=user, policy=catalogue.CATALOGUE.get(tool))
     policy = catalogue.CATALOGUE.get(tool)
     if not policy or (tool not in REGISTRY and not policy.loop_internal):
         return _deny("system", "UNKNOWN_TOOL", "That tool does not exist here, so it was not run.", tool=tool,
@@ -310,7 +323,8 @@ def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> De
     block = match.first_match("block", applicable, targets, dialect)
     if block:
         return deny("rule", "RULE_BLOCK", _block_reason(block, targets, dialect), block.id)
-    return _Pre(policy, targets, dialect, digest, fl, applicable, landing, acc.roots if acc is not None else ())
+    return _Pre(policy, targets, dialect, digest, fl, applicable, landing,
+                acc.program_roots if acc is not None else ())
 
 
 # ---------------------------------------------------------------------------
@@ -319,15 +333,11 @@ def _head(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> De
 
 
 def _window_under(windows, args: Any):
-    """The top-level window at the point a click or scroll names (the pointer's place when it names none)."""
+    """The top-level window at the exact point a click or scroll names (under the pointer when it names none).
+    The arguments were checked first: both coordinates are whole numbers, or neither is given."""
     a = args if isinstance(args, dict) else {}
     x, y = a.get("x"), a.get("y")
-    if isinstance(x, bool) or isinstance(y, bool) or not (
-        isinstance(x, (int, float)) and isinstance(y, (int, float))
-    ):
-        point = windows.pointer_position()
-    else:
-        point = (int(x), int(y))
+    point = windows.pointer_position() if x is None and y is None else (x, y)
     return windows.window_at(*point) if point else None
 
 
@@ -441,6 +451,55 @@ _CARD_CODES = {"folder_access": "NEEDS_FOLDER", "app_grant": "NEEDS_APP_GRANT",
                "delete_permission": "NEEDS_DELETE_PERMISSION"}
 
 
+@dataclass(frozen=True)
+class _Question:
+    """A question that always goes to the owner, whatever the mode (step 6). `window` marks the one case where an
+    open 10 minute window for the application already answers it."""
+
+    code: str
+    reason: str
+    card: str = "tool"
+    payload: dict = field(default_factory=dict)
+    options: tuple[str, ...] = ONCE_ONLY
+    window: bool = False
+
+
+def _owner_question(db: Session, user: User, pre: _Pre) -> _Question | None:
+    """The always-owner questions of step 6, in their order, for the call as it stands now. It only reads: it writes
+    no event, asks no reviewer and parks nothing, so `_decide` (which asks the question) and `_approved_call` (which
+    checks that the answered card was this very question) work from the same answer."""
+    policy = pre.policy
+    if pre.floor.card:
+        return _Question(_CARD_CODES[pre.floor.card], pre.floor.reason, pre.floor.card, dict(pre.floor.card_payload))
+    # Computer protection is off: every shell action needs the owner, once or not at all.
+    if policy.name in wall.SHELL_TOOLS and not wall.active():
+        return _Question(wall.UNCHECKED_CODE, wall.UNCHECKED_REASON, "tool", {"unchecked": {"code": wall.CARD_CODE}})
+    # open_app with a file that could run as a program, or a program started by name that needs the owner.
+    unchecked = _unchecked_open(pre)
+    if unchecked is not None:
+        return _Question(asks.UNCHECKED_OPEN, asks.UNCHECKED_OPEN_REASON, "tool",
+                         {"unchecked_open": {"path": unchecked[0], "type": unchecked[1].ext, "why": unchecked[1].why}})
+    program = _unchecked_program(pre)
+    if program is not None:
+        reason = asks.UNCHECKED_OPEN_REASONS[program[1].why]
+        return _Question(asks.UNCHECKED_OPEN, reason, "tool", {"unchecked_open": _program_card(*program)})
+    # Screen input: the only allowance is a 10 minute window bound to one application.
+    if policy.name in asks.SCREEN_TOOLS:
+        app_id, app_name = _screen_app(pre)
+        if app_id and rules_store.screen_window(db, user.id, app_id):
+            return _Question(asks.SCREEN_WINDOW_CODE, asks.screen_window_reason(app_name), window=True)
+        return _Question(asks.SCREEN_INPUT, asks.screen_reason(app_name), "tool",
+                         {"screen_input": {"app_id": app_id, "app_name": app_name,
+                                           "window_minutes": asks.WINDOW_MINUTES}},
+                         ONCE_ONLY if not app_id else ("once", "window", "reject"))
+    if policy.always_user or pre.floor.always_user:
+        why = ("Permanently deleting files always needs your approval."
+               if policy.always_user else
+               "This command deletes files or touches a protected location, so it needs your approval every time.")
+        return _Question("ALWAYS_USER", why)
+    return None
+
+
 def decide(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> Decision:
     d = _decide(db, user, tool, args, ctx)
     return _finish(db, user, d, ctx)
@@ -452,54 +511,19 @@ def _decide(db: Session, user: User, tool: str, args: Any, ctx: GateContext) -> 
         return pre
     policy = pre.policy
 
-    # 6. always needs the user (a folder, app or delete-permission card is one such question)
-    if pre.floor.card:
-        return _make(kind="ask", source="always_user", reason_code=_CARD_CODES[pre.floor.card],
-                     reason=pre.floor.reason, tool=tool, args_digest=pre.digest, targets=pre.targets,
-                     tool_kind=policy.kind, always_user=True, card=pre.floor.card,
-                     card_payload=dict(pre.floor.card_payload), options=ONCE_ONLY, user_id=user.id)
-    # 6a. computer protection is off: every shell action needs the owner, once or not at all. This is before ask
-    # rules, allow rules, defaults, the mode and the reviewer, so none of them can see it.
-    if policy.name in wall.SHELL_TOOLS and not wall.active():
-        return _make(kind="ask", source="always_user", reason_code=wall.UNCHECKED_CODE, reason=wall.UNCHECKED_REASON,
-                     tool=tool, args_digest=pre.digest, targets=pre.targets, tool_kind=policy.kind,
-                     always_user=True, card="tool", card_payload={"unchecked": {"code": wall.CARD_CODE}},
-                     options=ONCE_ONLY, proposed_rule=None, user_id=user.id)
-    # 6b. open_app with a file that could run as a program: the owner, once or not at all, in every mode.
-    unchecked = _unchecked_open(pre)
-    if unchecked is not None:
-        return _make(kind="ask", source="always_user", reason_code=asks.UNCHECKED_OPEN,
-                     reason=asks.UNCHECKED_OPEN_REASON, tool=tool, args_digest=pre.digest, targets=pre.targets,
-                     tool_kind=policy.kind, always_user=True, card="tool",
-                     card_payload={"unchecked_open": {"path": unchecked[0], "type": unchecked[1].ext,
-                                                      "why": unchecked[1].why}},
-                     options=ONCE_ONLY, proposed_rule=None, user_id=user.id)
-    program = _unchecked_program(pre)
-    if program is not None:
-        reason = asks.UNCHECKED_OPEN_FOLDER_REASON if program[1].why == "folder" else asks.UNCHECKED_OPEN_UNFOUND_REASON
-        return _make(kind="ask", source="always_user", reason_code=asks.UNCHECKED_OPEN, reason=reason, tool=tool,
+    # 6. always needs the user: a folder, app or delete-permission card, a shell action while computer protection is
+    # off, a file or program that could run, screen input, an always-ask tool. These come before ask rules, allow
+    # rules, defaults, the mode and the reviewer, so none of them can see them.
+    q = _owner_question(db, user, pre)
+    if q is not None:
+        if q.window:
+            return _make(kind="allow", source="rule", reason_code=asks.SCREEN_WINDOW_CODE, reason=q.reason,
+                         tool=tool, args_digest=pre.digest, targets=pre.targets, tool_kind=policy.kind,
+                         user_id=user.id)
+        return _make(kind="ask", source="always_user", reason_code=q.code, reason=q.reason, tool=tool,
                      args_digest=pre.digest, targets=pre.targets, tool_kind=policy.kind, always_user=True,
-                     card="tool", card_payload={"unchecked_open": _program_card(*program)}, options=ONCE_ONLY,
-                     proposed_rule=None, user_id=user.id)
-    # 6c. screen input: the owner, in every mode; the only allowance is a 10 minute window for one application.
-    if policy.name in asks.SCREEN_TOOLS:
-        app_id, app_name = _screen_app(pre)
-        if app_id and rules_store.screen_window(db, user.id, app_id):
-            return _make(kind="allow", source="rule", reason_code=asks.SCREEN_WINDOW_CODE,
-                         reason=asks.screen_window_reason(app_name), tool=tool, args_digest=pre.digest,
-                         targets=pre.targets, tool_kind=policy.kind, user_id=user.id)
-        return _make(kind="ask", source="always_user", reason_code=asks.SCREEN_INPUT,
-                     reason=asks.screen_reason(app_name), tool=tool, args_digest=pre.digest, targets=pre.targets,
-                     tool_kind=policy.kind, always_user=True, card="tool",
-                     card_payload={"screen_input": {"app_id": app_id, "app_name": app_name,
-                                                    "window_minutes": asks.WINDOW_MINUTES}},
-                     options=ONCE_ONLY if not app_id else ("once", "window", "reject"), proposed_rule=None,
+                     card=q.card, card_payload=dict(q.payload), options=q.options, proposed_rule=None,
                      user_id=user.id)
-    if policy.always_user or pre.floor.always_user:
-        why = ("Permanently deleting files always needs your approval."
-               if policy.always_user else
-               "This command deletes files or touches a protected location, so it needs your approval every time.")
-        return _ask(pre, ctx, "always_user", "ALWAYS_USER", why, always_user=True, user=user, tool=tool)
 
     # 7. ask rules
     ask = match.first_match("ask", pre.rules, pre.targets, pre.dialect)
@@ -658,18 +682,27 @@ def decide_approved(db: Session, user: User, action: PendingAction) -> Decision:
         d = _deny("floor", pre.floor.refuse_code or "FLOOR_OUTSIDE_FOLDERS", pre.floor.reason, tool=action.tool_name,
                   digest=args_digest(args), user=user, policy=pre.policy, targets=pre.targets)
     else:
-        d = _approved_call(pre, action, user)
+        d = _approved_call(db, pre, action, user)
     return _finish(db, user, d, ctx)
 
 
-def _approved_call(pre: _Pre, action: PendingAction, user: User) -> Decision:
-    """The answer covers exactly what the card showed: the same file, the same application, the same kind."""
+def _approved_call(db: Session, pre: _Pre, action: PendingAction, user: User) -> Decision:
+    """The answer covers exactly what the card showed: the same question, the same file, the same application.
+
+    When the call needs an owner question now (step 6), the answered card must be that very question. A card for
+    anything else (a folder, a delete permission, an application, an ordinary ask) took effect for what it asked and
+    approves nothing more: the call is refused, and a new call gets the right card. When no owner question is
+    needed, an answered card approves the call."""
     tool = action.tool_name
     payload = action.card_payload or {}
 
     def refuse(code: str, why: str) -> Decision:
         return _deny("floor", code, why, tool=tool, digest=pre.digest, user=user, policy=pre.policy,
                      targets=pre.targets)
+
+    q = _owner_question(db, user, pre)
+    if q is not None and not q.window and (action.reason_code != q.code or (action.card or "tool") != q.card):
+        return refuse(asks.NEEDS_OWN_QUESTION, asks.own_question_reason(action.card or "tool"))
 
     unchecked = _unchecked_open(pre)
     if unchecked is not None:

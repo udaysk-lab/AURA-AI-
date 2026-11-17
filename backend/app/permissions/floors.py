@@ -26,6 +26,7 @@ user. The text checks below catch direct references only.
 
 from __future__ import annotations
 
+import functools
 import os
 import platform
 import re
@@ -45,7 +46,6 @@ _CLIENT_WORDS = re.compile(
     r"ruby|perl|php|telnet)\b|http",
     re.IGNORECASE,
 )
-_GIT_EXECUTABLE = re.compile(r"(^|[\\/])\.git[\\/](hooks([\\/]|$)|config$)", re.IGNORECASE)
 _SPAWNERS = {"sqlite", "sqlite3", "alembic"}
 
 
@@ -109,11 +109,42 @@ def _sqlite_file(url: str) -> str | None:
     return _real(parsed.database)
 
 
-def self_paths() -> list[str]:
-    """AURA's data folder, database, settings, install folder (real paths).
+@functools.lru_cache(maxsize=1)
+def _interpreter_paths() -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """What the Python that runs AURA is made of, as (the interpreter files, the folders of its libraries, the
+    virtual environment folder). Whole system prefixes are not in it: a program in /usr/bin is not AURA."""
+    import site
+    import sysconfig
+
+    exes = [p for p in (sys.executable, getattr(sys, "_base_executable", "")) if p]
+    libs: list[str] = []
+    for key in ("stdlib", "platstdlib", "purelib", "platlib"):
+        try:
+            libs.append(sysconfig.get_path(key))
+        except (KeyError, OSError):  # pragma: no cover - an unusual installation
+            pass
+    try:
+        libs.extend(site.getsitepackages())
+    except AttributeError:  # pragma: no cover - old virtual environments
+        pass
+    try:
+        libs.append(site.getusersitepackages())
+    except (AttributeError, OSError):  # pragma: no cover
+        pass
+    if os.name == "nt":
+        libs.extend(os.path.join(prefix, "DLLs") for prefix in {sys.base_prefix, sys.prefix})
+    venv = [sys.prefix] if sys.prefix != sys.base_prefix else []
+    return tuple(exes), tuple(p for p in libs if p), tuple(venv)
+
+
+def self_paths(shell: bool = False) -> list[str]:
+    """AURA's data folder, database, settings, install folder, and the Python that runs it: the interpreter files,
+    the standard library and site-packages folders, the virtual environment (real paths).
 
     Computed on each call from the live settings, so a changed setting or a
     different working directory is seen at once. Cheap: a handful of realpaths.
+    `shell=True` leaves out the interpreter files and the virtual environment folder: a command names those only to
+    run Python, which is not a change to it, and its libraries stay listed.
     """
     out: list[str] = []
 
@@ -133,6 +164,9 @@ def self_paths() -> list[str]:
     add(os.path.join(cwd, ".env"))
     add(os.path.join(cwd, os.pardir, ".env"))
     add(install_dir())
+    exes, libs, venv = _interpreter_paths()
+    for path in (*libs, *(() if shell else (*exes, *venv))):
+        add(path)
     return out
 
 
@@ -158,12 +192,16 @@ def _f(path: str) -> str:
     return match.fold(path, always=True)
 
 
-def in_self_path(real: str) -> bool:
+def in_self_path(real: str, *, shell: bool = False) -> bool:
     f = _f(real)
-    return any(_under(f, _f(p)) for p in self_paths())
+    return any(_under(f, _f(p)) for p in self_paths(shell))
 
 
 def in_protected(real: str) -> bool:
+    from app.device import files as device_files
+
+    if device_files.protected_name(real):
+        return True
     f = _f(real)
     return any(_under(f, _f(p)) for p in settings.device_protected_path_list)
 
@@ -190,6 +228,13 @@ def _file_writes_tool_config(targets) -> bool:
     return any(t.kind == "path" and not t.named and t.role in ("write",) and is_tool_config(t.value) for t in targets)
 
 
+def git_internal(real: str) -> bool:
+    """Git's own files (device/files.py says which)."""
+    from app.device import files as device_files
+
+    return device_files.git_internal(real)
+
+
 def _file_floor(targets) -> FloorResult:
     for t in targets:
         if t.kind != "path" or t.role == "exec" or (t.named and not t.opened):
@@ -199,8 +244,10 @@ def _file_floor(targets) -> FloorResult:
             return _deny("FLOOR_SELF_PATH", "That is part of AURA itself (its data, database, settings or program files). AURA never touches those.")
         if in_protected(real):
             return _deny("FLOOR_PROTECTED_PATH", "That is a protected location (keys, credentials, shell profiles, startup items). AURA won't touch it.")
-        if t.role in ("write", "delete") and _GIT_EXECUTABLE.search(real):
-            return _deny("FLOOR_PROTECTED_PATH", "That is a git hook or git config: files that make git run commands.")
+        if t.role in ("write", "delete") and git_internal(real):
+            from app.device import files as device_files
+
+            return _deny("FLOOR_PROTECTED_PATH", device_files.GIT_MESSAGE)
         if t.role == "delete" and holds_protected_or_self(real):
             return _deny("FLOOR_PROTECTED_PATH", "That folder contains a protected location, and moving or deleting it would take that along.")
     return OK
@@ -249,7 +296,7 @@ def refers_to_proc_self(text: str) -> bool:
 
 def _mentions_self(raw: str) -> bool:
     text = _prepare_text(raw)
-    for p in self_paths():
+    for p in self_paths(shell=True):
         needle = p.replace("\\", "/").casefold().rstrip("/")
         if needle and needle in text:
             return True
@@ -387,7 +434,7 @@ def text_floor(policy: ToolPolicy, targets) -> tuple[FloorResult, bool]:
     own_msg = "That command refers to AURA's own data, database, settings or program files. AURA never touches those."
 
     # 1. AURA's own files, by path or by name anywhere in the text.
-    if workdir and in_self_path(workdir):
+    if workdir and in_self_path(workdir, shell=True):
         return _deny("FLOOR_SELF_PATH", "Commands may not run inside AURA's own folders."), False
     for text in _readings(raw, parsed.dialect):
         if _mentions_self(text) or refers_to_proc_self(text):
@@ -404,11 +451,11 @@ def text_floor(policy: ToolPolicy, targets) -> tuple[FloorResult, bool]:
         except match.BadArgs:
             continue
         takes_self_along = parsed.deletes and any(
-            _f(p) != _f(real) and _under(_f(p), _f(real)) for p in self_paths()
+            _f(p) != _f(real) and _under(_f(p), _f(real)) for p in self_paths(shell=True)
         )
-        if in_self_path(real) or takes_self_along:
+        if in_self_path(real, shell=True) or takes_self_along:
             return _deny("FLOOR_SELF_PATH", own_msg), False
-        if in_protected(real) or _GIT_EXECUTABLE.search(real):
+        if in_protected(real) or git_internal(real):
             protected = True
     # tool configuration files are written only with the user's say-so
     if _writes_tool_config(parsed, list(parsed.words)):
@@ -442,7 +489,7 @@ def text_floor(policy: ToolPolicy, targets) -> tuple[FloorResult, bool]:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_floor(targets) -> FloorResult:
+def _fetch_floor(targets, policy: ToolPolicy | None = None) -> FloorResult:
     from app.device import net
 
     for t in targets:
@@ -451,8 +498,8 @@ def _fetch_floor(targets) -> FloorResult:
         try:
             net.check_url(t.raw)
         except net.FetchDenied as exc:
-            if exc.code == "FLOOR_UNRESOLVED":
-                continue  # the fetch itself re-checks and fails closed
+            if exc.code == "FLOOR_UNRESOLVED" and not (policy is not None and policy.name == "open_app"):
+                continue  # the fetch itself re-checks and fails closed; a browser opening a link checks nothing
             return _deny(exc.code, exc.reason)
     return OK
 
@@ -572,7 +619,7 @@ def _app_floor(acc, policy: ToolPolicy, targets) -> FloorResult:
             # open_app by name: the file the name resolved to is judged too, by its place and by its own name.
             from app.device import programs
 
-            if programs.judge(t.program, acc.roots, in_self_path).kind == "self":
+            if programs.judge(t.program, acc.program_roots, in_self_path).kind == "self":
                 return _deny("FLOOR_AURA_WINDOW", "That is AURA itself.")
             if acc.blocked(appnames.canonical(os.path.basename(t.program))):
                 return _deny("FLOOR_BLOCKED_APP",
@@ -583,20 +630,28 @@ def _app_floor(acc, policy: ToolPolicy, targets) -> FloorResult:
 POINT_TOOLS = ("mouse_click", "scroll_screen")  # act where the pointer is (F22)
 
 
-def _window_floor(acc, policy: ToolPolicy, win, *, strict_tier: bool = True) -> FloorResult:
-    """The checks for one window an input or a look would land on."""
+def window_blocked(acc, tool: str, win, *, tier: bool = True) -> FloorResult:
+    """The conditions a window must meet for an input to land on it: not AURA's own window (by application, process
+    or title), not a blocked application, and for typing not a terminal or a code editor. The gate asks this before a
+    call and the handlers ask it again, with the same function, before each part of a longer one."""
     title = (win.title or "").casefold()
     if (win.pid and (win.pid == os.getpid() or _is_descendant(win.pid))) or "· aura" in title \
             or access_mod.is_aura_app(win.app_id):
         return _deny("FLOOR_AURA_WINDOW", "AURA's own window is in front. AURA never uses the screen on itself.")
     if acc.blocked(win.app_id):
         return _deny("FLOOR_BLOCKED_APP", "The app in front is on your blocked list. AURA never uses it.")
-    if not strict_tier:
-        return OK
-    need = access_mod.need_tier(policy.name)
-    if need == "full" and (appnames.is_terminal(win.app_id) or appnames.is_ide(win.app_id)):
+    if tier and access_mod.need_tier(tool) == "full" and (appnames.is_terminal(win.app_id) or appnames.is_ide(win.app_id)):
         return _deny("FLOOR_APP_TIER",
                      "Terminals and code editors are click and scroll only. Commands go through the shell, where your rules apply.")
+    return OK
+
+
+def _window_floor(acc, policy: ToolPolicy, win, *, strict_tier: bool = True) -> FloorResult:
+    """The checks for one window an input or a look would land on."""
+    r = window_blocked(acc, policy.name, win, tier=strict_tier)
+    if r.deny or not strict_tier:
+        return r
+    need = access_mod.need_tier(policy.name)
     grant = acc.grant(win.app_id)
     if grant is None:
         name = win.name or win.app_id
@@ -667,7 +722,7 @@ def check(db, user, policy: ToolPolicy, targets, ctx=None, *, front=None, access
     if shell.deny:
         return shell
     always = always or _file_writes_tool_config(targets)
-    r = _fetch_floor(targets)
+    r = _fetch_floor(targets, policy)
     if r.deny:
         return r
     r = _process_floor(targets)

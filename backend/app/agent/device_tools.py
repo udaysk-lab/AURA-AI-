@@ -65,51 +65,74 @@ def _canon(ctx: ToolContext, raw: str, *roles: str) -> str:
     return raw
 
 
-def _screen_call(ctx: ToolContext, fn, point_args: dict | None = None):
+def _screen_call(ctx: ToolContext, fn, point: tuple[int, int] | None = None):
     """Run one screen tool: check the same window is still in front, then (for input) watch the aftermath.
 
-    The gate decided against the window in front a moment ago. If another one is in front now the
-    call is refused; after input, if AURA's own window or a blocked app came to the front, screen
-    control is paused for a minute and the event is logged (spec 8.4)."""
+    The gate decided against the window in front a moment ago (for a click or scroll, the window at the point it
+    names). If another one is there now the call is refused. For input AURA counts as typing for the whole call and
+    for the cooldown after it, so no owner-only request that arrives meanwhile can pass for the owner's own. After
+    input, if AURA's own window or a blocked app came to the front, screen control is paused for a minute and the
+    event is logged."""
     from app.device import windows
     from app.device.runtime import require_enabled
     from app.permissions import access, events
 
     require_enabled()
     expected = _front_app(ctx)
-    if point_args is not None:
-        # F22: for a click or scroll the window that counts is the one under the pointer, checked now.
-        x, y = point_args.get("x"), point_args.get("y")
-        point = (int(x), int(y)) if isinstance(x, (int, float)) and isinstance(y, (int, float)) \
-            and not isinstance(x, bool) and not isinstance(y, bool) else windows.pointer_position()
-        now = windows.window_at(*point) if point else None
-    else:
-        now = windows.frontmost()
+    now = windows.window_at(*point) if point is not None else windows.frontmost()
     if expected is None or now is None or now.app_id != expected:
         raise DeviceUnavailable("The window in front changed since this was approved, so nothing was done.")
     is_input = getattr(ctx.decision, "tool_kind", "") == "screen_input"
     user_id = getattr(ctx.user, "id", "")
-    if is_input and user_id:
-        access.note_synthetic_input(user_id)
-    try:
+    if not (is_input and user_id):
         return fn()
+    try:
+        with access.synthetic_input(user_id):
+            return fn()
     finally:
-        if is_input and user_id:
-            access.note_synthetic_input(user_id)
-            after = windows.frontmost()
-            bad = after is None
-            if after is not None:
-                acc = access.snapshot(ctx.db, ctx.user)
-                bad = (access.is_aura_app(after.app_id) or "· aura" in (after.title or "").casefold()
-                       or windows.is_aura_process(after.pid) or acc.blocked(after.app_id))
-            if bad:
-                access.suspend_screen(user_id)
-                try:
-                    events.append(ctx.db, user_id, "self_change_blocked", actor="system", tool=ctx.decision.tool,
-                                  outcome="deny", reason_code="SCREEN_SUSPENDED",
-                                  detail={"why": "AURA's window or a blocked app came to the front after input"})
-                except Exception:
-                    log.exception("could not log the screen suspension")
+        after = windows.frontmost()
+        bad = after is None
+        if after is not None:
+            acc = access.snapshot(ctx.db, ctx.user)
+            bad = (access.is_aura_app(after.app_id) or "· aura" in (after.title or "").casefold()
+                   or windows.is_aura_process(after.pid) or acc.blocked(after.app_id))
+        if bad:
+            access.suspend_screen(user_id)
+            try:
+                events.append(ctx.db, user_id, "self_change_blocked", actor="system", tool=ctx.decision.tool,
+                              outcome="deny", reason_code="SCREEN_SUSPENDED",
+                              detail={"why": "AURA's window or a blocked app came to the front after input"})
+            except Exception:
+                log.exception("could not log the screen suspension")
+
+
+def _judged_point(args: dict) -> tuple[int, int]:
+    """The exact point a click or scroll acts on: the numbers the gate judged, or (with none given) the pointer's
+    place now. The handler acts on this point and the window there is checked at this point."""
+    from app.device import windows
+
+    problem = screen.input_problem("mouse_click", args)
+    if problem:
+        raise DeviceUnavailable(problem)
+    if args.get("x") is not None:
+        return args["x"], args["y"]
+    pointer = windows.pointer_position()
+    if not pointer:
+        raise DeviceUnavailable("AURA cannot tell where the pointer is, so nothing was done.")
+    return int(pointer[0]), int(pointer[1])
+
+
+def _front_problem(ctx: ToolContext, expected: str | None, tool: str) -> str | None:
+    """Why typing must stop now, or None: the same conditions the gate used (the same application as judged, not
+    AURA's own window, not a blocked application, not an application that is click and scroll only)."""
+    from app.device import windows
+    from app.permissions import access, floors
+
+    win = windows.frontmost()
+    if win is None or expected is None or win.app_id != expected:
+        return "the window in front changed."
+    refusal = floors.window_blocked(access.snapshot(ctx.db, ctx.user), tool, win)
+    return refusal.reason if refusal.deny else None
 
 
 # ---------------------------------------------------------------------------
@@ -514,13 +537,13 @@ def _take_screenshot(ctx: ToolContext, args: dict) -> dict:
 
 @tool(
     "mouse_click",
-    "Click the mouse on this computer, optionally at a screen pixel. Take a screenshot "
-    "first to find coordinates. The owner is asked before mouse and keyboard use, in every mode.",
+    "Click the mouse on this computer, optionally at a screen pixel (x and y are whole numbers, given together). "
+    "Take a screenshot first to find coordinates. The owner is asked before mouse and keyboard use, in every mode.",
     {
         "type": "object",
         "properties": {
-            "x": {"type": "integer"},
-            "y": {"type": "integer"},
+            "x": {"type": "integer", "description": "Whole number; give x and y together."},
+            "y": {"type": "integer", "description": "Whole number; give x and y together."},
             "button": {"type": "string", "enum": ["left", "right", "middle"]},
             "clicks": {"type": "integer", "minimum": 1, "maximum": 3},
         },
@@ -532,42 +555,60 @@ def _take_screenshot(ctx: ToolContext, args: dict) -> dict:
 )
 @_safe
 def _mouse_click(ctx: ToolContext, args: dict) -> dict:
+    point = _judged_point(args)
     return _screen_call(
-        ctx, lambda: screen.click(args.get("x"), args.get("y"), args.get("button") or "left", int(args.get("clicks") or 1)),
-        point_args=args,
+        ctx, lambda: screen.click(point[0], point[1], args.get("button") or "left", args.get("clicks") or 1),
+        point=point,
     )
 
 
 @tool(
     "type_text",
-    "Type text on this computer's keyboard, into whatever has focus.",
-    {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+    "Type text on this computer's keyboard, into whatever has focus. Types up to the first Enter and stops there "
+    "(at most 2000 characters, no control characters): look at the screen to see what the Enter did before typing more.",
+    {"type": "object",
+     "properties": {"text": {"type": "string", "maxLength": screen.MAX_TEXT}},
+     "required": ["text"]},
     destructive=True,
     preview=lambda a: f"Type: {a.get('text', '')[:120]!r}",
 )
 @_safe
 def _type_text(ctx: ToolContext, args: dict) -> dict:
-    return _screen_call(ctx, lambda: screen.type_text(args["text"]))
+    problem = screen.input_problem("type_text", args)
+    if problem:
+        raise DeviceUnavailable(problem)
+    expected = _front_app(ctx)
+    return _screen_call(
+        ctx, lambda: screen.type_text(args["text"], check=lambda: _front_problem(ctx, expected, "type_text")))
 
 
 @tool(
     "press_keys",
-    "Press a key or a keyboard shortcut, e.g. 'enter', 'ctrl+s', 'cmd+space', 'alt+tab'.",
+    "Press one key or one keyboard shortcut of at most 4 keys, e.g. 'enter', 'ctrl+s', 'cmd+space', 'alt+tab'. "
+    "Only known key names.",
     {"type": "object", "properties": {"keys": {"type": "string"}}, "required": ["keys"]},
     destructive=True,
     preview=lambda a: f"Press {a.get('keys')}",
 )
 @_safe
 def _press_keys(ctx: ToolContext, args: dict) -> dict:
+    problem = screen.input_problem("press_keys", args)
+    if problem:
+        raise DeviceUnavailable(problem)
     return _screen_call(ctx, lambda: screen.press_keys(args["keys"]))
 
 
 @tool(
     "scroll_screen",
-    "Scroll the screen. Positive scrolls up, negative down.",
+    "Scroll the screen by a whole number of steps from -100 to 100. Positive scrolls up, negative down. "
+    "x and y (whole numbers, given together) say where; without them it scrolls under the pointer.",
     {
         "type": "object",
-        "properties": {"amount": {"type": "integer"}, "x": {"type": "integer"}, "y": {"type": "integer"}},
+        "properties": {
+            "amount": {"type": "integer", "minimum": -100, "maximum": 100},
+            "x": {"type": "integer"},
+            "y": {"type": "integer"},
+        },
         "required": ["amount"],
     },
     destructive=True,
@@ -575,7 +616,8 @@ def _press_keys(ctx: ToolContext, args: dict) -> dict:
 )
 @_safe
 def _scroll_screen(ctx: ToolContext, args: dict) -> dict:
-    return _screen_call(ctx, lambda: screen.scroll(int(args["amount"]), args.get("x"), args.get("y")), point_args=args)
+    point = _judged_point(args)
+    return _screen_call(ctx, lambda: screen.scroll(args["amount"], point[0], point[1]), point=point)
 
 
 # ---------------------------------------------------------------------------
@@ -604,8 +646,6 @@ def _fetch_url(ctx: ToolContext, args: dict) -> dict:
     url = str(args.get("url") or "")
     if not url.startswith(("http://", "https://")):
         return {"error": "Only http(s) URLs are supported."}
-    if (args.get("method") or "GET").upper() != "GET":
-        return {"error": "fetch_url only reads pages (GET)."}
     try:
         from app.permissions import gate
 

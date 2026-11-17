@@ -125,7 +125,8 @@ These ask every time, in every mode, and no rule can turn the card off:
 - Opening a file that could run as a program (`open_app` with a file). Plain
   text, Markdown, PDF, common images, audio and video, CSV and TSV, and the
   Office and OpenDocument formats without macros (`.docx`, `.xlsx`, `.pptx`,
-  `.odt`, `.ods`, `.odp`, `.odg`) follow your mode and rules, and so does a
+  `.odt`, `.ods`, `.odp`, `.odg`, each really a document of the family its name
+  says, with no macros or scripts) follow your mode and rules, and so does a
   folder. Everything else asks every time: scripts, programs, installers,
   shortcuts (`.lnk`, `.url`, `.desktop`, `.webloc`), web pages (`.html`,
   `.svg`), macro documents (`.docm`, `.xlsm`, `.pptm`, and the old `.doc`,
@@ -141,7 +142,15 @@ These ask every time, in every mode, and no rule can turn the card off:
   mode, even if you set a rule for the application. The card says the program
   would run with your account and to allow it once only if you know what it is.
   If nothing is found on Linux, nothing starts. Programs outside your connected
-  folders follow your mode and rules.
+  folders follow your mode and rules. "Inside a connected folder" counts folders
+  you connected earlier and have since disconnected: a file AURA could once have
+  written there is still a file you are asked about.
+- Starting a program that shuts down, restarts, suspends or signs out of the
+  computer (`poweroff`, `reboot`, `halt`, `shutdown`, `logoff`, `tsdiscon`,
+  `suspend`, `hibernate`, `pm-suspend`, `pm-hibernate`), wherever it is. The card
+  says it would end everything that is open.
+- Opening a web link whose host AURA cannot look up. It is refused, because
+  nothing checks the link again once the browser has it.
 - Using the mouse and keyboard (click, scroll, type, press keys). Any of them can
   start a program (a double-click in a file manager, a launcher, a download bar),
   so the card says that for this time AURA can do in that application whatever
@@ -153,7 +162,17 @@ These ask every time, in every mode, and no rule can turn the card off:
   schedules, automations and inbound messages never get it. Taking a screenshot
   still follows your mode and rules. AURA's own window, blocked apps, the
   click-and-scroll limit for terminals and editors, and your per-app levels
-  still apply first.
+  still apply first. What AURA does is exactly what was judged: coordinates must
+  be whole numbers given together (or both left out, which means where the pointer
+  is), and AURA acts on that point and on the window there. Typed text is plain
+  text of at most 2,000 characters without control characters, and **typing stops
+  at the first Enter**: Enter can submit a form, open a page or change the window,
+  so what it did has to be looked at before more is typed. The text is typed in
+  pieces split after each tab, and the window in front is checked again before each
+  piece (same application, not AURA's own window, not a blocked app, not a terminal
+  or editor); if it changed, typing stops. A key press is one chord of at most four
+  known keys. While AURA clicks or types, and for ten seconds after, requests that
+  would change your permissions from this computer are refused.
 - Writing to a tool's own configuration file (for example a git, npm, pip or
   cargo settings file).
 - Connecting a folder, allowing an app, and allowing deletes in a folder.
@@ -169,8 +188,18 @@ does not lift them.
 
 - **AURA's own places**: its data folder, database, settings files, sign-in key
   and its install folder. Commands that name them are refused too.
-- **Protected locations**: credential folders, shell profiles, start-up items
-  and git's own configuration and hooks. See [DEVICE.md](../DEVICE.md).
+- **Protected locations**: credential folders, shell profiles, start-up items,
+  the files that decide which program opens a document, and window manager
+  start-up files. See [DEVICE.md](../DEVICE.md).
+- **Git's own files.** The file tools never create, change, move, replace or
+  delete anything inside a `.git` folder, a file named `.git`, or a folder that
+  holds `HEAD`, `objects` and `refs`. A hook, a config, a `commondir` or a
+  `gitdir:` file can make git run a program. AURA says "use a git command, which
+  asks first". Reading stays allowed, and so does moving or deleting a whole
+  project.
+- **The Python that runs AURA**: the interpreter, the standard library, the
+  site-packages folders and the virtual environment are part of AURA, like its
+  install folder. A program elsewhere in `/usr/bin` is not.
 - **AURA's own API.** Commands may not talk to AURA's address or to other
   services on the computer's loopback.
 - **Fetches to private networks.** `fetch_url` refuses loopback, private,
@@ -214,6 +243,14 @@ is on; until then a command card offers only "once" and "Don't allow". Some
 cards offer only "once" and "Don't":
 the always-needs-you actions, and a few actions for which no safe rule can be
 written (such as typing into a running program).
+
+A card approves only what it asked. Answering a folder card connects the folder,
+and answering a delete-permission card allows deleting there; neither runs the
+action that was waiting behind it. If that action needs its own question (a
+command while computer protection is off, a file that could run, a mouse or
+keyboard use, a permanent delete), it still asks, and AURA is told the folder is
+connected, the action was not run and a new request will ask. Any other card
+(an app, an ordinary ask) is bound the same way.
 
 Folder, app and delete-permission cards ask yes or no. A card never connects a
 whole drive or your home folder; connect those deliberately in This computer

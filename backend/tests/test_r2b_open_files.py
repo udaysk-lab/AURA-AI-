@@ -50,11 +50,20 @@ def _zip(*names):
     return buf.getvalue()
 
 
+def _odf(*names, mime="application/vnd.oasis.opendocument.text"):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("mimetype", mime)
+        for n in names:
+            z.writestr(n, "x")
+    return buf.getvalue()
+
+
 CONTENT = {
     ".pdf": b"%PDF-1.4\n", ".png": b"\x89PNG\r\n\x1a\n", ".jpg": b"\xff\xd8\xff\xe0", ".jpeg": b"\xff\xd8\xff\xe0",
     ".gif": b"GIF89a", ".docx": _zip("word/document.xml"), ".xlsx": _zip("xl/workbook.xml"),
-    ".pptx": _zip("ppt/presentation.xml"), ".odt": _zip("content.xml"), ".ods": _zip("content.xml"),
-    ".odp": _zip("content.xml"), ".odg": _zip("content.xml"),
+    ".pptx": _zip("ppt/presentation.xml"), ".odt": _odf("content.xml"), ".ods": _odf("content.xml"),
+    ".odp": _odf("content.xml"), ".odg": _odf("content.xml"),
 }
 
 
@@ -167,7 +176,7 @@ def test_a_link_is_judged_by_what_it_resolves_to(w):
     (".txt", b"MZ\x90\x00 a program"), (".txt", b"\x7fELF\x02\x01"), (".txt", b"#!/bin/sh\necho hi\n"),
     (".pdf", b"just words"), (".png", b"#!/bin/sh\n"), (".jpg", b"MZ\x90\x00"),
     (".docx", b"not a zip at all"), (".xlsx", _zip("xl/vbaProject.bin")), (".docx", _zip("word/vbaProject.bin")),
-    (".odt", _zip("Basic/Standard/Module1.xml")), (".odt", _zip("Scripts/python/x.py")),
+    (".odt", _odf("Basic/Standard/Module1.xml")), (".odt", _odf("Scripts/python/x.py")),
 ])
 def test_a_renamed_file_is_judged_by_what_it_is(w, ext, content):
     assert_asks_the_owner(decide(w, make(w, "renamed" + ext, content)))

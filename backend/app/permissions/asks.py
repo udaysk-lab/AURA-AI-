@@ -27,7 +27,36 @@ UNCHECKED_OPEN_UNFOUND_REASON = (
     "Starting it would run it with your account, so it could read, change or delete anything you can. "
     "Allow it once only if you know what it is."
 )
-UNCHECKED_OPEN_WHY = {"folder": "It is in a folder AURA can change.", "unfound": "AURA could not find where it is installed."}
+UNCHECKED_OPEN_SHUTDOWN_REASON = (
+    "This program would shut down, restart, suspend or sign out of this computer, ending everything that is open "
+    "in your account. Allow it once only if you want that now."
+)
+UNCHECKED_OPEN_WHY = {
+    "folder": "It is in a folder AURA can change.",
+    "unfound": "AURA could not find where it is installed.",
+    "shutdown": "It would shut down, restart, suspend or sign out.",
+}
+UNCHECKED_OPEN_REASONS = {
+    "folder": UNCHECKED_OPEN_FOLDER_REASON,
+    "unfound": UNCHECKED_OPEN_UNFOUND_REASON,
+    "shutdown": UNCHECKED_OPEN_SHUTDOWN_REASON,
+}
+
+# --- an answered card approves only what it asked ---------------------------
+NEEDS_OWN_QUESTION = "NEEDS_OWN_QUESTION"
+_CARD_DONE = {
+    "folder_access": "The folder is connected now.",
+    "delete_permission": "Deleting is allowed in that folder now.",
+    "app_grant": "The application is allowed now.",
+}
+
+
+def own_question_reason(card: str) -> str:
+    """Said to the owner and to the model when the card that was answered is not the question this action needs."""
+    done = _CARD_DONE.get(card, "Your answer applied only to what that card asked.")
+    return (f"{done} The action itself needs its own approval, so it was not run. "
+            "Trying it again asks that question.")
+
 
 # --- screen input -----------------------------------------------------------
 SCREEN_INPUT = "SCREEN_INPUT"

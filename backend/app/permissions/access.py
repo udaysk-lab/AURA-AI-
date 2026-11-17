@@ -109,6 +109,13 @@ class Access:
     grants: tuple[GrantInfo, ...] = ()
     blocks: tuple[BlockInfo, ...] = ()
     ceiling: tuple[str, ...] = ()  # DEVICE_ALLOWED_ROOTS, when set
+    ever: tuple[str, ...] = ()  # every folder connected at any time, revoked ones included
+
+    @property
+    def program_roots(self) -> tuple[str, ...]:
+        """Where a program counts as one AURA could have written: the folders connected now and every folder that
+        was connected before (a file written while a folder was connected is still that file once it is removed)."""
+        return tuple(dict.fromkeys((*self.roots, *self.ever)))
 
     @property
     def usable(self) -> tuple[FolderInfo, ...]:
@@ -152,6 +159,10 @@ def current() -> Access:
 
 def roots() -> list[str]:
     return list(current().roots)
+
+
+def program_roots() -> list[str]:
+    return list(current().program_roots)
 
 
 @contextlib.contextmanager
@@ -258,7 +269,8 @@ def snapshot(db: Session | None, user: User | None) -> Access:
             .order_by(DeviceAppBlock.created_at, DeviceAppBlock.id)
         ).all()
     )
-    return Access(tuple(folders), grants, blocks, ceiling)
+    ever = tuple(dict.fromkeys(r.path for r in rows))
+    return Access(tuple(folders), grants, blocks, ceiling, ever)
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +324,7 @@ _lock = threading.Lock()
 _presence: dict[str, float] = {}
 _suspended: dict[str, float] = {}
 _synthetic: dict[str, float] = {}
+_busy: dict[str, int] = {}
 
 
 def _now() -> float:
@@ -353,8 +366,29 @@ def note_synthetic_input(user_id: str) -> None:
         _synthetic[user_id] = _now()
 
 
-def recent_synthetic_input(user_id: str, within: float = COOLDOWN_SECONDS) -> bool:
+@contextlib.contextmanager
+def synthetic_input(user_id: str):
+    """AURA is typing or clicking for the whole of the block, however long it takes, and for the cooldown after."""
     with _lock:
+        _busy[user_id] = _busy.get(user_id, 0) + 1
+        _synthetic[user_id] = _now()
+    try:
+        yield
+    finally:
+        with _lock:
+            left = _busy.get(user_id, 1) - 1
+            if left > 0:
+                _busy[user_id] = left
+            else:
+                _busy.pop(user_id, None)
+            _synthetic[user_id] = _now()
+
+
+def recent_synthetic_input(user_id: str, within: float = COOLDOWN_SECONDS) -> bool:
+    """True while AURA is in the middle of a screen call, and for `within` seconds after its last one."""
+    with _lock:
+        if _busy.get(user_id):
+            return True
         ts = _synthetic.get(user_id)
     return ts is not None and _now() - ts <= within
 
@@ -365,3 +399,4 @@ def reset_state() -> None:
         _presence.clear()
         _suspended.clear()
         _synthetic.clear()
+        _busy.clear()

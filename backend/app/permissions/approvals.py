@@ -761,6 +761,9 @@ def _approve(db: Session, user: User, action: PendingAction, answer: str, caller
             undo = _apply_special_card(db, user, action)
         d = gate.decide_approved(db, user, action)
         if d.kind != "allow":
+            if d.reason_code == asks.NEEDS_OWN_QUESTION:
+                # The card did what it asked (a folder is connected, say) and stays done; only the action waits.
+                return _refused(db, user, action, answer, caller, d.reason, plain=True)
             raise _Refused(d.reason)
     except _Refused as exc:
         for step in reversed(undo):
@@ -814,11 +817,13 @@ def _approve(db: Session, user: User, action: PendingAction, answer: str, caller
     return _payload_for(db, action, body, stored_result)
 
 
-def _refused(db: Session, user: User, action: PendingAction, answer: str, caller: Caller, reason: str) -> dict:
+def _refused(db: Session, user: User, action: PendingAction, answer: str, caller: Caller, reason: str,
+             *, plain: bool = False) -> dict:
     _settle(db, user, action, "refused", answer, caller, reason=reason)
     _log_resolved(db, action, "refused", actor="user", reason_code="REFUSED", extra={"why": reason[:300]})
+    message = reason if plain else f"It was approved, but is no longer allowed: {reason}"
     return _payload_for(
         db, action,
-        {"status": "refused", "message": f"It was approved, but is no longer allowed: {reason}", "reason": reason},
+        {"status": "refused", "message": message, "reason": reason},
         {"status": "refused", "reason": reason},
     )

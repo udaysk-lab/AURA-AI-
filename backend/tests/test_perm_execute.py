@@ -292,7 +292,7 @@ def test_automation_keeps_what_the_old_engine_ran_alone(env):
     legacy = make_user(db, "legacy@example.com", level="conservative")
     rule = models.AutomationRule(
         user_id=legacy.id, name="R", actions=[
-            {"tool": "create_event", "arguments": {"title": "t", "start": "2030-01-01T10:00:00Z", "end": "2030-01-01T11:00:00Z"}},
+            {"tool": "create_event", "arguments": {"title": "t", "start_at": "2030-01-01T10:00:00Z", "end_at": "2030-01-01T11:00:00Z"}},
             {"tool": "delete_event", "arguments": {"event_id": "e"}},
         ],
     )

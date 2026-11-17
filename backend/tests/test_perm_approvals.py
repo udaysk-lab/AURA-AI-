@@ -97,7 +97,7 @@ def test_options_per_card(device):
     assert a.options == ["once", "reject"]
     a, _ = park(db, user, "delete_file", {"path": str(tmp / "x.txt")})
     assert a.options == ["once", "reject"] and a.always_user
-    a, _ = park(db, user, "send_process_input", {"session_id": "s", "text": "y"})
+    a, _ = park(db, user, "send_process_input", {"session_id": "s", "data": "y"})
     assert a.options == ["once", "reject"]
     # a folder / app / delete-permission card answers approve or reject, and is always the user's
     c = make_ctx(db, user, "chat")
@@ -286,7 +286,7 @@ def test_an_older_card_without_a_recorded_draft_is_worked_out_again(device):
 def test_a_call_that_may_only_be_allowed_once_saves_no_rule(device):
     tmp, db = device
     user = mk(db)
-    a, _ = park(db, user, "send_process_input", {"session_id": "s", "text": "y"})
+    a, _ = park(db, user, "send_process_input", {"session_id": "s", "data": "y"})
     a.options = []  # an older row that never recorded its options: all four are offered
     db.commit()
     out = answer(db, user, a, "always")
@@ -501,9 +501,10 @@ def test_delete_permission_card(device):
     db.commit()
     a = _special(db, user, "delete_permission", "delete_file", {"path": str(victim)}, {"path": real})
     out = answer(db, user, a, "approve")
-    assert out["decision"] == "once"
+    # The card allowed deleting in the folder; the delete itself is an always-ask question of its own, so it waits.
+    assert out["status"] == "refused"
     db.refresh(row)
-    assert row.can_delete is True and not victim.exists()
+    assert row.can_delete is True and victim.exists()
 
 
 @pytest.mark.parametrize(

@@ -28,6 +28,12 @@ AURA is now a personal employee. It works from the first message: you give it an
 - **Opening a file that could run as a program always asks,** in every mode: scripts, programs, installers, shortcuts, web pages, macro documents, archives, files with no extension and unknown types. Documents, text, PDF, images, audio, video and folders open as your mode allows.
 - **Starting an application by name asks when the program is in a folder you connected,** or when AURA cannot find where it is installed (Windows and macOS), in every mode. AURA starts exactly the program it found. Connect the folders you work in, not your whole home folder.
 - **The mouse and keyboard always ask,** in every mode. You can answer once or for 10 minutes in one application, never always. The card tells you AURA can do in that application whatever you could, including starting programs, so you should watch. Taking a screenshot is unchanged.
+- **Typing stops at the first Enter.** AURA types up to and including the first new line and tells the model how much was typed, because what an Enter does has to be looked at before more is typed. Coordinates must be whole numbers given together, text is plain text of at most 2,000 characters, and a key press is one shortcut of at most four known keys. The window in front is checked again before each piece of typing.
+- **A card approves only what it asked.** Connecting a folder, or allowing deletes in one, no longer runs the command or delete that was waiting behind the card. That action asks its own question.
+- **AURA does not change git's own files.** The file tools never write, move or delete anything inside `.git` (or a folder that looks like one). Use a git command, which asks first.
+- **More protected places:** `mimeapps.list` files wherever they are, exported Flatpak launchers, session and window manager start-up files. The Python that runs AURA (interpreter, libraries, virtual environment) is protected like AURA's own files.
+- **Office and OpenDocument files** open as your mode allows only when they really are the kind of document their name says and hold no macros.
+- **Programs in folders you ever connected ask,** even after you disconnect the folder. Programs that shut down, restart, suspend or sign out always ask. A web link whose host cannot be looked up is refused.
 - Preferences you had taught AURA are moved into the new preference memory.
 - Approvals still waiting from 1.x are given an expiry.
 

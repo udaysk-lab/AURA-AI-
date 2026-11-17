@@ -140,21 +140,21 @@ def test_delete_permission(env):
     # elsewhere: denied
     d = go(db, user, "delete_file", {"path": str(victim)}, "automation", origin_id="a", approval_mode="ask")
     assert d.kind == "deny"
-    # answering the card turns delete on and deletes (one click)
+    # answering the card turns delete on; the delete is a question of its own and waits for it
     c = ctx(db, user, "chat")
     d = gate.decide(db, user, "delete_file", {"path": str(victim)}, c)
     a = approvals.queue_action(db, user, c, ToolCall("", "delete_file", {"path": str(victim)}), d)
     assert a.options == ["approve", "reject"] and a.card_payload["path"] == os.path.realpath(str(docs))
     approvals.resolve(db, user, a.id, "approve")
     db.refresh(row)
-    assert row.can_delete is True and not victim.exists()
+    assert row.can_delete is True and victim.exists()
     # deleting is still always-user every time
     (docs / "two.txt").write_text("y")
     d = go(db, user, "delete_file", {"path": str(docs / "two.txt")})
     assert code(d) == ("ask", "ALWAYS_USER") and d.card == "tool"
 
 
-def test_delete_in_an_unconnected_folder_connects_and_allows_deleting_after_one_click(env):
+def test_delete_in_an_unconnected_folder_connects_and_allows_deleting_but_does_not_delete(env):
     tmp, db = env
     user = user_with(db, "skip")
     fresh = tmp / "fresh"
@@ -167,7 +167,9 @@ def test_delete_in_an_unconnected_folder_connects_and_allows_deleting_after_one_
     a = approvals.queue_action(db, user, c, ToolCall("", "delete_file", {"path": str(victim)}), d)
     approvals.resolve(db, user, a.id, "approve")
     row = db.scalars(select(DeviceFolder)).one()
-    assert row.can_delete and row.source == "request" and not victim.exists()
+    assert row.can_delete and row.source == "request" and victim.exists()
+    again = gate.decide(db, user, "delete_file", {"path": str(victim)}, ctx(db, user, "chat"))
+    assert (again.kind, again.reason_code) == ("ask", "ALWAYS_USER")
 
 
 @pytest.mark.usefixtures("wall_on")

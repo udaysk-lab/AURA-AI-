@@ -151,6 +151,18 @@ path reaches outside a connected folder.
 Moving or deleting a folder that contains a protected location or part of AURA's
 own files is refused.
 
+**A card approves only what it asked.** Answering a card that connects a folder or
+allows deleting in one does that and nothing else. If the action waiting behind it
+needs its own question (a command while computer protection is off, a file that
+could run, mouse or keyboard use, a permanent delete), the action is not run: AURA
+is told the folder is connected and that a new request will ask the real question.
+
+**AURA does not change git's own files.** The file tools never create, change,
+move, replace or delete anything inside a `.git` folder, a file named `.git`, or a
+folder holding `HEAD`, `objects` and `refs`: hooks, configs and redirect files can
+make git run a program. Use a git command, which asks first. Reading them and
+moving or deleting a whole project still work.
+
 ---
 
 ## Apps and the blocked list
@@ -166,8 +178,16 @@ own files is refused.
   **Starting an application by name** works the same way: AURA looks the name up
   itself, and if the program it finds is inside a folder you connected (or, on
   Windows and macOS, it cannot find where the program is installed), it asks you
-  every time, in every mode, and then starts exactly that program. Connect the
-  folders you work in, not your whole home folder.
+  every time, in every mode, and then starts exactly that program. A folder you
+  connected earlier and have since disconnected still counts. A program that shuts
+  down, restarts, suspends or signs out (`poweroff`, `reboot`, `shutdown`,
+  `logoff` and similar) always asks, wherever it is. A web link whose host cannot
+  be looked up is refused. Connect the folders you work in, not your whole home
+  folder.
+- **Office and OpenDocument files** (`.docx`, `.xlsx`, `.pptx`, `.odt`, `.ods`,
+  `.odp`, `.odg`) open as your mode allows only when the content is the kind of
+  document the name says and holds no macros or scripts. A file of the other
+  family under the wrong name, or one that cannot be read, asks.
 - **The blocked list** starts with banking, trading, crypto wallets and password
   managers. AURA never opens, closes, ends or uses a blocked app, in any mode.
   You can add to or remove from the list. A default you remove stays removed.
@@ -213,6 +233,25 @@ should watch. The 10 minutes cover only the application that was under the point
 when you answered; input aimed at another application asks again. No rule and no
 safety reviewer covers it, and a schedule, an automation or an inbound message never
 gets it. Taking a screenshot still follows your mode and rules.
+
+What AURA does is exactly what you were asked about:
+
+- **Coordinates** must be whole numbers, `x` and `y` together (or neither, which
+  means where the pointer is). AURA clicks or scrolls at that point, and the app
+  there is the one that was checked.
+- **Typing stops at the first Enter.** Text is plain text, at most 2,000
+  characters, without control characters other than new lines and tabs. AURA
+  types up to and including the first new line and says how much it typed and that
+  the rest was not typed, because what an Enter does (loads a page, opens a
+  dialog, switches the window) has to be looked at before more is typed. Inside
+  that, text is typed in pieces split after each tab, and before each piece AURA
+  checks again that the same app is in front, that it is not AURA's own window or
+  a blocked app, and that it is not a terminal or editor. If something changed,
+  typing stops.
+- **A key press** is one key or one shortcut of at most four keys with known
+  names, such as `ctrl+s` or `alt+tab`.
+- While AURA clicks or types, and for ten seconds after, AURA counts as typing: a
+  request from this computer that would change your permissions is refused.
 
 If AURA's own window or a blocked app comes to the front, screen control pauses
 for a minute. For ten seconds after AURA clicks or types, a click on a card is
@@ -297,9 +336,17 @@ No mode, rule or approval lifts these:
   files such as `.bashrc`, `.profile`, `.zshrc`), the files that decide which
   program opens a document or what a login reads (`~/.config/mimeapps.list`,
   `~/.local/share/applications`, `~/.config/environment.d` and similar, also under
-  `XDG_CONFIG_HOME` and `XDG_DATA_HOME` when you set them), git's own configuration, and
-  every repository's `.git/hooks` and `.git/config`. You can add more with
-  `DEVICE_EXTRA_PROTECTED_PATHS`.
+  `XDG_CONFIG_HOME` and `XDG_DATA_HOME` when you set them; also any file called
+  `mimeapps.list` or ending in `-mimeapps.list`, wherever it is, and exported
+  launchers under `~/.local/share/flatpak/exports`), session and window manager
+  start-up files (`~/.xsession`, `~/.config/plasma-workspace`,
+  `~/.config/autostart-scripts`, KDE `Autostart` folders, `~/.config/i3` and `~/.i3`,
+  `sway`, `hypr`, `openbox`, `lxsession`, `awesome`, `bspwm`, `sxhkd`,
+  `~/.xbindkeysrc`), git's own configuration, and the inside of every `.git`
+  folder. You can add more with `DEVICE_EXTRA_PROTECTED_PATHS`.
+- **The Python that runs AURA:** its interpreter, standard library, site-packages
+  folders and virtual environment, like its install folder. Other programs in
+  system folders such as `/usr/bin` are not covered by this.
 - **AURA's own API** and the loopback of this computer, from a command.
 - **Fetching** an address on this computer or a private network, including by
   redirect. A redirect to another site needs a rule for that site, except to the

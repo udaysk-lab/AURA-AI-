@@ -254,7 +254,9 @@ def test_git_hooks_and_config_cannot_be_written(tmp_path, home):
         assert floor_for("write_file", path=str(tmp_path / rel), content="x").code == "FLOOR_PROTECTED_PATH"
         assert floor_for("edit_file", path=str(tmp_path / rel), old="a", new="b").code == "FLOOR_PROTECTED_PATH"
     assert not floor_for("read_file", path=str(tmp_path / ".git" / "config")).deny
-    assert not floor_for("write_file", path=str(tmp_path / ".git" / "info" / "exclude"), content="x").deny
+    # Everything inside a git folder is git's own file now, not only hooks and config.
+    assert floor_for("write_file", path=str(tmp_path / ".git" / "info" / "exclude"), content="x").code == "FLOOR_PROTECTED_PATH"
+    assert not floor_for("write_file", path=str(tmp_path / ".gitignore"), content="x").deny
 
 
 def test_pid_of_aura_itself_is_refused():

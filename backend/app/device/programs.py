@@ -13,7 +13,8 @@ handler call the same two functions, so a decision and the action cannot disagre
   directly inside one of APPLICATION_ROOTS or one folder below it.
 
 `judge` says what the answer needs: "ok" (follows the mode and the rules), "owner" (the owner is asked every time:
-the entry, its true place or the real path it leads to is inside a connected folder, or nothing was found on Windows or macOS and
+the entry, its true place or the real path it leads to is inside a folder that is connected now or ever was, the
+program is one that shuts down, restarts, suspends or signs out, or nothing was found on Windows or macOS and
 the system would look the name up itself), "nothing" (nothing found on Linux: nothing starts) or "self" (inside
 AURA's own paths: refused).
 """
@@ -146,10 +147,24 @@ def resolve(name: str) -> str:
 # --- the judgement ----------------------------------------------------------
 
 
+# Programs that end the session or the machine. They ask the owner wherever they are, in every mode.
+SHUTDOWN_NAMES = frozenset({"poweroff", "reboot", "halt", "shutdown", "logoff", "tsdiscon", "suspend", "hibernate",
+                            "pm-suspend", "pm-hibernate"})
+_PROGRAM_SUFFIXES = (".exe", ".com", ".bat", ".cmd")
+
+
+def _shuts_down(entry: str) -> bool:
+    name = os.path.basename(entry.rstrip("/\\")).casefold()
+    for suffix in _PROGRAM_SUFFIXES:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    return name in SHUTDOWN_NAMES
+
+
 @dataclass(frozen=True)
 class Judgement:
     kind: str  # ok | owner | nothing | self
-    why: str = ""  # for "owner": "folder" (inside a folder AURA can change) or "unfound"
+    why: str = ""  # for "owner": "folder" (inside a folder AURA can change), "unfound" or "shutdown"
 
 
 def _inside(path: str, roots) -> bool:
@@ -174,4 +189,6 @@ def judge(entry: str, roots, self_check: Callable[[str], bool], platform: str | 
         return Judgement("self")
     if any(_inside(p, roots) for p in forms):
         return Judgement("owner", "folder")
+    if any(_shuts_down(p) for p in (entry, real)):
+        return Judgement("owner", "shutdown")
     return Judgement("ok")

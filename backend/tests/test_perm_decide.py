@@ -76,7 +76,7 @@ def test_workspace_allow_all_modes(env, mode):
     plugins.install(db, user.id, "delegation")
     for tool, args in (
         ("create_task", {"title": "t"}), ("complete_task", {"task_id": "x"}), ("save_memory", {"content": "x"}),
-        ("notify", {"title": "a", "body": "b"}), ("delegate_task", {"task": "t", "assignee": "a"}),
+        ("notify", {"title": "a", "body": "b"}), ("delegate_task", {"title": "t", "assignee": "a"}),
     ):
         assert codes(decide(db, user, tool, args)) == ("allow", "DEFAULT_WORKSPACE"), tool
 
@@ -177,8 +177,12 @@ def test_unknown_tool_bad_args_and_bookkeeping(env):
     assert codes(decide(db, user, "rm_rf_everything", {})) == ("deny", "UNKNOWN_TOOL")
     assert codes(decide(db, user, "send_email", {"subject": "x"})) == ("deny", "BAD_ARGS")
     assert codes(decide(db, user, "send_email", "not a dict")) == ("deny", "BAD_ARGS")
-    d = decide(db, user, "aura_plan", {"steps": []})
-    assert codes(d) == ("allow", "DEFAULT_WORKSPACE")
+    from app.services import tasktypes
+
+    plan = {"title": "Tidy the notes", "task_type": next(iter(tasktypes.TYPES)), "steps": ["Sort them"]}
+    assert codes(decide(db, user, "aura_plan", plan)) == ("allow", "DEFAULT_WORKSPACE")
+    # The task loop's own tools take the form the model was shown, like every other tool.
+    assert codes(decide(db, user, "aura_plan", {"steps": []})) == ("deny", "BAD_ARGS")
 
 
 def test_install_ceiling_when_device_control_is_off(env):
@@ -334,7 +338,7 @@ def test_proposed_rules_and_option_sets(device):
         assert d.proposed_rule.items == (("command", "=git status"), ("command", "=npm test"))  # exact commands only
         d = decide(db, user, "run_command", {"command": "sudo rm -rf /tmp/x"})
         assert d.kind == "ask" and d.options == ("once", "reject") and d.proposed_rule is None  # dangerous: no rule
-        d = decide(db, user, "send_process_input", {"session_id": "x", "text": "y"})
+        d = decide(db, user, "send_process_input", {"session_id": "x", "data": "y"})
         assert d.kind == "ask" and d.options == ("once", "reject")
         d = decide(db, user, "fetch_url", {"url": "https://docs.example.com/a"})
         assert d.proposed_rule.items == (("domain", "docs.example.com"),)
@@ -394,7 +398,7 @@ def test_legacy_tiers_keep_existing_behaviour(env):
     assert codes(decide(db, strict, "create_task", {"title": "x"})) == ("ask", "RULE_ASK")
     assert codes(decide(db, cons, "create_task", {"title": "x"})) == ("allow", "DEFAULT_WORKSPACE")
     # relaxed acts alone on external writes but still asks for irreversible ones
-    ev = {"title": "t", "start": "2030-01-01T10:00:00Z", "end": "2030-01-01T11:00:00Z"}
+    ev = {"title": "t", "start_at": "2030-01-01T10:00:00Z", "end_at": "2030-01-01T11:00:00Z"}
     assert codes(decide(db, relaxed, "create_event", ev)) == ("allow", "RULE_ALLOW")
     assert codes(decide(db, cons, "create_event", ev)) == ("ask", "MODE_ASK")
     assert decide(db, relaxed, "send_email", SEND).kind == "ask"
@@ -429,7 +433,7 @@ def test_a_user_who_is_not_mapped_gets_no_old_behaviour(env):
     user = make_user(db, level="full", migrated=True)  # 1.0 level full, but stored mode is ask
     assert codes(decide(db, user, "send_email", SEND)) == ("ask", "MODE_ASK")
     plain = make_user(db, "plain@example.com", level="relaxed")  # never mapped: no rules at all
-    ev = {"title": "t", "start": "2030-01-01T10:00:00Z", "end": "2030-01-01T11:00:00Z"}
+    ev = {"title": "t", "start_at": "2030-01-01T10:00:00Z", "end_at": "2030-01-01T11:00:00Z"}
     assert codes(decide(db, plain, "create_event", ev)) == ("ask", "MODE_ASK")
 
 

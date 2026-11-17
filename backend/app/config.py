@@ -541,6 +541,23 @@ ALWAYS_PROTECTED = (
     "~/.config/powershell",
     "~/.local/share/systemd",
     "~/Library/Preferences/com.apple.LaunchServices",
+    # More of the same on Linux: exported launchers, session scripts and the window managers' key and start-up files
+    "~/.local/share/flatpak/exports",
+    "~/.xsession",
+    "~/.config/plasma-workspace",
+    "~/.config/autostart-scripts",
+    "~/.kde/Autostart",
+    "~/.kde4/Autostart",
+    "~/.config/i3",
+    "~/.i3",
+    "~/.config/sway",
+    "~/.config/hypr",
+    "~/.config/openbox",
+    "~/.config/lxsession",
+    "~/.config/awesome",
+    "~/.config/bspwm",
+    "~/.config/sxhkd",
+    "~/.xbindkeysrc",
 )
 
 

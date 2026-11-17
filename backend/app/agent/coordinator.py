@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import permissions
+from app.agent import argcheck
 from app.agent import skills as skill_registry
 from app.agent import tools as tool_registry
 from app.agent import taskloop
@@ -85,6 +86,9 @@ def execute_tool(
     entry = tool_registry.REGISTRY.get(name)
     if not entry:
         return {"error": f"Unknown tool: {name}"}
+    bad = argcheck.problem(argcheck.schema_for(name), args)
+    if bad:
+        raise PermissionError(f"the arguments do not have the form this tool takes: {bad}")
 
     started = time.perf_counter()
     ctx = ToolContext(db=db, user=user, decision=decision, work_item_id=work_item_id)

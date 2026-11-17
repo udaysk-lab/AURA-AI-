@@ -234,7 +234,7 @@ def test_preblock_unknown_recipient(env):
 
 def test_preblock_covers_event_attendees(env):
     db, user, model = env
-    ev = {"title": "t", "start": "2030-01-01T10:00:00Z", "end": "2030-01-01T11:00:00Z", "attendees": ["zed@evil.org"]}
+    ev = {"title": "t", "start_at": "2030-01-01T10:00:00Z", "end_at": "2030-01-01T11:00:00Z", "attendees": ["zed@evil.org"]}
     d = go(db, user, "create_event", ev)
     assert d.reviewer.code == reviewer.PRE_RECIPIENT and model.calls == []
 

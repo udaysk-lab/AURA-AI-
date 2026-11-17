@@ -96,7 +96,7 @@ def _start_judged(target: str, program: str, owner_approved: bool) -> dict:
     if os.path.normcase(now) != os.path.normcase(program):
         return {"error": f"{target!r} no longer leads to the program it did when this was checked, so nothing was started."}
     platform = programs.current_platform()
-    verdict = programs.judge(now, access.roots(), floors.in_self_path, platform)
+    verdict = programs.judge(now, access.program_roots(), floors.in_self_path, platform)
     if verdict.kind == "self":
         return {"error": f"{target!r} is part of AURA itself, so nothing was started."}
     if verdict.kind == "nothing":

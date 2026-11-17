@@ -48,10 +48,20 @@ def _within(path: str, root: str) -> bool:
     return _under(path, root)
 
 
+def protected_name(real: str) -> bool:
+    """A file whose NAME decides which program opens a kind of document, wherever it is: `mimeapps.list` and the
+    desktop specific `<desktop>-mimeapps.list`. A name rule, not a place, because the lists are read from several
+    folders."""
+    name = os.path.basename(real.rstrip("/\\")).rstrip(". ").casefold()
+    return name == "mimeapps.list" or name.endswith("-mimeapps.list")
+
+
 def _protected(real: str) -> bool:
     """Inside a protected path — compared without case everywhere, because
     refusing a lookalike folder on Linux costs nothing and missing the real
     one on a Mac costs a key."""
+    if protected_name(real):
+        return True
     folded = _fold(real)
     return any(_under(folded, _fold(p)) for p in settings.device_protected_path_list)
 
@@ -71,18 +81,53 @@ def _holds_protected(real: str) -> bool:
     )
 
 
-# Files that make git run a program: hooks run on commit/checkout, and the
-# config can name a command (core.fsmonitor, core.hooksPath, aliases with !).
-# Writing one is running code with extra steps, so it takes the shell's gate.
-_GIT_EXECUTABLE = re.compile(r"(^|[\\/])\.git[\\/](hooks([\\/]|$)|config$)", re.IGNORECASE)
+# Git's own files. A hook, a config, a `commondir` or `gitdir:` redirect, an include: each can make git run a program
+# the next time anything (an editor, a prompt, a build) asks git a question. So the file tools never create, change,
+# move, replace or delete anything inside a `.git` folder, a file named `.git`, or a folder that looks like a git
+# folder (it holds HEAD, objects and refs, or the call would make it so). Reading stays as it is, and so does moving
+# or deleting the folder that CONTAINS `.git` (a whole project).
+_GIT_PARTS = ("HEAD", "objects", "refs")
+_GIT_SHORT_NAME = re.compile(r"git~\d+")
+
+
+def _is_git_name(name: str) -> bool:
+    """`.git` in any spelling the system treats as the same name (case, trailing dots and spaces, a stream suffix,
+    the short name)."""
+    low = name.split(":", 1)[0].rstrip(". ").casefold()
+    return low == ".git" or bool(_GIT_SHORT_NAME.fullmatch(low))
+
+
+def _looks_like_git_dir(folder: str, adding: str | None = None) -> bool:
+    for part in _GIT_PARTS:
+        if adding is not None and adding.casefold() == part.casefold():
+            continue
+        if not os.path.lexists(os.path.join(folder, part)):
+            return False
+    return True
+
+
+def git_internal(real: str) -> bool:
+    """True when this real path is, or is inside, git's own files (see above)."""
+    probe = os.path.abspath(real)
+    child: str | None = None
+    while True:
+        name = os.path.basename(probe)
+        if name and _is_git_name(name):
+            return True
+        if (child is not None or os.path.isdir(probe)) and _looks_like_git_dir(probe, child):
+            return True
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return False
+        child, probe = name, parent
+
+
+GIT_MESSAGE = "AURA does not change git's own files; use a git command, which asks first."
 
 
 def _guard_write(real: str, path: str) -> None:
-    if _GIT_EXECUTABLE.search(real):
-        raise PathNotAllowed(
-            f"{path!r} is a git hook or git config — files that make git run commands. "
-            "Change it with run_command (which asks first), or edit it yourself."
-        )
+    if git_internal(real):
+        raise PathNotAllowed(f"{path!r}: {GIT_MESSAGE}")
 
 
 def resolve(path: str, *, must_exist: bool = False) -> str:
@@ -392,6 +437,7 @@ def edit_text(path: str, find: str, replace: str, *, count: int = 0) -> dict:
 def move_path(src: str, dst: str) -> dict:
     real_src = resolve(src, must_exist=True)
     real_dst = resolve(dst)
+    _guard_write(real_src, src)
     _guard_write(real_dst, dst)
     if _holds_protected(real_src):
         raise PathNotAllowed(
@@ -405,6 +451,7 @@ def move_path(src: str, dst: str) -> dict:
 
 def delete_path(path: str) -> dict:
     real = resolve(path, must_exist=True)
+    _guard_write(real, path)
     if _holds_protected(real):
         raise PathNotAllowed(
             f"{path!r} holds protected folders (keys, startup items or AURA's own "
@@ -419,5 +466,6 @@ def delete_path(path: str) -> dict:
 
 def make_directory(path: str) -> dict:
     real = resolve(path)
+    _guard_write(real, path)
     os.makedirs(real, exist_ok=True)
     return {"path": _rel(real), "created": True}
